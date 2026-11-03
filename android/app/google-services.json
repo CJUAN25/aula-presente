@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "184735170788",
+    "project_id": "aula-presente-movil-juan-2026",
+    "storage_bucket": "aula-presente-movil-juan-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:184735170788:android:6e4aa73f45f872d0292cf1",
+        "android_client_info": {
+          "package_name": "com.juanceron.aulapresente"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCeYzI9wYmDphRjCx4V-FP3mY5j6fK0C_s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

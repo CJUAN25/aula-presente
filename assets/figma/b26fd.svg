@@ -1,0 +1,53 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="350" height="244" viewBox="0 0 350 244" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Aula y cinta de cristal" clip-path="url(#clip0_0_73)">
+<path id="Vector" d="M350 0H0V244H350V0Z" fill="#102F29"/>
+<path id="Vector_2" d="M0 0H350V98H0V0Z" fill="#183C32"/>
+<path id="Vector_3" d="M205 6H348V85H205V6Z" fill="#294A3B"/>
+<g id="Vector_4">
+<path d="M239 6V85ZM279 6V85ZM320 6V85Z" fill="black"/>
+<path d="M239 6V85M279 6V85M320 6V85" stroke="#506756" stroke-width="3"/>
+</g>
+<g id="Vector_5">
+<path d="M0 120L350 90ZM0 190L350 120ZM104 244L273 98ZM284 244L306 98Z" fill="black"/>
+<path d="M0 120L350 90M0 190L350 120M104 244L273 98M284 244L306 98" stroke="#325146"/>
+</g>
+<path id="Vector_6" d="M24 100L149 93L175 110L42 121L24 100Z" fill="#385C49"/>
+<g id="Vector_7">
+<path d="M37 121V158ZM161 112V149Z" fill="black"/>
+<path d="M37 121V158M161 112V149" stroke="#163C30" stroke-width="7"/>
+</g>
+<path id="Vector_8" d="M203 103L317 98L348 116L222 128L203 103Z" fill="#446850"/>
+<g id="Vector_9">
+<path d="M218 128V164ZM335 120V152Z" fill="black"/>
+<path d="M218 128V164M335 120V152" stroke="#183D31" stroke-width="7"/>
+</g>
+<path id="Vector_10" d="M61 168L211 151L260 176L90 202L61 168Z" fill="#375B46"/>
+<g id="Vector_11">
+<path d="M92 202V244ZM246 180V225Z" fill="black"/>
+<path d="M92 202V244M246 180V225" stroke="#173D30" stroke-width="8"/>
+</g>
+<path id="Vector_12" d="M303 183C321 155 289 124 258 109C208 85 208 43 240 31C268 20 292 39 277 61C260 86 231 94 225 121C219 148 244 168 274 173" stroke="#08251E" stroke-width="33"/>
+<path id="Vector_13" d="M302 178C320 150 288 119 257 104C207 80 207 38 239 26C267 15 291 34 276 56C259 81 230 89 224 116C218 143 243 163 273 168" stroke="url(#paint0_linear_0_73)" stroke-width="28" stroke-linecap="round"/>
+<path id="Vector_14" d="M302 176C315 150 286 124 256 109C212 87 203 48 237 29" stroke="#BCFFE2" stroke-opacity="0.5" stroke-width="2"/>
+<path id="Vector_15" d="M277 136L322 131L327 158L280 164L277 136Z" fill="#1B3E32" stroke="#7BAE93"/>
+<path id="Vector_16" d="M280 164L327 158L341 164L291 172L280 164Z" fill="#62846B"/>
+<path id="Vector_17" d="M214 0H0V244H214V0Z" fill="url(#paint1_linear_0_73)"/>
+<path id="Vector_18" d="M350 182H0V244H350V182Z" fill="#031310" fill-opacity="0.65"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_73" x1="216.877" y1="22.7838" x2="351.831" y2="101.324" gradientUnits="userSpaceOnUse">
+<stop stop-color="#B7FFE1"/>
+<stop offset="0.3" stop-color="#4AE9B3"/>
+<stop offset="0.56" stop-color="#1E6D58"/>
+<stop offset="0.75" stop-color="#80F9CD"/>
+<stop offset="1" stop-color="#174D40"/>
+</linearGradient>
+<linearGradient id="paint1_linear_0_73" x1="0" y1="0" x2="214" y2="0" gradientUnits="userSpaceOnUse">
+<stop stop-color="#021310"/>
+<stop offset="1" stop-color="#021310" stop-opacity="0"/>
+</linearGradient>
+<clipPath id="clip0_0_73">
+<rect width="350" height="244" fill="white"/>
+</clipPath>
+</defs>
+</svg>

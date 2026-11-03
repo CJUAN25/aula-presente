@@ -1,0 +1,574 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function emailVerified() {
+      return signedIn()
+        && request.auth.token.get('email_verified', false) == true;
+    }
+
+    function validStudentCode(code) {
+      return code == null
+        || (code is string && code.size() >= 1 && code.size() <= 40);
+    }
+
+    function validRoles(roles) {
+      return roles is list
+        && roles.size() >= 1
+        && roles.size() <= 3
+        && roles.hasOnly(['student', 'teacher', 'admin'])
+        && (
+          roles.size() == 1
+          || (roles.size() == 2 && roles[0] != roles[1])
+          || (
+            roles.size() == 3
+            && roles[0] != roles[1]
+            && roles[0] != roles[2]
+            && roles[1] != roles[2]
+          )
+        );
+    }
+
+    function validProfileShape(profile) {
+      return profile.keys().hasAll([
+          'name',
+          'email',
+          'studentCode',
+          'roles'
+        ])
+        && profile.keys().hasOnly([
+          'name',
+          'email',
+          'studentCode',
+          'roles'
+        ])
+        && profile.name is string
+        && profile.name.size() >= 1
+        && profile.name.size() <= 100
+        && profile.email is string
+        && profile.email.size() >= 3
+        && profile.email.size() <= 254
+        && validStudentCode(profile.studentCode)
+        && validRoles(profile.roles);
+    }
+
+    function validTeacherAccessRequestShape(accessRequest) {
+      return accessRequest.keys().hasAll([
+          'uid',
+          'name',
+          'email',
+          'studentCode',
+          'status',
+          'createdAt',
+          'decidedBy',
+          'decidedAt',
+          'rejectionReason'
+        ])
+        && accessRequest.keys().hasOnly([
+          'uid',
+          'name',
+          'email',
+          'studentCode',
+          'status',
+          'createdAt',
+          'decidedBy',
+          'decidedAt',
+          'rejectionReason'
+        ])
+        && accessRequest.uid is string
+        && accessRequest.name is string
+        && accessRequest.name.size() >= 1
+        && accessRequest.name.size() <= 100
+        && accessRequest.email is string
+        && accessRequest.email.size() >= 3
+        && accessRequest.email.size() <= 254
+        && validStudentCode(accessRequest.studentCode)
+        && accessRequest.status in ['pending', 'approved', 'rejected']
+        && accessRequest.createdAt is timestamp
+        && (accessRequest.decidedBy == null || accessRequest.decidedBy is string)
+        && (accessRequest.decidedAt == null || accessRequest.decidedAt is timestamp)
+        && (
+          accessRequest.rejectionReason == null
+          || (
+            accessRequest.rejectionReason is string
+            && accessRequest.rejectionReason.size() >= 1
+            && accessRequest.rejectionReason.size() <= 500
+          )
+        );
+    }
+
+    function validDemoRecord(record) {
+      return record.keys().hasAll([
+          'title',
+          'description',
+          'createdAt',
+          'updatedAt'
+        ])
+        && record.keys().hasOnly([
+          'title',
+          'description',
+          'createdAt',
+          'updatedAt'
+        ])
+        && record.title is string
+        && record.title.size() >= 1
+        && record.title.size() <= 120
+        && record.description is string
+        && record.description.size() <= 1000
+        && record.createdAt is timestamp
+        && record.updatedAt is timestamp;
+    }
+
+    function profileHasAdminRole(profile) {
+      return profile.roles is list && profile.roles.hasAny(['admin']);
+    }
+
+    function userHasAdminRole(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      return exists(profilePath)
+        && profileHasAdminRole(get(profilePath).data);
+    }
+
+    function verifiedAdmin() {
+      return emailVerified() && userHasAdminRole(request.auth.uid);
+    }
+
+    function isPendingTeacherAccessRequest(accessRequest, uid) {
+      return validTeacherAccessRequestShape(accessRequest)
+        && accessRequest.uid == uid
+        && accessRequest.status == 'pending';
+    }
+
+    function adminCanReviewPendingRequest(uid) {
+      let requestPath = /databases/$(database)/documents/teacher_access_requests/$(uid);
+      return verifiedAdmin()
+        && exists(requestPath)
+        && isPendingTeacherAccessRequest(get(requestPath).data, uid);
+    }
+
+    function adminCanGetPendingRequesterProfile(uid) {
+      return adminCanReviewPendingRequest(uid);
+    }
+
+    function matchingProfileSnapshot(accessRequest, uid, profile) {
+      return accessRequest.uid == uid
+        && accessRequest.name == profile.name
+        && accessRequest.email == profile.email
+        && accessRequest.studentCode == profile.studentCode;
+    }
+
+    function profileCanCreateTeacherAccessRequest(uid, accessRequest) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      let profile = get(profilePath).data;
+      return validProfileShape(profile)
+        && profile.email == request.auth.token.email
+        && profile.roles.hasAny(['teacher']) == false
+        && matchingProfileSnapshot(accessRequest, uid, profile);
+    }
+
+    function canCreateTeacherAccessRequest(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      return ownsUser(uid)
+        && emailVerified()
+        && exists(profilePath)
+        && request.resource.data.uid == uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.decidedBy == null
+        && request.resource.data.decidedAt == null
+        && request.resource.data.rejectionReason == null
+        && validTeacherAccessRequestShape(request.resource.data)
+        && profileCanCreateTeacherAccessRequest(uid, request.resource.data);
+    }
+
+    function canApproveWithAtomicTeacherGrant(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      let currentProfile = get(profilePath).data;
+      let profileAfter = getAfter(profilePath).data;
+      return exists(profilePath)
+        && validProfileShape(currentProfile)
+        && validProfileShape(profileAfter)
+        && currentProfile.roles.hasAny(['teacher']) == false
+        && profileAfter.roles.hasAny(['teacher'])
+        && profileAfter.roles.size() == currentProfile.roles.size() + 1
+        && profileAfter.roles.hasAll(currentProfile.roles)
+        && request.resource.data.uid == uid
+        && request.resource.data.name == profileAfter.name
+        && request.resource.data.email == profileAfter.email
+        && request.resource.data.studentCode == profileAfter.studentCode;
+    }
+
+    function canDecideTeacherAccessRequest(uid) {
+      return verifiedAdmin()
+        && request.auth.uid != uid
+        && validTeacherAccessRequestShape(resource.data)
+        && validTeacherAccessRequestShape(request.resource.data)
+        && resource.data.uid == uid
+        && resource.data.status == 'pending'
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.studentCode == resource.data.studentCode
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.decidedBy == request.auth.uid
+        && request.resource.data.decidedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'decidedBy', 'decidedAt', 'rejectionReason'])
+        && (
+          (
+            request.resource.data.status == 'approved'
+            && request.resource.data.rejectionReason == null
+            && canApproveWithAtomicTeacherGrant(uid)
+          )
+          || (
+            request.resource.data.status == 'rejected'
+            && request.resource.data.rejectionReason is string
+            && request.resource.data.rejectionReason.size() >= 1
+            && request.resource.data.rejectionReason.size() <= 500
+          )
+        );
+    }
+
+    function adminGrantsTeacherRoleAtomically(uid) {
+      let accessRequestPath = /databases/$(database)/documents/teacher_access_requests/$(uid);
+      let accessRequestAfter = getAfter(accessRequestPath).data;
+      return verifiedAdmin()
+        && request.auth.uid != uid
+        && validProfileShape(resource.data)
+        && validProfileShape(request.resource.data)
+        && resource.data.roles.hasAny(['teacher']) == false
+        && request.resource.data.roles.hasAny(['teacher'])
+        && request.resource.data.roles.size() == resource.data.roles.size() + 1
+        && request.resource.data.roles.hasAll(resource.data.roles)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['roles'])
+        && exists(accessRequestPath)
+        && validTeacherAccessRequestShape(accessRequestAfter)
+        && accessRequestAfter.uid == uid
+        && accessRequestAfter.status == 'approved'
+        && accessRequestAfter.decidedBy == request.auth.uid
+        && accessRequestAfter.decidedAt == request.time
+        && matchingProfileSnapshot(
+          accessRequestAfter,
+          uid,
+          request.resource.data
+        );
+    }
+
+    // Course access is restricted to verified users whose own profile is valid
+    // and currently contains the trusted teacher role.
+    function validCourseTeacherProfile(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      let profile = get(profilePath).data;
+      return validProfileShape(profile)
+        && profile.email == request.auth.token.email
+        && profile.roles is list
+        && profile.roles.hasAny(['teacher']);
+    }
+
+    function verifiedTeacher() {
+      return emailVerified()
+        && validCourseTeacherProfile(request.auth.uid);
+    }
+
+    function nonBlankCourseText(value, maxLength) {
+      return value is string
+        && value.matches('.*[^\\s].*')
+        && value.size() <= maxLength;
+    }
+
+    function courseBlockPath(courseId, blockId) {
+      return /databases/$(database)/documents/courses/$(courseId)/weekly_blocks/$(blockId);
+    }
+
+    function validCourseBlockIdAt(blockIds, count, index) {
+      return count <= index
+        || (
+          blockIds[index] is string
+          && blockIds[index].matches('^[A-Za-z0-9_-]{20,40}$')
+        );
+    }
+
+    function validCourseBlockIds(blockIds) {
+      let count = blockIds.size();
+      return blockIds is list
+        && count >= 1
+        && count <= 8
+        && blockIds.toSet().size() == count
+        && validCourseBlockIdAt(blockIds, count, 0)
+        && validCourseBlockIdAt(blockIds, count, 1)
+        && validCourseBlockIdAt(blockIds, count, 2)
+        && validCourseBlockIdAt(blockIds, count, 3)
+        && validCourseBlockIdAt(blockIds, count, 4)
+        && validCourseBlockIdAt(blockIds, count, 5)
+        && validCourseBlockIdAt(blockIds, count, 6)
+        && validCourseBlockIdAt(blockIds, count, 7);
+    }
+
+    // Every listed child must be visible after this atomic create and have the
+    // same order as its position in weeklyBlockIds.
+    function validCourseBlockAfterAt(courseId, blockIds, count, index) {
+      return count <= index
+        || (
+          getAfter(courseBlockPath(courseId, blockIds[index])).data.order
+            == index
+        );
+    }
+
+    function allCourseBlocksAfter(courseId, blockIds) {
+      let count = blockIds.size();
+      return validCourseBlockAfterAt(courseId, blockIds, count, 0)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 1)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 2)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 3)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 4)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 5)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 6)
+        && validCourseBlockAfterAt(courseId, blockIds, count, 7);
+    }
+
+    function validCourseDateRange(startDate, endDate) {
+      return startDate is timestamp
+        && endDate is timestamp
+        && startDate <= endDate
+        && startDate.date() == startDate
+        && endDate.date() == endDate
+        && endDate.toMillis() - startDate.toMillis() <= 365 * 86400000;
+    }
+
+    function validCourseShape(courseId, course) {
+      return course.keys().size() == 13
+        && course.ownerUid is string
+        && nonBlankCourseText(course.subject, 120)
+        && nonBlankCourseText(course.group, 40)
+        && nonBlankCourseText(course.period, 32)
+        && nonBlankCourseText(course.program, 120)
+        && course.timezone == 'America/Bogota'
+        && validCourseDateRange(course.startDate, course.endDate)
+        && validCourseBlockIds(course.weeklyBlockIds)
+        && allCourseBlocksAfter(courseId, course.weeklyBlockIds)
+        && course.status == 'planned'
+        && course.schemaVersion is int
+        && course.schemaVersion == 1
+        && course.createdAt is timestamp
+        && course.updatedAt is timestamp;
+    }
+
+    function validCourseBlockShape(block) {
+      return block.keys().size() == 5
+        && block.weekday is int
+        && block.weekday >= 1
+        && block.weekday <= 7
+        && block.startMinute is int
+        && block.startMinute >= 0
+        && block.startMinute < 1440
+        && block.endMinute is int
+        && block.endMinute > block.startMinute
+        && block.endMinute < 1440
+        && block.order is int
+        && block.order >= 0
+        && block.order < 8
+        && (
+          block.room == null
+          || (block.room is string && block.room.size() <= 60)
+        );
+    }
+
+    function courseBlockOccursInDateRange(course, weekday) {
+      let startDate = course.startDate;
+      let endDate = course.endDate;
+      let daysUntilWeekday = (weekday - startDate.dayOfWeek() + 7) % 7;
+      return endDate.toMillis() - startDate.toMillis() >= 6 * 86400000
+        || startDate.toMillis() + daysUntilWeekday * 86400000
+          <= endDate.toMillis();
+    }
+
+    function orderedCourseBlockPair(previous, current) {
+      return previous.order + 1 == current.order
+        && previous.weekday <= current.weekday
+        && (
+          previous.weekday != current.weekday
+          || previous.endMinute <= current.startMinute
+        );
+    }
+
+    function previousCourseBlockIsValid(courseId, blockIds, current) {
+      let order = current.order;
+      return order == 0
+        || (
+          orderedCourseBlockPair(
+            getAfter(courseBlockPath(courseId, blockIds[order - 1])).data,
+            current
+          )
+        );
+    }
+
+    function nextCourseBlockIsValid(courseId, blockIds, current) {
+      let order = current.order;
+      let count = blockIds.size();
+      return order == count - 1
+        || (
+          orderedCourseBlockPair(
+            current,
+            getAfter(courseBlockPath(courseId, blockIds[order + 1])).data
+          )
+        );
+    }
+
+    function validCourseBlockCreate(courseId, blockId, block) {
+      let course = getAfter(
+        /databases/$(database)/documents/courses/$(courseId)
+      ).data;
+      let blockIds = course.weeklyBlockIds;
+      let order = block.order;
+      let count = blockIds.size();
+      // The parent create is the trust boundary: it requires a verified
+      // teacher with a valid profile and atomically validates every listed
+      // child. Rechecking the full profile for each child would multiply the
+      // expression cost across a maximum-size atomic write.
+      return course.ownerUid == request.auth.uid
+        && blockIds is list
+        && count >= 1
+        && count <= 8
+        && validCourseBlockShape(block)
+        && order >= 0
+        && order < count
+        && blockIds[order] == blockId
+        && courseBlockOccursInDateRange(course, block.weekday)
+        && previousCourseBlockIsValid(courseId, blockIds, block)
+        && nextCourseBlockIsValid(courseId, blockIds, block);
+    }
+
+    function canReadCourseBlock(courseId, blockId) {
+      let parentPath = /databases/$(database)/documents/courses/$(courseId);
+      let childPath = courseBlockPath(courseId, blockId);
+      let course = get(parentPath).data;
+      return verifiedTeacher()
+        && (
+          (!exists(parentPath) && !exists(childPath))
+          || (
+            exists(parentPath)
+            && exists(childPath)
+            && course.ownerUid == request.auth.uid
+            && course.weeklyBlockIds is list
+            && course.weeklyBlockIds.hasAny([blockId])
+          )
+        );
+    }
+
+    function canListCourseBlocks(courseId) {
+      let parentPath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(parentPath).data;
+      return verifiedTeacher()
+        && exists(parentPath)
+        && course.ownerUid == request.auth.uid;
+    }
+
+    function canGetCourse(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      // The transaction may read a missing ID to create it. Existing records
+      // remain private to their owner even when another teacher knows the ID.
+      return verifiedTeacher()
+        && (!exists(coursePath) || resource.data.ownerUid == request.auth.uid);
+    }
+
+    match /users/{uid} {
+      // A user can directly fetch their own profile; profile enumeration is denied.
+      allow get: if ownsUser(uid) || adminCanGetPendingRequesterProfile(uid);
+      allow list: if false;
+
+      // Do not require email verification here: account creation precedes verification.
+      allow create: if ownsUser(uid)
+        && validProfileShape(request.resource.data)
+        && request.resource.data.roles == ['student']
+        && request.resource.data.email == request.auth.token.email;
+
+      // Users may edit profile details, but cannot add, remove, or change roles.
+      allow update: if ownsUser(uid)
+        && validProfileShape(request.resource.data)
+        && request.resource.data.roles == resource.data.roles
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'email', 'studentCode'])
+        && (
+          request.resource.data.email == resource.data.email
+          || (
+            emailVerified()
+            && request.resource.data.email == request.auth.token.email
+          )
+        )
+        || adminGrantsTeacherRoleAtomically(uid);
+
+      // Role grants and profile deletion are reserved for a trusted server flow.
+
+      match /demo_records/{recordId} {
+        // Reads and writes are private to the owner and require a verified email.
+        allow get, list: if ownsUser(uid) && emailVerified();
+
+        allow create: if ownsUser(uid)
+          && emailVerified()
+          && validDemoRecord(request.resource.data)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+
+        allow update: if ownsUser(uid)
+          && emailVerified()
+          && validDemoRecord(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['title', 'description', 'updatedAt']);
+
+        allow delete: if ownsUser(uid) && emailVerified();
+      }
+    }
+
+    match /teacher_access_requests/{uid} {
+      // Applicants can fetch only their own request. Verified admins can review
+      // requests, including through filtered collection queries.
+      allow get: if ownsUser(uid) || adminCanReviewPendingRequest(uid);
+      // The admin queue is intentionally limited to pending requests. The
+      // query must include a matching status filter, so resolved decisions and
+      // their rejection reasons are not enumerable through the collection.
+      allow list: if verifiedAdmin()
+        && resource.data.status == 'pending';
+
+      allow create: if canCreateTeacherAccessRequest(uid);
+      allow update: if canDecideTeacherAccessRequest(uid);
+      allow delete: if false;
+    }
+
+    match /courses/{courseId} {
+      allow get: if canGetCourse(courseId);
+      allow list: if verifiedTeacher()
+        && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if verifiedTeacher()
+        && validCourseShape(courseId, request.resource.data)
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      // Course edits and deletion are outside this delivery.
+      allow update, delete: if false;
+
+      match /weekly_blocks/{blockId} {
+        allow get: if canReadCourseBlock(courseId, blockId);
+        allow list: if canListCourseBlocks(courseId);
+        allow create: if validCourseBlockCreate(
+          courseId,
+          blockId,
+          request.resource.data
+        );
+        allow update, delete: if false;
+      }
+    }
+  }
+}

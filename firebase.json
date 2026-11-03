@@ -1,0 +1,30 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "firestore": {
+      "port": 8080
+    }
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "aula-presente-movil-juan-2026",
+          "appId": "1:184735170788:android:6e4aa73f45f872d0292cf1",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "aula-presente-movil-juan-2026",
+          "configurations": {
+            "android": "1:184735170788:android:6e4aa73f45f872d0292cf1"
+          }
+        }
+      }
+    }
+  }
+}
