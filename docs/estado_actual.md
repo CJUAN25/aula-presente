@@ -1,6 +1,8 @@
-# Estado actual — 2 de noviembre de 2026
+# Estado actual — 3 de noviembre de 2026
 
 ## Entrega implementada
+
+El primer entregable académico dispone de una [release preliminar privada](https://github.com/CJUAN25/aula-presente/releases/tag/v0.1.0-entrega-1) con `Aula-Presente-Entrega-1.apk`. La APK se reutilizó del clon limpio del commit `56c0491e59e3a52b1601d75300b711dbe454ce9f`; el 3 de noviembre se comprobaron paquete, modo debug, mínimo API 24, arquitecturas ARM64/x86_64/ARM de 32 bits, firma e integridad tras descargar el adjunto publicado. La etiqueta conserva el commit compilado; la documentación puede avanzar en `main`. No se ejecutó la app en la Mac del docente ni se probaron otra vez los servicios Firebase reales. Detalles y huella en [entrega_1.md](entrega_1.md).
 
 La aplicación integra Firebase Authentication y Cloud Firestore para autenticación/perfiles, solicitud y aprobación manual del acceso docente, CRUD privado `demo_records`, y el conjunto 2 de creación y consulta de cursos con horario y calendario previsto.
 
