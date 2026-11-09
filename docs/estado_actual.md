@@ -1,4 +1,10 @@
-# Estado actual — 3 de noviembre de 2026
+# Estado actual — 8 de noviembre de 2026
+
+## Cierre del conjunto 3
+
+La rama local `feature/conjunto-3-inscripciones` implementa la inscripción manual de cuentas existentes y la consulta de materias del estudiante. Usa `student_directory/{email}` para localizar un correo exacto conocido sin listar perfiles y `courses/{courseId}/enrollments/{studentUid}` como inscripción canónica. El detalle del estudiante lee el curso y los bloques permitidos y reutiliza el generador de calendario previsto. Contratos, frames, recorridos y pruebas: [seguimiento_conjunto_3.md](seguimiento_conjunto_3.md); pasos de activación y reproducción: [activacion_conjunto_3.md](activacion_conjunto_3.md).
+
+**Integración local verificada por Codex:** `flutter analyze` sin problemas, 120 pruebas Flutter aprobadas, 51/51 pruebas de reglas en emulador ficticio y APK debug compilada. **Validación real informada por el usuario:** publicó las reglas y el índice en `aula-presente-movil-juan-2026`, vio `enrollments` **Habilitado** en la consola y comprobó manualmente en el TECNO que el conjunto funciona. Codex no realizó esa publicación ni ejecutó la app en el teléfono. El código de esta rama aún no se ha subido a GitHub; la release privada `v0.1.0-entrega-1` conserva el primer entregable y no contiene el conjunto 3.
 
 ## Entrega implementada
 
@@ -48,16 +54,16 @@ Resultados del cierre del conjunto 2:
 
 La suite del emulador prueba las reglas y transacciones con el SDK de JavaScript; no ejecuta el repositorio Dart contra el emulador. El dominio prueba por separado los mapas canónicos y Flutter prueba la lógica/presentación con repositorios controlados.
 
-## Pendiente de validación externa
+## Registro histórico de validación externa del conjunto 2
 
 - Durante la entrega original no se publicaron `firestore.rules` ni índices. El usuario informó después que publicó los del conjunto 2; esta sesión no verificó su estado ni escribió en Firebase real.
-- No se ejecutó la app ni se hicieron capturas en el TECNO CM6. La prueba manual descrita en la guía queda para el propietario.
+- Durante ese cierre, Codex no ejecutó la app ni hizo capturas en el TECNO CM6. El usuario reportó después la prueba manual del conjunto 3, registrada al inicio de este documento.
 - No se probó el estado del índice compuesto en Firebase real.
 - No se ejecutó la app contra una instancia Firebase real durante esta entrega.
 - No se comparó visualmente un render de Flutter con la captura de Figma; las pruebas de widget no sustituyen esa revisión.
 
 La corrección del conteo no cambia reglas ni índices y no requiere despliegue de Firestore. Para probarla en el TECNO, el usuario tendrá que ejecutar la nueva compilación de la app; no se hizo durante esta sesión.
 
-## Fuera de alcance
+## Fuera de alcance del conjunto 2
 
-No se implementan matrículas, lista de estudiantes, sesiones de asistencia, QR, Bluetooth, justificaciones, reportes, festivos, excepciones, reprogramación, cancelación ni edición/borrado de cursos. El calendario es informativo y no reserva horarios entre dispositivos concurrentes. El usuario informó que publicó las reglas e índices del conjunto 2; esta sesión no consultó su estado.
+Al cerrar el conjunto 2 no se habían implementado matrículas ni lista de estudiantes; el conjunto 3 implementó ambas funciones sin alterar los cursos existentes. Siguen fuera de alcance sesiones de asistencia, QR, Bluetooth, justificaciones, reportes, festivos, excepciones, reprogramación, cancelación y edición/borrado de cursos. El calendario es informativo y no reserva horarios entre dispositivos concurrentes. El usuario informó que publicó las reglas e índices del conjunto 2; esa sesión no consultó su estado.

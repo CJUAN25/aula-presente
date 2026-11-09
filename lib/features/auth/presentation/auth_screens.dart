@@ -6,6 +6,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../app/theme/app_theme.dart';
 import '../../../app/course_repository_scope.dart';
+import '../../../app/enrollment_repository_scope.dart';
 import '../../../app/teacher_access_repository_scope.dart';
 import '../../administration/domain/teacher_access_repository.dart';
 import '../../administration/presentation/admin_teacher_requests_screen.dart'
@@ -17,6 +18,7 @@ import '../../administration/presentation/teacher_profile_screen.dart'
 import '../../demo_records/presentation/demo_records_screen.dart';
 import '../../courses/presentation/teacher_courses_screen.dart'
     as teacher_courses;
+import '../../enrollments/presentation/student_enrollment_screens.dart';
 import '../application/auth_form_validator.dart';
 import '../domain/auth_access.dart';
 import '../domain/auth_repository.dart';
@@ -419,6 +421,36 @@ class StudentProfileScreen extends StatefulWidget {
 class _StudentProfileScreenState extends State<StudentProfileScreen> {
   bool _busy = false;
   String? _error;
+  bool _directoryStarted = false;
+  bool _directoryBusy = false;
+  Object? _directoryError;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_directoryStarted) {
+      _directoryStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_publishDirectory());
+      });
+    }
+  }
+
+  Future<void> _publishDirectory() async {
+    if (_directoryBusy) return;
+    setState(() {
+      _directoryBusy = true;
+      _directoryError = null;
+    });
+    try {
+      await EnrollmentRepositoryScope.read(context)
+          .ensureStudentDirectoryEntry();
+    } catch (error) {
+      if (mounted) setState(() => _directoryError = error);
+    } finally {
+      if (mounted) setState(() => _directoryBusy = false);
+    }
+  }
 
   Future<void> _signOut() async {
     setState(() {
@@ -493,6 +525,33 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          if (_directoryError != null) ...[
+            NoticeCard(
+              title: 'Tu cuenta aún no aparece para agregados manuales',
+              body: 'No pudimos actualizar tus datos de búsqueda. Revisa la conexión y vuelve a intentarlo. Tus cursos inscritos se consultan por separado.',
+              icon: 'fcc39.svg',
+              isError: true,
+            ),
+            const SizedBox(height: 10),
+            SecondaryButton(
+              label: 'Reintentar actualización',
+              onPressed: _directoryBusy ? null : _publishDirectory,
+            ),
+            const SizedBox(height: 12),
+          ],
+          ActionCard(
+            title: 'Mis materias',
+            body: 'Cursos en los que estás inscrito y horario previsto',
+            leading: '49279.svg',
+            trailing: '8aca9.svg',
+            onTap: () => _push(
+              context,
+              StudentCoursesScreen(
+                repository: EnrollmentRepositoryScope.read(context),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
           const ActionCard(
             title: 'Permisos del teléfono',
             body: 'Configuración del dispositivo',

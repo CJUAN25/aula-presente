@@ -14,7 +14,7 @@ El primer entregable permite evaluar:
 - Recuperación de contraseña mediante un enlace enviado por Firebase.
 - Cierre de sesión.
 
-También existen avances de permisos docentes, cursos con horarios y calendario previsto, y registros privados de prueba. No son requisitos de esta evaluación. Las matrículas, sesiones de asistencia, QR, Bluetooth, justificaciones y reportes quedan para entregas posteriores.
+También existen avances de permisos docentes, cursos con horarios y calendario previsto, y registros privados de prueba. No son requisitos de esta evaluación. En la rama local de desarrollo `feature/conjunto-3-inscripciones` está implementada la inscripción manual de cuentas existentes y la consulta de materias del estudiante. El usuario informó que publicó sus reglas e índice y que comprobó el recorrido en el TECNO. **Esta función no está en la APK de la release del primer entregable ni en el código publicado de `main`.** Las sesiones de asistencia, QR, Bluetooth, justificaciones y reportes quedan para entregas posteriores.
 
 ## Opción rápida: probar la APK
 
@@ -73,7 +73,7 @@ La configuración cliente Firebase está incluida en [lib/firebase_options.dart]
 - [test/](test/): pruebas Dart y Flutter.
 - [docs/](docs/): documentación y seguimiento.
 
-Guías: [entrega y trazabilidad de la APK](docs/entrega_1.md), [arquitectura](docs/arquitectura.md), [estado actual](docs/estado_actual.md), [autenticación](lib/features/auth/README.md) y [desarrollo](AGENTS.md).
+Guías: [entrega y trazabilidad de la APK](docs/entrega_1.md), [arquitectura](docs/arquitectura.md), [estado actual](docs/estado_actual.md), [cierre del conjunto 3](docs/seguimiento_conjunto_3.md), [autenticación](lib/features/auth/README.md) y [desarrollo](AGENTS.md).
 
 El **emulador Android Pixel** ejecuta la app. El [emulador local de Firebase](tools/firestore_rules_tests/README.md) sirve para pruebas de permisos durante el desarrollo y no es necesario para evaluar la autenticación con el servicio existente. [GUIA_DOCUMENTACION.md](GUIA_DOCUMENTACION.md) corresponde a un ZIP histórico y no sustituye el proyecto ejecutable.
 

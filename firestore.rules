@@ -279,6 +279,126 @@ service cloud.firestore {
         && validCourseTeacherProfile(request.auth.uid);
     }
 
+    function validCourseStudentProfile(uid) {
+      let profilePath = /databases/$(database)/documents/users/$(uid);
+      let profile = get(profilePath).data;
+      return validProfileShape(profile)
+        && profile.email == request.auth.token.email
+        && profile.roles.hasAny(['student']);
+    }
+
+    function verifiedStudent() {
+      return emailVerified()
+        && validCourseStudentProfile(request.auth.uid);
+    }
+
+    function directoryPath(email) {
+      return /databases/$(database)/documents/student_directory/$(email);
+    }
+
+    function enrollmentPath(courseId, studentUid) {
+      return /databases/$(database)/documents/courses/$(courseId)/enrollments/$(studentUid);
+    }
+
+    function validDirectoryShape(entry) {
+      return entry.keys().hasAll(['uid', 'name', 'email', 'studentCode', 'updatedAt'])
+        && entry.keys().hasOnly(['uid', 'name', 'email', 'studentCode', 'updatedAt'])
+        && entry.uid is string
+        && entry.name is string
+        && entry.name.size() >= 1
+        && entry.name.size() <= 100
+        && entry.email is string
+        && entry.email.size() >= 3
+        && entry.email.size() <= 254
+        && validStudentCode(entry.studentCode)
+        && entry.updatedAt is timestamp;
+    }
+
+    function directoryMatchesCurrentProfile(entry) {
+      let profilePath = /databases/$(database)/documents/users/$(entry.uid);
+      let profile = get(profilePath).data;
+      return exists(profilePath)
+        && validDirectoryShape(entry)
+        && validProfileShape(profile)
+        && profile.roles.hasAny(['student'])
+        && entry.name == profile.name
+        && entry.email == profile.email
+        && entry.studentCode == profile.studentCode;
+    }
+
+    function canWriteDirectory(email, entry) {
+      return verifiedStudent()
+        && email == request.auth.token.email
+        && entry.uid == request.auth.uid
+        && entry.email == email
+        && directoryMatchesCurrentProfile(entry)
+        && entry.updatedAt == request.time;
+    }
+
+    function validEnrollmentShape(enrollment) {
+      return enrollment.keys().hasAll([
+          'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
+          'subject', 'group', 'period', 'status', 'createdAt'
+        ])
+        && enrollment.keys().hasOnly([
+          'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
+          'subject', 'group', 'period', 'status', 'createdAt'
+        ])
+        && enrollment.studentUid is string
+        && enrollment.ownerUid is string
+        && enrollment.name is string
+        && enrollment.name.size() >= 1
+        && enrollment.name.size() <= 100
+        && enrollment.email is string
+        && enrollment.email.size() >= 3
+        && enrollment.email.size() <= 254
+        && validStudentCode(enrollment.studentCode)
+        && nonBlankCourseText(enrollment.subject, 120)
+        && nonBlankCourseText(enrollment.group, 40)
+        && nonBlankCourseText(enrollment.period, 32)
+        && enrollment.status == 'active'
+        && enrollment.createdAt is timestamp;
+    }
+
+    function canCreateEnrollment(courseId, studentUid) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      let entryPath = directoryPath(request.resource.data.email);
+      let entry = get(entryPath).data;
+      let enrollment = request.resource.data;
+      return verifiedTeacher()
+        && exists(coursePath)
+        && course.ownerUid == request.auth.uid
+        && validEnrollmentShape(enrollment)
+        && enrollment.studentUid == studentUid
+        && enrollment.ownerUid == course.ownerUid
+        && enrollment.subject == course.subject
+        && enrollment.group == course.group
+        && enrollment.period == course.period
+        && enrollment.createdAt == request.time
+        && exists(entryPath)
+        && directoryMatchesCurrentProfile(entry)
+        && entry.uid == studentUid
+        && entry.name == enrollment.name
+        && entry.email == enrollment.email
+        && entry.studentCode == enrollment.studentCode;
+    }
+
+    function ownsExistingCourse(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      return verifiedTeacher()
+        && exists(coursePath)
+        && get(coursePath).data.ownerUid == request.auth.uid;
+    }
+
+    function studentEnrolledInCourse(courseId) {
+      let enrollment = enrollmentPath(courseId, request.auth.uid);
+      return verifiedStudent()
+        && exists(enrollment)
+        && get(enrollment).data.studentUid == request.auth.uid
+        && get(enrollment).data.status == 'active';
+    }
+
     function nonBlankCourseText(value, maxLength) {
       return value is string
         && value.matches('.*[^\\s].*')
@@ -451,13 +571,14 @@ service cloud.firestore {
       let parentPath = /databases/$(database)/documents/courses/$(courseId);
       let childPath = courseBlockPath(courseId, blockId);
       let course = get(parentPath).data;
-      return verifiedTeacher()
+      return (verifiedTeacher() || studentEnrolledInCourse(courseId))
         && (
           (!exists(parentPath) && !exists(childPath))
           || (
             exists(parentPath)
             && exists(childPath)
-            && course.ownerUid == request.auth.uid
+            && (course.ownerUid == request.auth.uid
+              || studentEnrolledInCourse(courseId))
             && course.weeklyBlockIds is list
             && course.weeklyBlockIds.hasAny([blockId])
           )
@@ -467,17 +588,19 @@ service cloud.firestore {
     function canListCourseBlocks(courseId) {
       let parentPath = /databases/$(database)/documents/courses/$(courseId);
       let course = get(parentPath).data;
-      return verifiedTeacher()
+      return (verifiedTeacher() || studentEnrolledInCourse(courseId))
         && exists(parentPath)
-        && course.ownerUid == request.auth.uid;
+        && (course.ownerUid == request.auth.uid
+          || studentEnrolledInCourse(courseId));
     }
 
     function canGetCourse(courseId) {
       let coursePath = /databases/$(database)/documents/courses/$(courseId);
       // The transaction may read a missing ID to create it. Existing records
       // remain private to their owner even when another teacher knows the ID.
-      return verifiedTeacher()
-        && (!exists(coursePath) || resource.data.ownerUid == request.auth.uid);
+      return (verifiedTeacher()
+          && (!exists(coursePath) || resource.data.ownerUid == request.auth.uid))
+        || (exists(coursePath) && studentEnrolledInCourse(courseId));
     }
 
     match /users/{uid} {
@@ -545,6 +668,32 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /student_directory/{email} {
+      // Only a known exact email can be fetched. Profiles remain private.
+      // An absent exact ID is readable by a verified teacher so the manual
+      // lookup can distinguish no entry from a permission failure.
+      allow get: if (verifiedTeacher() && !exists(directoryPath(email)))
+        || (validDirectoryShape(resource.data)
+          && resource.data.email == email
+          && directoryMatchesCurrentProfile(resource.data)
+          && (verifiedTeacher() || ownsUser(resource.data.uid)));
+      allow list: if false;
+      allow create: if validDirectoryShape(request.resource.data)
+        && canWriteDirectory(email, request.resource.data);
+      allow update: if validDirectoryShape(request.resource.data)
+        && canWriteDirectory(email, request.resource.data)
+        && (
+          (resource.data.uid == request.auth.uid
+            && resource.data.email == email)
+          || (validDirectoryShape(resource.data)
+            && resource.data.email == email
+            // If the old holder changed email, the verified new holder can
+            // reclaim this exact ID. A live entry cannot be taken over.
+            && !directoryMatchesCurrentProfile(resource.data))
+        );
+      allow delete: if ownsUser(resource.data.uid);
+    }
+
     match /courses/{courseId} {
       allow get: if canGetCourse(courseId);
       allow list: if verifiedTeacher()
@@ -569,6 +718,22 @@ service cloud.firestore {
         );
         allow update, delete: if false;
       }
+
+      match /enrollments/{studentUid} {
+        allow get: if ownsExistingCourse(courseId)
+          || (verifiedStudent() && request.auth.uid == studentUid);
+        allow list: if ownsExistingCourse(courseId);
+        allow create: if canCreateEnrollment(courseId, studentUid);
+        allow update, delete: if false;
+      }
+    }
+
+    // Collection-group query for the authenticated student's own courses.
+    // The query must constrain studentUid to the current UID; other groups
+    // and unfiltered enumeration remain denied.
+    match /{path=**}/enrollments/{enrollmentId} {
+      allow list: if verifiedStudent()
+        && resource.data.studentUid == request.auth.uid;
     }
   }
 }

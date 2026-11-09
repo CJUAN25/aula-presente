@@ -17,16 +17,20 @@ import {
 import {
   Timestamp,
   collection,
+  collectionGroup,
   deleteDoc,
   documentId,
   doc,
   getDoc,
   getDocs,
+  getCountFromServer,
+  limit,
   orderBy,
   query,
   runTransaction,
   serverTimestamp,
   setDoc,
+  startAfter,
   updateDoc,
   where,
   writeBatch,
@@ -116,6 +120,59 @@ async function seedCourse(uid, courseId, blocks = [courseBlock()]) {
       );
     });
     await batch.commit();
+  });
+}
+
+function directoryData(uid, email, profileData = profile(email), extra = {}) {
+  return {
+    uid,
+    name: profileData.name,
+    email,
+    studentCode: profileData.studentCode,
+    updatedAt: serverTimestamp(),
+    ...extra,
+  };
+}
+
+async function publishStudent(uid, email, profileData = profile(email)) {
+  const student = userContext(uid, email, true);
+  await assertSucceeds(setDoc(
+    doc(student, "student_directory", email),
+    directoryData(uid, email, profileData),
+  ));
+  return student;
+}
+
+function enrollmentData(studentUid, ownerUid, email, profileData = profile(email), extra = {}) {
+  return {
+    studentUid,
+    ownerUid,
+    name: profileData.name,
+    email,
+    studentCode: profileData.studentCode,
+    subject: "Bases de Datos",
+    group: "Grupo 2",
+    period: "2027-1",
+    status: "active",
+    createdAt: serverTimestamp(),
+    ...extra,
+  };
+}
+
+async function enrollIdempotently(db, courseId, studentUid, payload) {
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const directoryRef = doc(db, "student_directory", payload.email);
+  const courseRef = doc(db, "courses", courseId);
+  return runTransaction(db, async (transaction) => {
+    const [course, directory, existing] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(directoryRef),
+      transaction.get(enrollmentRef),
+    ]);
+    if (!course.exists() || !directory.exists()) throw new Error("missing-source");
+    if (existing.exists()) return "already-enrolled";
+    transaction.set(enrollmentRef, payload);
+    return "created";
   });
 }
 
@@ -1665,4 +1722,270 @@ test("course writes require matching server timestamps and cannot edit or delete
   await assertSucceeds(writeCourse(db, reference.id, uid));
   await assertFails(updateDoc(reference, { ownerUid: "different-owner" }));
   await assertFails(deleteDoc(reference));
+});
+
+test("conjunto 3: estudiante verificado publica su entrada exacta, sin exigir migración del perfil", async () => {
+  const uid = "existing-student";
+  const email = "existing@example.test";
+  await seedProfile(uid, email);
+  const student = await publishStudent(uid, email);
+  const entry = await assertSucceeds(getDoc(doc(student, "student_directory", email)));
+  assert.equal(entry.data().uid, uid);
+  assert.equal(entry.data().email, email);
+  assert.equal(entry.data().updatedAt instanceof Timestamp, true);
+
+  await assertSucceeds(setDoc(
+    doc(student, "student_directory", email),
+    directoryData(uid, email, profile(email)),
+  ));
+  await assertSucceeds(deleteDoc(doc(student, "student_directory", email)));
+  await assertFails(getDocs(collection(student, "student_directory")));
+  await assertFails(getDocs(collection(student, "users")));
+});
+
+test("conjunto 3: directorio impide publicación ajena, sin verificar o falsificada", async () => {
+  const uid = "student";
+  const email = "student@example.test";
+  await seedProfile(uid, email);
+  const unverified = userContext(uid, email, false);
+  const verified = userContext(uid, email, true);
+  const anonymous = testEnvironment.unauthenticatedContext().firestore();
+  const reference = doc(verified, "student_directory", email);
+
+  await assertFails(setDoc(doc(anonymous, "student_directory", email), directoryData(uid, email)));
+  await assertFails(setDoc(doc(unverified, "student_directory", email), directoryData(uid, email)));
+  await assertFails(setDoc(reference, directoryData("other", email)));
+  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { name: "Suplantación" })));
+  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { email: "other@example.test" })));
+  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { extra: true })));
+  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { updatedAt: Timestamp.now() })));
+  await assertFails(setDoc(doc(verified, "student_directory", "other@example.test"), directoryData(uid, "other@example.test")));
+  await assertSucceeds(setDoc(reference, directoryData(uid, email)));
+  await assertFails(updateDoc(reference, { uid: "other", updatedAt: serverTimestamp() }));
+  await assertFails(deleteDoc(doc(userContext("other", "other@example.test", true), "student_directory", email)));
+});
+
+test("conjunto 3: docente conoce correo exacto, pero no enumera el directorio ni lee entradas obsoletas", async () => {
+  const studentUid = "student";
+  const oldEmail = "old@example.test";
+  await seedProfile(studentUid, oldEmail);
+  await publishStudent(studentUid, oldEmail);
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+  const entry = doc(teacher, "student_directory", oldEmail);
+  assert.equal((await assertSucceeds(getDoc(entry))).data().uid, studentUid);
+  assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", "unknown@example.test")))).exists(), false);
+  await assertFails(getDocs(collection(teacher, "student_directory")));
+  await assertFails(getDoc(doc(admin, "student_directory", oldEmail)));
+  await assertFails(getDoc(doc(userContext("teacher", "teacher@example.test", false), "student_directory", oldEmail)));
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", studentUid), profile("new@example.test"));
+  });
+  await assertFails(getDoc(entry));
+});
+
+test("conjunto 3: nuevo titular verificado recupera correo liberado sin tomar una entrada vigente", async () => {
+  const oldUid = "old-holder";
+  const newUid = "new-holder";
+  const releasedEmail = "released@example.test";
+  const nextEmail = "next@example.test";
+  await seedProfile(oldUid, releasedEmail, ["student"], { name: "Titular anterior" });
+  await seedProfile(newUid, releasedEmail, ["student"], { name: "Nuevo titular" });
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  const oldProfile = profile(releasedEmail, ["student"], { name: "Titular anterior" });
+  const newProfile = profile(releasedEmail, ["student"], { name: "Nuevo titular" });
+  const old = await publishStudent(oldUid, releasedEmail, oldProfile);
+  const fresh = userContext(newUid, releasedEmail, true);
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const oldPath = doc(old, "student_directory", releasedEmail);
+  const newPath = doc(fresh, "student_directory", releasedEmail);
+
+  await assertFails(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
+  assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", releasedEmail)))).data().uid, oldUid);
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", oldUid), profile(nextEmail, ["student"], { name: "Titular anterior" }));
+  });
+  await assertFails(getDoc(doc(teacher, "student_directory", releasedEmail)));
+  await assertSucceeds(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
+  const recovered = await assertSucceeds(getDoc(doc(teacher, "student_directory", releasedEmail)));
+  assert.equal(recovered.data().uid, newUid);
+  assert.equal(recovered.data().name, "Nuevo titular");
+  await assertFails(deleteDoc(oldPath));
+  await assertFails(setDoc(oldPath, directoryData(oldUid, releasedEmail, oldProfile)));
+  await assertSucceeds(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
+});
+
+test("conjunto 3: inscripción válida expone solo curso y bloques al estudiante inscrito", async () => {
+  const teacherUid = "teacher-a";
+  const studentUid = "student-a";
+  const teacherEmail = "teacher-a@example.test";
+  const studentEmail = "student-a@example.test";
+  const courseId = "course-a";
+  await seedProfile(teacherUid, teacherEmail, ["teacher"]);
+  await seedProfile(studentUid, studentEmail);
+  await seedCourse(teacherUid, courseId);
+  const teacher = userContext(teacherUid, teacherEmail, true);
+  const student = await publishStudent(studentUid, studentEmail);
+  const block = courseBlock().id;
+  const payload = enrollmentData(studentUid, teacherUid, studentEmail);
+  const enrolledRef = doc(teacher, "courses", courseId, "enrollments", studentUid);
+
+  await assertFails(getDoc(doc(student, "courses", courseId)));
+  await assertFails(getDoc(doc(student, "courses", courseId, "weekly_blocks", block)));
+  assert.equal(await assertSucceeds(enrollIdempotently(teacher, courseId, studentUid, payload)), "created");
+  assert.equal((await assertSucceeds(getDoc(enrolledRef))).data().status, "active");
+  const own = await assertSucceeds(getDocs(collection(teacher, "courses", courseId, "enrollments")));
+  assert.deepEqual(own.docs.map((entry) => entry.id), [studentUid]);
+  assert.equal((await assertSucceeds(getDoc(doc(student, "courses", courseId)))).data().subject, "Bases de Datos");
+  assert.equal((await assertSucceeds(getDoc(doc(student, "courses", courseId, "weekly_blocks", block)))).data().weekday, 1);
+  assert.equal((await assertSucceeds(getDocs(collection(student, "courses", courseId, "weekly_blocks")))).size, 1);
+  await assertFails(updateDoc(doc(student, "courses", courseId), { subject: "Ataque" }));
+  await assertFails(setDoc(doc(student, "courses", courseId, "weekly_blocks", "forged"), courseBlockDocument(courseBlock(), 0)));
+  await assertFails(getDocs(collection(student, "courses")));
+});
+
+test("conjunto 3: la consulta de grupo exige UID propio y no expone otras inscripciones", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedProfile("student-b", "student-b@example.test");
+  await seedCourse("teacher-a", "course-a");
+  await seedCourse("teacher-b", "course-b");
+  const teacherA = userContext("teacher-a", "teacher-a@example.test", true);
+  const teacherB = userContext("teacher-b", "teacher-b@example.test", true);
+  const studentA = await publishStudent("student-a", "student-a@example.test");
+  await publishStudent("student-b", "student-b@example.test");
+  await assertSucceeds(setDoc(doc(teacherA, "courses", "course-a", "enrollments", "student-a"), enrollmentData("student-a", "teacher-a", "student-a@example.test")));
+  await assertSucceeds(setDoc(doc(teacherB, "courses", "course-b", "enrollments", "student-b"), enrollmentData("student-b", "teacher-b", "student-b@example.test")));
+  const ownQuery = query(
+    collectionGroup(studentA, "enrollments"),
+    where("studentUid", "==", "student-a"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const own = await assertSucceeds(getDocs(ownQuery));
+  assert.deepEqual(own.docs.map((entry) => entry.id), ["student-a"]);
+  await assertFails(getDocs(collectionGroup(studentA, "enrollments")));
+  await assertFails(getDocs(query(collectionGroup(studentA, "enrollments"), where("studentUid", "==", "student-b"))));
+  await assertFails(getDoc(doc(studentA, "courses", "course-b")));
+  await assertFails(getDoc(doc(studentA, "courses", "course-b", "weekly_blocks", courseBlock().id)));
+  await assertFails(getDoc(doc(studentA, "courses", "course-b", "enrollments", "student-b")));
+  await assertFails(getDocs(collection(studentA, "courses", "course-a", "enrollments")));
+});
+
+test("conjunto 3: otro docente, estudiante y admin no pueden crear ni alterar matrículas", async () => {
+  const courseId = "course-a";
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher-a", courseId);
+  const teacherA = userContext("teacher-a", "teacher-a@example.test", true);
+  const teacherB = userContext("teacher-b", "teacher-b@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+  const student = await publishStudent("student", "student@example.test");
+  const anonymous = testEnvironment.unauthenticatedContext().firestore();
+  const payload = enrollmentData("student", "teacher-a", "student@example.test");
+  const path = ["courses", courseId, "enrollments", "student"];
+  await assertFails(setDoc(doc(student, ...path), payload));
+  await assertFails(setDoc(doc(teacherB, ...path), payload));
+  await assertFails(setDoc(doc(admin, ...path), payload));
+  await assertFails(setDoc(doc(anonymous, ...path), payload));
+  await assertFails(getDocs(collection(teacherB, "courses", courseId, "enrollments")));
+  await assertSucceeds(setDoc(doc(teacherA, ...path), payload));
+  await assertFails(updateDoc(doc(teacherA, ...path), { name: "Otro" }));
+  await assertFails(deleteDoc(doc(teacherA, ...path)));
+  await assertFails(updateDoc(doc(student, ...path), { status: "inactive" }));
+  await assertFails(deleteDoc(doc(student, ...path)));
+});
+
+test("conjunto 3: matrícula exige directorio y snapshots íntegros sin campos extra", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const base = enrollmentData("student", "teacher", "student@example.test");
+  const ref = doc(teacher, "courses", "course", "enrollments", "student");
+  await assertFails(setDoc(ref, base));
+  await publishStudent("student", "student@example.test");
+  const invalid = [
+    { studentUid: "other" }, { ownerUid: "other" }, { name: "Nombre falso" },
+    { email: "other@example.test" }, { studentCode: "STU-999" },
+    { subject: "Otra materia" }, { group: "Otro grupo" }, { period: "2030-1" },
+    { status: "pending" }, { createdAt: Timestamp.now() }, { roles: ["teacher"] },
+  ];
+  for (const variant of invalid) {
+    await assertFails(setDoc(ref, { ...base, ...variant }));
+  }
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", "student"), profile("student@example.test", ["teacher"]));
+  });
+  await assertFails(setDoc(ref, base));
+});
+
+test("conjunto 3: reintento es único; paginación, conteos y roles combinados conservan acceso", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["student", "teacher"]);
+  await seedProfile("other-teacher", "other-teacher@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test", ["student", "teacher"]);
+  await seedProfile("student-b", "student-b@example.test");
+  await seedCourse("teacher", "course-a");
+  await seedCourse("other-teacher", "course-b");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const otherTeacher = userContext("other-teacher", "other-teacher@example.test", true);
+  const studentA = await publishStudent("student-a", "student-a@example.test");
+  await publishStudent("student-b", "student-b@example.test");
+  const payloadA = enrollmentData("student-a", "teacher", "student-a@example.test");
+  const payloadB = enrollmentData("student-b", "teacher", "student-b@example.test");
+  assert.equal(await assertSucceeds(enrollIdempotently(teacher, "course-a", "student-a", payloadA)), "created");
+  const enrolledRef = doc(teacher, "courses", "course-a", "enrollments", "student-a");
+  const originalAt = (await getDoc(enrolledRef)).data().createdAt;
+  assert.equal(await assertSucceeds(enrollIdempotently(teacher, "course-a", "student-a", payloadA)), "already-enrolled");
+  await assertFails(setDoc(enrolledRef, payloadA));
+  assert.deepEqual((await getDoc(enrolledRef)).data().createdAt, originalAt);
+  await assertSucceeds(enrollIdempotently(teacher, "course-a", "student-b", payloadB));
+  const students = collection(teacher, "courses", "course-a", "enrollments");
+  const first = await assertSucceeds(getDocs(query(students, orderBy("createdAt", "desc"), orderBy(documentId(), "desc"), limit(1))));
+  const second = await assertSucceeds(getDocs(query(students, orderBy("createdAt", "desc"), orderBy(documentId(), "desc"), startAfter(first.docs[0]), limit(1))));
+  assert.equal(first.size + second.size, 2);
+  assert.equal((await assertSucceeds(getCountFromServer(students))).data().count, 2);
+
+  await assertSucceeds(enrollIdempotently(otherTeacher, "course-b", "student-a", enrollmentData("student-a", "other-teacher", "student-a@example.test")));
+  const ownCourses = await assertSucceeds(getDocs(query(collectionGroup(studentA, "enrollments"), where("studentUid", "==", "student-a"), orderBy("createdAt", "desc"), orderBy(documentId(), "desc"))));
+  assert.equal(ownCourses.size, 2);
+  await assertSucceeds(getDoc(doc(studentA, "courses", "course-a")));
+  await assertSucceeds(getDoc(doc(studentA, "courses", "course-b")));
+});
+
+test("conjunto 3: código opcional, perfil obsoleto y verificación controlan la matrícula", async () => {
+  const teacherUid = "teacher";
+  const teacherEmail = "teacher@example.test";
+  const studentUid = "student";
+  const studentEmail = "student@example.test";
+  const noCode = profile(studentEmail, ["student"], { studentCode: null });
+  await seedProfile(teacherUid, teacherEmail, ["teacher"]);
+  await seedProfile(studentUid, studentEmail, ["student"], { studentCode: null });
+  await seedCourse(teacherUid, "course");
+  const teacher = userContext(teacherUid, teacherEmail, true);
+  await publishStudent(studentUid, studentEmail, noCode);
+  const ref = doc(teacher, "courses", "course", "enrollments", studentUid);
+  const payload = enrollmentData(studentUid, teacherUid, studentEmail, noCode);
+  await assertSucceeds(setDoc(ref, payload));
+
+  const studentUnverified = userContext(studentUid, studentEmail, false);
+  await assertFails(getDoc(doc(studentUnverified, "courses", "course")));
+  await assertFails(getDoc(doc(studentUnverified, "courses", "course", "enrollments", studentUid)));
+  await assertFails(getDocs(query(collectionGroup(studentUnverified, "enrollments"), where("studentUid", "==", studentUid))));
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", studentUid), profile(studentEmail, ["student"], { name: "Nombre actualizado", studentCode: null }));
+  });
+  await assertFails(getDoc(doc(teacher, "student_directory", studentEmail)));
+  await assertFails(setDoc(doc(teacher, "courses", "course", "enrollments", "another"), enrollmentData("another", teacherUid, studentEmail, noCode)));
+  const student = userContext(studentUid, studentEmail, true);
+  await assertSucceeds(setDoc(doc(student, "student_directory", studentEmail), directoryData(studentUid, studentEmail, profile(studentEmail, ["student"], { name: "Nombre actualizado", studentCode: null }))));
+  assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", studentEmail)))).data().name, "Nombre actualizado");
 });

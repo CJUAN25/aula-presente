@@ -16,6 +16,9 @@ import 'package:aula_presente/features/courses/domain/course_cursor.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
 import 'package:aula_presente/features/courses/domain/course_page.dart';
 import 'package:aula_presente/features/courses/domain/course_repository.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
+import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
 
 class _FakeAuthRepository implements AuthRepository {
   AuthAccess restoreResult = const AuthAccess(
@@ -212,7 +215,45 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
   authRepository: repository,
   teacherAccessRepository: _FakeTeacherAccessRepository(),
   courseRepository: _FakeCourseRepository(),
+  enrollmentRepository: _FakeEnrollmentRepository(),
 );
+
+class _FakeEnrollmentRepository implements EnrollmentRepository {
+  @override
+  String? get currentUid => 'uid-estudiante';
+
+  @override
+  Future<void> ensureStudentDirectoryEntry() async {}
+
+  @override
+  Future<StudentCandidate?> findStudentByEmail(String email) async => null;
+
+  @override
+  Future<EnrollmentResult> enrollStudent({
+    required String courseId,
+    required StudentCandidate candidate,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<EnrollmentPage> listCourseStudents({
+    required String courseId,
+    EnrollmentCursor? cursor,
+    int pageSize = 25,
+  }) async => EnrollmentPage(items: const [], nextCursor: null);
+
+  @override
+  Future<EnrollmentPage> listMyCourses({
+    EnrollmentCursor? cursor,
+    int pageSize = 25,
+  }) async => EnrollmentPage(items: const [], nextCursor: null);
+
+  @override
+  Future<int> countCourseStudents(String courseId) async => 0;
+
+  @override
+  Future<Course> getMyEnrolledCourse(String courseId) async =>
+      throw UnimplementedError();
+}
 
 class _FakeCourseRepository implements CourseRepository {
   final List<Course> courses = [];

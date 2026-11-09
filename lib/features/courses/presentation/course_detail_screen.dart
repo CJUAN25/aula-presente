@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../app/theme/app_theme.dart';
+import '../../../app/enrollment_repository_scope.dart';
+import '../../enrollments/presentation/teacher_enrollment_screens.dart';
 import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/planned_meeting.dart';
 import '../../schedule/domain/planned_meeting_generator.dart';
@@ -68,6 +70,28 @@ class CourseDetailScreen extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 20),
+          CourseSectionHeading(
+            title: 'Estudiantes y matrícula',
+            trailing: TextButton.icon(
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => TeacherEnrollmentHubScreen(
+                    course: course,
+                    repository: EnrollmentRepositoryScope.read(context),
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.groups_2_outlined, size: 18),
+              label: const Text('Gestionar'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const CourseStateCard(
+            title: 'Inscripción manual',
+            message: 'Agrega cuentas existentes y consulta estudiantes inscritos. Excel e invitaciones estarán disponibles después.',
+            icon: Icons.group_add_outlined,
           ),
           const SizedBox(height: 20),
           CourseSectionHeading(

@@ -1,3 +1,7 @@
-# Matrículas
+# Inscripciones
 
-Responsabilidad futura: vínculo de una persona con un curso, estado y fechas de vigencia, solicitudes de ingreso e historial conservado al retirar de listas activas.
+El conjunto 3 añade la inscripción manual de cuentas existentes en un curso propio del docente y la consulta de materias del estudiante. `domain/` define modelos, paginación, resultado idempotente, errores y contrato; `application/` valida entradas; `data/` habla con Firebase Authentication y Cloud Firestore; `presentation/` conecta las vistas de docente y estudiante. El curso y sus bloques siguen en `courses` y `schedule`.
+
+La inscripción canónica es `courses/{courseId}/enrollments/{studentUid}` y contiene un snapshot mínimo de la identidad y del curso para las dos listas. El ID estable impide duplicados; no hay contador materializado. `student_directory/{email}` permite consultar un correo exacto conocido sin listar perfiles privados: su titular verificado publica su entrada al entrar al espacio estudiante. Las cuentas existentes deben volver a abrir ese espacio para aparecer en la búsqueda. El código estudiantil es opcional en perfiles existentes; si el docente lo introduce se coteja sin eliminar ceros.
+
+Los contratos, permisos, consultas, estados y pruebas se detallan en [el seguimiento](../../../docs/seguimiento_conjunto_3.md). El usuario informó que publicó las reglas y el índice y comprobó el conjunto en el TECNO; [la guía de activación](../../../docs/activacion_conjunto_3.md) conserva el procedimiento. Excel, invitaciones, retiro e historial de matrícula se implementarán en otros conjuntos.

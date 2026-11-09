@@ -18,11 +18,15 @@ firebase emulators:exec --only firestore --project demo-aula-presente-firestore-
 
 La ruta de Java se puede ajustar si el JDK está instalado en otra ubicación.
 
-La suite contiene 41 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
+La suite contiene 50 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
 los permisos de perfiles, `demo_records` y solicitud/aprobación docente; también
 cubre cursos padre y la subcolección `weekly_blocks`, creación atómica de hasta
 ocho bloques, ocurrencias, solapes, consultas y lecturas privadas por propietario,
-timestamps, inmutabilidad e idempotencia. Los perfiles de admin/docente usados
+timestamps, inmutabilidad e idempotencia. El conjunto 3 añade publicación de un
+directorio de correo exacto sin enumeración, inscripciones únicas bajo cursos,
+consulta de grupo filtrada por UID, conteos, paginación y acceso del estudiante al
+curso y a sus bloques; prueba identidades falsas, roles insuficientes, entradas
+obsoletas y código estudiantil opcional. Los perfiles de admin/docente usados
 como fixtures se crean solo con `withSecurityRulesDisabled` dentro del emulador.
 
 La suite valida las reglas y el patrón transaccional desde el cliente JS; no ejecuta

@@ -157,6 +157,50 @@ class FirestoreCourseRepository implements CourseRepository {
     );
   }
 
+  /// Reads an enrolled student's authorized course and its canonical blocks.
+  /// Firestore rules check the student's enrollment for both parent and child
+  /// reads; this method never widens teacher course-list queries.
+  Future<Course> getEnrolledCourse(String courseId) async {
+    try {
+      if (courseId.isEmpty || courseId.contains('/')) {
+        throw const CourseFailure(CourseFailureKind.invalidCourse);
+      }
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw const CourseFailure(CourseFailureKind.unauthenticated);
+      }
+      final uid = user.uid;
+      if (!user.emailVerified) {
+        throw const CourseFailure(CourseFailureKind.emailNotVerified);
+      }
+      final reference = _courses.doc(courseId);
+      final document = await reference.get(
+        const GetOptions(source: Source.server),
+      );
+      _requireSameUser(uid);
+      final data = document.data();
+      if (!document.exists || data == null || data['ownerUid'] is! String) {
+        throw const CourseFailure(CourseFailureKind.invalidCourse);
+      }
+      final blocks = await _weeklyBlocks(courseId)
+          .orderBy('order')
+          .get(const GetOptions(source: Source.server));
+      _requireSameUser(uid);
+      return _courseFromDocument(
+        document,
+        blockDocuments: blocks.docs
+            .cast<DocumentSnapshot<Map<String, dynamic>>>(),
+        expectedOwnerUid: data['ownerUid'] as String,
+      );
+    } on CourseFailure {
+      rethrow;
+    } on FirebaseException catch (error) {
+      throw _translate(error);
+    } on FormatException catch (error) {
+      throw CourseFailure(CourseFailureKind.invalidCourse, cause: error);
+    }
+  }
+
   @override
   Future<CourseCreationResult> createCourse(CourseDraft draft) async {
     try {
