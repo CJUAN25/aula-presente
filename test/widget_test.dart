@@ -16,6 +16,11 @@ import 'package:aula_presente/features/courses/domain/course_cursor.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
 import 'package:aula_presente/features/courses/domain/course_page.dart';
 import 'package:aula_presente/features/courses/domain/course_repository.dart';
+import 'package:aula_presente/features/course_entry/domain/course_entry_repository.dart';
+import 'package:aula_presente/features/course_entry/domain/course_invitation.dart';
+import 'package:aula_presente/features/course_entry/domain/course_preview.dart';
+import 'package:aula_presente/features/course_entry/domain/join_request.dart';
+import 'package:aula_presente/features/course_entry/domain/join_request_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
@@ -146,7 +151,7 @@ class _FakeTeacherAccessRepository
   }) => teacher_access.TeacherAccessRequest(
     uid: uid,
     name: 'Ana Pérez',
-    email: 'ana@udla.edu.co',
+    email: 'ana@example.test',
     studentCode: 'A123',
     status: status,
     createdAt: DateTime.utc(2026, 10, 28),
@@ -216,7 +221,78 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
   teacherAccessRepository: _FakeTeacherAccessRepository(),
   courseRepository: _FakeCourseRepository(),
   enrollmentRepository: _FakeEnrollmentRepository(),
+  courseEntryRepository: _FakeCourseEntryRepository(),
 );
+
+class _FakeCourseEntryRepository implements CourseEntryRepository {
+  @override
+  String? get currentUid => null;
+
+  @override
+  Future<CourseInvitation?> getCurrentInvitation(String courseId) async => null;
+
+  @override
+  Future<CourseInvitation> createOrGetInvitation(
+    String courseId, {
+    Duration validity = CourseInvitation.defaultValidity,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<CourseInvitation> renewInvitation(
+    String courseId, {
+    Duration validity = CourseInvitation.defaultValidity,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<CourseInvitation> updateInvitationValidity(
+    String courseId,
+    Duration validity,
+  ) async => throw UnimplementedError();
+
+  @override
+  Future<CourseInvitation> pauseInvitation(String courseId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<CourseInvitation> reactivateInvitation(String courseId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> deactivateInvitation(String courseId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<CoursePreview> findCourseByCode(String input) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<JoinRequestResult> requestJoin(String input) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<JoinRequest?> getMyRequest(String courseId) async => null;
+
+  @override
+  Future<JoinRequestPage> listMyRequests({
+    JoinRequestCursor? cursor,
+    int pageSize = 25,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<JoinRequestPage> listCourseRequests(
+    String courseId, {
+    JoinRequestCursor? cursor,
+    int pageSize = 25,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<JoinDecisionResult> decideJoinRequest({
+    required String courseId,
+    required String studentUid,
+    required JoinRequestDecision decision,
+    String? rejectionReason,
+  }) async => throw UnimplementedError();
+}
 
 class _FakeEnrollmentRepository implements EnrollmentRepository {
   @override
@@ -315,7 +391,7 @@ void main() {
 
     await tester.enterText(
       find.byType(TextFormField).at(0),
-      'persona@udla.edu.co',
+      'persona@example.test',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'clave-segura');
     await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
@@ -338,7 +414,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(
         find.byType(TextFormField).first,
-        'persona@udla.edu.co',
+        'persona@example.test',
       );
       await tester.tap(find.widgetWithText(FilledButton, 'Enviar enlace'));
       await tester.pumpAndSettle();
@@ -349,7 +425,7 @@ void main() {
         find.textContaining('Si el correo está registrado'),
         findsOneWidget,
       );
-      expect(find.text('persona@udla.edu.co'), findsNothing);
+      expect(find.text('persona@example.test'), findsNothing);
 
       await tester.tap(find.text('Volver al inicio de sesión'));
       await tester.pumpAndSettle();
@@ -363,13 +439,13 @@ void main() {
     final repository = _FakeAuthRepository()
       ..loginResult = const AuthAccess(
         status: AuthAccessStatus.verificationRequired,
-        email: 'persona@udla.edu.co',
+        email: 'persona@example.test',
       );
     await _openLogin(tester, repository);
 
     await tester.enterText(
       find.byType(TextFormField).at(0),
-      'persona@udla.edu.co',
+      'persona@example.test',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'clave-segura');
     await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
@@ -394,7 +470,7 @@ void main() {
     repository.refreshResult = const AuthAccess(
       status: AuthAccessStatus.student,
       uid: 'uid-estudiante',
-      email: 'persona@udla.edu.co',
+      email: 'persona@example.test',
       name: 'Persona Estudiante',
       roles: ['student'],
     );
@@ -417,7 +493,7 @@ void main() {
         ..loginResult = const AuthAccess(
           status: AuthAccessStatus.student,
           uid: 'uid-estudiante',
-          email: 'ana@udla.edu.co',
+          email: 'ana@example.test',
           name: 'Ana Pérez',
           roles: ['student'],
         );
@@ -425,7 +501,7 @@ void main() {
 
       await tester.enterText(
         find.byType(TextFormField).at(0),
-        'ana@udla.edu.co',
+        'ana@example.test',
       );
       await tester.enterText(find.byType(TextFormField).at(1), 'clave-segura');
       await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
@@ -459,14 +535,14 @@ void main() {
       ..loginResult = const AuthAccess(
         status: AuthAccessStatus.accessAvailable,
         uid: 'uid-admin',
-        email: 'admin@udla.edu.co',
+        email: 'admin@example.test',
         roles: ['admin'],
       );
     await _openLogin(tester, repository);
 
     await tester.enterText(
       find.byType(TextFormField).at(0),
-      'admin@udla.edu.co',
+      'admin@example.test',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'clave-segura');
     await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
@@ -489,14 +565,14 @@ void main() {
       ..loginResult = const AuthAccess(
         status: AuthAccessStatus.accessAvailable,
         uid: 'uid-docente',
-        email: 'docente@udla.edu.co',
+        email: 'docente@example.test',
         name: 'Docente de prueba',
         roles: ['teacher'],
       );
     await _openLogin(tester, repository);
     await tester.enterText(
       find.byType(TextFormField).at(0),
-      'docente@udla.edu.co',
+      'docente@example.test',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'clave-segura');
     await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
@@ -512,7 +588,7 @@ void main() {
       const AuthAccess(
         status: AuthAccessStatus.student,
         uid: 'uid-docente',
-        email: 'docente@udla.edu.co',
+        email: 'docente@example.test',
         roles: ['student'],
       ),
     );
@@ -529,7 +605,7 @@ void main() {
       ..restoreResult = const AuthAccess(
         status: AuthAccessStatus.student,
         uid: 'uid-estudiante',
-        email: 'ana@udla.edu.co',
+        email: 'ana@example.test',
         name: 'Ana Pérez',
         roles: ['student'],
       );
@@ -551,7 +627,7 @@ void main() {
       ..restoreResult = const AuthAccess(
         status: AuthAccessStatus.profileMissing,
         uid: 'uid-sin-perfil',
-        email: 'persona@udla.edu.co',
+        email: 'persona@example.test',
       );
     await tester.pumpWidget(_testApp(repository));
     await tester.pumpAndSettle();

@@ -1,4 +1,14 @@
-# Estado actual — 8 de noviembre de 2026
+# Estado actual — 11 de noviembre de 2026
+
+## Conjunto funcional 4: ingreso por código temporal
+
+La rama `feature/conjunto-4-ingreso-por-codigo` parte de `e4b557407a8336595a6f2ec8bbd63d06eefdf302`. El propietario informó primero dos fallos al consultar códigos nuevos en su TECNO. Codex reprodujo localmente la causa: el estudiante leía indebidamente `invitation/current`, privado del docente; esa denegación se convertía en código no disponible. Se corrigió consulta y envío para usar solo el índice autorizado, manteniendo las reglas privadas.
+
+**Validación real informada por el propietario:** publicó reglas e índices; en el TECNO generó y renovó códigos con distinta vigencia, comprobó que desactivar impide su uso, envió una solicitud con un código nuevo, la aprobó y vio la materia y el horario en Mis materias del estudiante. Codex no ejecutó esas operaciones ni consultó Firebase real.
+
+**Cierre de presentación:** Gestionar invitación muestra el código, Copiar, estado y vencimiento. Permite renovar, editar y desactivar; no ofrece pausar. Una invitación pausada previamente conserva Reactivar o Renovar. La operación de pausa permanece en repositorio y reglas para documentos existentes. `validForSeconds` sigue siendo la única configuración de duración, con 14 días para documentos antiguos. Las acciones conservan solicitudes, decisiones y matrículas; la vigencia y transiciones se validan en el servidor.
+
+**Comprobaciones de Codex:** la corrección previa pasó 70/70 pruebas de reglas en emulador ficticio, sin diagnósticos del límite de 1.000 expresiones. El cierre de pantalla se verifica con Flutter, análisis y APK debug; los resultados finales están en [seguimiento](seguimiento_conjunto_4.md). **Pendiente:** revisar visualmente esta pantalla simplificada en el TECNO con la APK nueva. Esta limpieza no modifica reglas ni índices y no requiere otro despliegue de Firebase. `main` y la release privada permanecen separados de la rama. Instrucciones: [activación](activacion_conjunto_4.md).
 
 ## Cierre del conjunto 3
 

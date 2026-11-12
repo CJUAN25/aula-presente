@@ -5,7 +5,8 @@ Cada carpeta delimita una función. Las capas de presentación, lógica de negoc
 - [`auth`](auth/README.md): registro, verificación, inicio, recuperación y cierre de sesión.
 - [`profiles`](profiles/README.md): perfil y relación de una cuenta con sus permisos.
 - [`courses`](courses/README.md): cursos oficiales por materia, grupo y período.
-- [`enrollments`](enrollments/README.md): matrículas, vigencias y solicitudes de ingreso.
+- [`enrollments`](enrollments/README.md): matrícula canónica, inscripción manual y consulta de materias.
+- [`course_entry`](course_entry/README.md): invitaciones temporales por código y solicitudes de ingreso.
 - [`schedule`](schedule/README.md): horarios definidos por docentes para cursos.
 - [`sessions`](sessions/README.md): ocurrencias de clase, cancelaciones, reposiciones y cambios.
 - [`attendance`](attendance/README.md): registros por sesión, métodos, tardanzas y correcciones.

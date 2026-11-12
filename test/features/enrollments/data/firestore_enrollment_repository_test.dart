@@ -121,6 +121,7 @@ void main() {
       expect(store.transactionReads, [
         'courses/course-00',
         'courses/course-00/enrollments/student-one',
+        'courses/course-00/join_requests/student-one',
         'student_directory/student@example.invalid',
       ]);
 
@@ -137,7 +138,115 @@ void main() {
       expect(store.transactionReads, [
         'courses/course-00',
         'courses/course-00/enrollments/student-one',
+        'courses/course-00/join_requests/student-one',
       ]);
+    },
+  );
+
+  test('manual enrollment approves a pending request atomically', () async {
+    final store = _Store()
+      ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+
+    final result = await repository.enrollStudent(
+      courseId: 'course-00',
+      candidate: const StudentCandidate(
+        uid: 'student-one',
+        name: 'Student One',
+        email: 'student@example.invalid',
+        studentCode: '0012',
+      ),
+    );
+
+    expect(result.alreadyEnrolled, isFalse);
+    expect(
+      store.transactionUpdatePath,
+      'courses/course-00/join_requests/student-one',
+    );
+    expect(store.transactionUpdate, {
+      'status': 'approved',
+      'decidedBy': 'teacher-one',
+      'decidedAt': isA<FieldValue>(),
+      'rejectionReason': null,
+    });
+    expect(store.joinRequest!['status'], 'approved');
+    expect(
+      store.transactionWritePath,
+      'courses/course-00/enrollments/student-one',
+    );
+    expect(store.transactionWriteCount, 1);
+  });
+
+  test('manual enrollment preserves a prior rejected request', () async {
+    final store = _Store()
+      ..joinRequest = {
+        'studentUid': 'student-one',
+        'status': 'rejected',
+        'rejectionReason': 'Grupo completo',
+      };
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+
+    await repository.enrollStudent(
+      courseId: 'course-00',
+      candidate: const StudentCandidate(
+        uid: 'student-one',
+        name: 'Student One',
+        email: 'student@example.invalid',
+        studentCode: '0012',
+      ),
+    );
+
+    expect(store.transactionUpdatePath, isNull);
+    expect(store.joinRequest!['status'], 'rejected');
+    expect(store.joinRequest!['rejectionReason'], 'Grupo completo');
+  });
+
+  test(
+    'existing enrollment resolves a pending request without rewriting it',
+    () async {
+      final store = _Store()
+        ..existingEnrollment = {
+          'studentUid': 'student-one',
+          'ownerUid': 'teacher-one',
+          'name': 'Original snapshot',
+          'email': 'student@example.invalid',
+          'studentCode': '0012',
+          'subject': 'Course 0',
+          'group': 'G1',
+          'period': '2026-2',
+          'status': 'active',
+          'createdAt': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
+        }
+        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Current name',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+      );
+
+      expect(result.alreadyEnrolled, isTrue);
+      expect(result.enrollment.name, 'Original snapshot');
+      expect(store.transactionWriteCount, 0);
+      expect(
+        store.transactionUpdatePath,
+        'courses/course-00/join_requests/student-one',
+      );
+      expect(store.joinRequest!['status'], 'approved');
     },
   );
 }
@@ -179,7 +288,10 @@ class _Store implements FirebaseFirestore {
   String? transactionWritePath;
   int transactionWriteCount = 0;
   final transactionReads = <String>[];
+  String? transactionUpdatePath;
+  Map<String, dynamic>? transactionUpdate;
   Map<String, dynamic>? existingEnrollment;
+  Map<String, dynamic>? joinRequest;
   bool directoryAvailable = true;
 
   @override
@@ -200,6 +312,9 @@ class _Store implements FirebaseFirestore {
         ...transactionWrite!,
         'createdAt': Timestamp.fromDate(DateTime.utc(2026, 11, 5)),
       };
+    }
+    if (transactionUpdate != null && joinRequest != null) {
+      joinRequest = {...joinRequest!, ...transactionUpdate!};
     }
     return result;
   }
@@ -373,6 +488,8 @@ class _FakeTransaction implements Transaction {
       }
     } else if (path == 'courses/course-00/enrollments/student-one') {
       value = store.existingEnrollment;
+    } else if (path == 'courses/course-00/join_requests/student-one') {
+      value = store.joinRequest;
     } else {
       throw StateError('Unexpected transaction read: $path');
     }
@@ -391,6 +508,16 @@ class _FakeTransaction implements Transaction {
     store.transactionWritePath = reference.path;
     store.transactionWrite = data as Map<String, dynamic>;
     store.transactionWriteCount++;
+    return this;
+  }
+
+  @override
+  Transaction update(
+    DocumentReference<Object?> reference,
+    Map<Object, Object?> data,
+  ) {
+    store.transactionUpdatePath = reference.path;
+    store.transactionUpdate = data.cast<String, dynamic>();
     return this;
   }
 

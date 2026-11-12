@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/course_entry_repository_scope.dart';
 import '../../../app/theme/app_theme.dart';
+import '../../course_entry/presentation/course_invitation_screens.dart';
+import '../../course_entry/presentation/teacher_join_request_screens.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_presentation_components.dart';
 import '../application/enrollment_validator.dart';
@@ -87,6 +90,24 @@ class _TeacherEnrollmentHubScreenState
     if (mounted) _refresh();
   }
 
+  Future<void> _openInvitation() => Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => CourseInvitationScreen(
+        course: widget.course,
+        repository: CourseEntryRepositoryScope.read(context),
+      ),
+    ),
+  );
+
+  Future<void> _openJoinRequests() => Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => TeacherJoinRequestsScreen(
+        course: widget.course,
+        repository: CourseEntryRepositoryScope.read(context),
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) =>
       widget.repository.currentUid != widget.course.ownerUid
@@ -150,15 +171,17 @@ class _TeacherEnrollmentHubScreenState
                 iconAsset: '19383.svg',
                 onTap: _openAdd,
               ),
-              const EnrollmentTile(
+              EnrollmentTile(
                 title: 'Invitar a mi curso',
-                subtitle: 'Disponible en una entrega posterior',
+                subtitle: 'Código temporal · aprobación docente',
                 iconAsset: '9c45e.svg',
+                onTap: _openInvitation,
               ),
-              const EnrollmentTile(
+              EnrollmentTile(
                 title: 'Solicitudes',
-                subtitle: 'Disponible en una entrega posterior',
+                subtitle: 'Revisa y decide ingresos pendientes',
                 iconAsset: '19383.svg',
+                onTap: _openJoinRequests,
               ),
               EnrollmentTile(
                 title: 'Lista de estudiantes',

@@ -115,6 +115,10 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
       final courseRef = _courses.doc(courseId);
       final directoryRef = _directory.doc(candidate.email);
       final enrollmentRef = _enrollments(courseId).doc(candidate.uid);
+      final joinRequestRef = _courses
+          .doc(courseId)
+          .collection('join_requests')
+          .doc(candidate.uid);
 
       // A retry reads the same stable document ID. Nothing after this
       // transaction is required to declare a confirmed write successful.
@@ -122,6 +126,7 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
         _requireSameUser(uid);
         final courseDoc = await tx.get(courseRef);
         final existingDoc = await tx.get(enrollmentRef);
+        final joinRequestDoc = await tx.get(joinRequestRef);
         _requireSameUser(uid);
 
         final course = courseDoc.data();
@@ -145,6 +150,16 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
             throw const EnrollmentFailure(
               EnrollmentFailureKind.permissionDenied,
             );
+          }
+          if (joinRequestDoc.exists &&
+              joinRequestDoc.data()?['status'] == 'pending') {
+            _requireSameUser(uid);
+            tx.update(joinRequestRef, {
+              'status': 'approved',
+              'decidedBy': uid,
+              'decidedAt': FieldValue.serverTimestamp(),
+              'rejectionReason': null,
+            });
           }
           return EnrollmentResult(
             enrollment: enrollment,
@@ -194,6 +209,16 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
           'status': enrollment.status,
           'createdAt': FieldValue.serverTimestamp(),
         });
+        if (joinRequestDoc.exists &&
+            joinRequestDoc.data()?['status'] == 'pending') {
+          _requireSameUser(uid);
+          tx.update(joinRequestRef, {
+            'status': 'approved',
+            'decidedBy': uid,
+            'decidedAt': FieldValue.serverTimestamp(),
+            'rejectionReason': null,
+          });
+        }
         return EnrollmentResult(enrollment: enrollment, alreadyEnrolled: false);
       });
     } on EnrollmentFailure {

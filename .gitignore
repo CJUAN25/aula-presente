@@ -50,6 +50,7 @@ app.*.map.json
 # Machine-specific and generated platform files
 /android/local.properties
 /android/.gradle/
+/android/build/
 /ios/Flutter/Generated.xcconfig
 /ios/Flutter/flutter_export_environment.sh
 /ios/Flutter/ephemeral/

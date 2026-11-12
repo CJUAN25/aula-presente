@@ -327,12 +327,15 @@ service cloud.firestore {
     }
 
     function canWriteDirectory(email, entry) {
-      return verifiedStudent()
+      // The current-profile check validates the student role and profile email.
+      // Check cheap request identity first to avoid revalidating the same
+      // profile through both verifiedStudent() and directoryMatchesCurrentProfile().
+      return emailVerified()
         && email == request.auth.token.email
         && entry.uid == request.auth.uid
         && entry.email == email
-        && directoryMatchesCurrentProfile(entry)
-        && entry.updatedAt == request.time;
+        && entry.updatedAt == request.time
+        && directoryMatchesCurrentProfile(entry);
     }
 
     function validEnrollmentShape(enrollment) {
@@ -360,28 +363,420 @@ service cloud.firestore {
         && enrollment.createdAt is timestamp;
     }
 
-    function canCreateEnrollment(courseId, studentUid) {
+    function validInvitationCode(code) {
+      return code is string
+        && code.matches('^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{16}$');
+    }
+
+    function currentInvitationPath(courseId) {
+      return /databases/$(database)/documents/courses/$(courseId)/invitation/current;
+    }
+
+    function courseInvitePath(code) {
+      return /databases/$(database)/documents/course_invites/$(code);
+    }
+
+    function joinRequestPath(courseId, studentUid) {
+      return /databases/$(database)/documents/courses/$(courseId)/join_requests/$(studentUid);
+    }
+
+    function validCurrentInvitation(invitation) {
+      return invitation.keys().size() in [4, 5]
+        && invitation.keys().hasAll([
+          'code', 'status', 'createdAt', 'updatedAt'
+        ])
+        && invitation.keys().hasOnly([
+          'code', 'status', 'createdAt', 'updatedAt', 'validForSeconds'
+        ])
+        && validInvitationCode(invitation.code)
+        && invitation.status in ['active', 'paused', 'inactive']
+        && invitation.createdAt is timestamp
+        && invitation.updatedAt is timestamp
+        && (!('validForSeconds' in invitation)
+          || (invitation.validForSeconds is int
+            && invitation.validForSeconds >= 3600
+            && invitation.validForSeconds <= 7776000));
+    }
+
+    // One lifetime source: total seconds from the immutable server-createdAt.
+    // Old four-field documents retain their original fourteen-day contract.
+    function invitationValiditySeconds(invitation) {
+      return 'validForSeconds' in invitation
+        ? invitation.validForSeconds : 1209600;
+    }
+
+    function invitationExpiresAt(invitation) {
+      return invitation.createdAt
+        + duration.value(invitationValiditySeconds(invitation), 's');
+    }
+
+    function validCourseInvite(invitation) {
+      return invitation.keys().size() == 5
+        && invitation.keys().hasAll([
+          'courseId', 'subject', 'group', 'period', 'createdAt'
+        ])
+        && invitation.courseId is string
+        && invitation.courseId.size() > 0
+        && nonBlankCourseText(invitation.subject, 120)
+        && nonBlankCourseText(invitation.group, 40)
+        && nonBlankCourseText(invitation.period, 32)
+        && invitation.createdAt is timestamp;
+    }
+
+    function currentCourseInvite(code, courseId) {
+      let invitePath = courseInvitePath(code);
+      let currentPath = currentInvitationPath(courseId);
+      let invite = get(invitePath).data;
+      let current = get(currentPath).data;
+      return exists(invitePath)
+        && exists(currentPath)
+        && validCourseInvite(invite)
+        && validCurrentInvitation(current)
+        && invite.courseId == courseId
+        && invite.createdAt == current.createdAt
+        && current.code == code
+        && current.status == 'active'
+        && request.time < invitationExpiresAt(current);
+    }
+
+    function validJoinRequest(requestData) {
+      return requestData.keys().size() == 13
+        && requestData.keys().hasAll([
+          'studentUid', 'name', 'email', 'studentCode', 'subject', 'group',
+          'period', 'invitationCode', 'status', 'createdAt', 'decidedBy',
+          'decidedAt', 'rejectionReason'
+        ])
+        && requestData.studentUid is string
+        && requestData.name is string
+        && requestData.name.size() >= 1
+        && requestData.name.size() <= 100
+        && requestData.email is string
+        && requestData.email.size() >= 3
+        && requestData.email.size() <= 254
+        && validStudentCode(requestData.studentCode)
+        && nonBlankCourseText(requestData.subject, 120)
+        && nonBlankCourseText(requestData.group, 40)
+        && nonBlankCourseText(requestData.period, 32)
+        && validInvitationCode(requestData.invitationCode)
+        && requestData.status in ['pending', 'approved', 'rejected']
+        && requestData.createdAt is timestamp
+        && (requestData.decidedBy == null || requestData.decidedBy is string)
+        && (requestData.decidedAt == null || requestData.decidedAt is timestamp)
+        && (
+          requestData.rejectionReason == null
+          || (
+            requestData.rejectionReason is string
+            && requestData.rejectionReason.size() >= 1
+            && requestData.rejectionReason.size() <= 500
+          )
+        );
+    }
+
+    function currentCourseExistsAndOwned(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      return exists(coursePath)
+        && get(coursePath).data.ownerUid == request.auth.uid;
+    }
+
+    function matchingInviteAfter(courseId, code, inviteData) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let currentAfter = getAfter(currentInvitationPath(courseId)).data;
+      let course = get(coursePath).data;
+      return exists(coursePath)
+        && validCourseInvite(inviteData)
+        && validCurrentInvitation(currentAfter)
+        && 'validForSeconds' in currentAfter
+        && currentAfter.code == code
+        && currentAfter.status == 'active'
+        && currentAfter.createdAt == request.time
+        && currentAfter.updatedAt == request.time
+        && inviteData.courseId == courseId
+        && inviteData.subject == course.subject
+        && inviteData.group == course.group
+        && inviteData.period == course.period
+        && inviteData.createdAt == request.time;
+    }
+
+    function canCreateCurrentInvitation(courseId) {
+      let code = request.resource.data.code;
+      return verifiedTeacher()
+        && validInvitationCode(code)
+        // Detect collisions before evaluating the cross-document snapshots.
+        && !exists(courseInvitePath(code))
+        && currentCourseExistsAndOwned(courseId)
+        && validCurrentInvitation(request.resource.data)
+        && request.resource.data.status == 'active'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && matchingInviteAfter(
+          courseId,
+          code,
+          getAfter(courseInvitePath(code)).data
+        );
+    }
+
+    function canUpdateCurrentInvitation(courseId) {
+      let next = request.resource.data;
+      return verifiedTeacher()
+        && currentCourseExistsAndOwned(courseId)
+        && validCurrentInvitation(resource.data)
+        && validCurrentInvitation(next)
+        && next.updatedAt == request.time
+        && (
+          (
+            next.status == 'active'
+            && next.code != resource.data.code
+            && !exists(courseInvitePath(next.code))
+            && next.createdAt == request.time
+            && next.updatedAt == request.time
+            && matchingInviteAfter(
+              courseId,
+              next.code,
+              getAfter(courseInvitePath(next.code)).data
+            )
+          )
+          || (
+            canChangeSameInvitation(resource.data, next)
+          )
+        );
+    }
+
+    function canChangeSameInvitation(previous, next) {
+      let sameValidity = invitationValiditySeconds(previous)
+        == invitationValiditySeconds(next);
+      let onlyStatus = next.diff(previous).affectedKeys()
+        .hasOnly(['status', 'updatedAt']);
+      return previous.status != 'inactive'
+        && next.code == previous.code
+        && next.createdAt == previous.createdAt
+        && next.diff(previous).affectedKeys()
+          .hasOnly(['status', 'updatedAt', 'validForSeconds'])
+        && (
+          (next.status == 'inactive' && sameValidity && onlyStatus)
+          || (request.time < invitationExpiresAt(previous)
+            && (
+              (sameValidity && onlyStatus && (
+                (previous.status == 'active' && next.status == 'paused')
+                || (previous.status == 'paused' && next.status == 'active')
+              ))
+              || (next.status == previous.status
+                && 'validForSeconds' in next
+                && request.time < invitationExpiresAt(next))
+            ))
+        );
+    }
+
+    function canReadCurrentCourseInvite(code, courseId) {
+      return verifiedStudent()
+        && validInvitationCode(code)
+        && currentCourseInvite(code, courseId);
+    }
+
+    function canCreateCourseInvite(code) {
+      let invite = request.resource.data;
+      return verifiedTeacher()
+        && validInvitationCode(code)
+        && validCourseInvite(invite)
+        && currentCourseExistsAndOwned(invite.courseId)
+        && matchingInviteAfter(invite.courseId, code, invite);
+    }
+
+    function canCreateJoinRequest(courseId, studentUid) {
+      let requestData = request.resource.data;
+      let profilePath = /databases/$(database)/documents/users/$(studentUid);
+      let profile = get(profilePath).data;
+      let invitePath = courseInvitePath(requestData.invitationCode);
+      let invite = get(invitePath).data;
+      let currentPath = currentInvitationPath(courseId);
+      let current = get(currentPath).data;
+      let enrollment = enrollmentPath(courseId, studentUid);
+      return emailVerified()
+        && request.auth.uid == studentUid
+        && validJoinRequest(requestData)
+        && requestData.status == 'pending'
+        && requestData.createdAt == request.time
+        && requestData.decidedBy == null
+        && requestData.decidedAt == null
+        && requestData.rejectionReason == null
+        && !existsAfter(enrollment)
+        && exists(profilePath)
+        && validProfileShape(profile)
+        && profile.email == request.auth.token.email
+        && profile.roles.hasAny(['student'])
+        && profile.email == requestData.email
+        && profile.name == requestData.name
+        && profile.studentCode == requestData.studentCode
+        && exists(invitePath)
+        && exists(currentPath)
+        && invite.courseId == courseId
+        && invite.createdAt == current.createdAt
+        && current.code == requestData.invitationCode
+        && current.status == 'active'
+        && request.time < invitationExpiresAt(current)
+        && requestData.subject == invite.subject
+        && requestData.group == invite.group
+        && requestData.period == invite.period;
+    }
+
+    function canCreateEnrollmentFromJoinRequest(courseId, studentUid, course, enrollment) {
+      let requestPath = joinRequestPath(courseId, studentUid);
+      let requestBefore = get(requestPath).data;
+      let requestAfter = getAfter(requestPath).data;
+      return exists(requestPath)
+        && requestBefore.studentUid == studentUid
+        && requestBefore.status == 'pending'
+        && requestAfter.status == 'approved'
+        && requestAfter.decidedBy == request.auth.uid
+        && requestAfter.decidedAt == request.time
+        && enrollment.studentUid == studentUid
+        && enrollment.ownerUid == request.auth.uid
+        && enrollment.name == requestBefore.name
+        && enrollment.email == requestBefore.email
+        && enrollment.studentCode == requestBefore.studentCode
+        && requestBefore.subject == course.subject
+        && requestBefore.group == course.group
+        && requestBefore.period == course.period
+        && enrollment.subject == course.subject
+        && enrollment.group == course.group
+        && enrollment.period == course.period
+        && enrollment.status == 'active'
+        && enrollment.createdAt == request.time;
+    }
+
+    function pendingRequestResolvedByManualEnrollment(courseId, studentUid) {
+      let requestPath = joinRequestPath(courseId, studentUid);
+      return !exists(requestPath)
+        || get(requestPath).data.status != 'pending'
+        || (
+          get(requestPath).data.status == 'pending'
+          && getAfter(requestPath).data.status == 'approved'
+          && getAfter(requestPath).data.studentUid == studentUid
+          && getAfter(requestPath).data.decidedBy == request.auth.uid
+          && getAfter(requestPath).data.decidedAt == request.time
+        );
+    }
+
+    function enrollmentSnapshotMatchesRequestCourse(course, studentUid, enrollment) {
+      return enrollment.studentUid == studentUid
+        && enrollment.status == 'active'
+        && enrollment.ownerUid == course.ownerUid
+        && enrollment.subject == course.subject
+        && enrollment.group == course.group
+        && enrollment.period == course.period;
+    }
+
+    function canDecideJoinRequest(courseId, studentUid) {
+      let enrollmentPathValue = enrollmentPath(courseId, studentUid);
+      let enrollmentAfter = getAfter(enrollmentPathValue).data;
       let coursePath = /databases/$(database)/documents/courses/$(courseId);
       let course = get(coursePath).data;
-      let entryPath = directoryPath(request.resource.data.email);
-      let entry = get(entryPath).data;
-      let enrollment = request.resource.data;
+      let next = request.resource.data;
       return verifiedTeacher()
         && exists(coursePath)
         && course.ownerUid == request.auth.uid
-        && validEnrollmentShape(enrollment)
-        && enrollment.studentUid == studentUid
+        && resource.data.studentUid == studentUid
+        && resource.data.status == 'pending'
+        && next.studentUid == resource.data.studentUid
+        && next.name == resource.data.name
+        && next.email == resource.data.email
+        && next.studentCode == resource.data.studentCode
+        && next.subject == resource.data.subject
+        && next.group == resource.data.group
+        && next.period == resource.data.period
+        && next.invitationCode == resource.data.invitationCode
+        && next.createdAt == resource.data.createdAt
+        && next.decidedBy == request.auth.uid
+        && next.decidedAt == request.time
+        && next.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'decidedBy', 'decidedAt', 'rejectionReason'])
+        && (
+          (
+            next.status == 'approved'
+            && next.rejectionReason == null
+            && existsAfter(enrollmentPathValue)
+            && enrollmentSnapshotMatchesRequestCourse(
+              course,
+              studentUid,
+              enrollmentAfter
+            )
+          )
+          || (
+            next.status == 'rejected'
+            && next.rejectionReason is string
+            && next.rejectionReason.size() >= 1
+            && next.rejectionReason.size() <= 500
+            && !existsAfter(enrollmentPathValue)
+          )
+        );
+    }
+
+    function canCreateEnrollment(courseId, studentUid) {
+      let enrollment = request.resource.data;
+      // Use conditional branches for cheap gates. Invalid identities and maps
+      // should stop before profile, course, directory, and request lookups.
+      return verifiedTeacher()
+        ? (
+            enrollment.studentUid == studentUid
+              ? (
+                  enrollment.ownerUid == request.auth.uid
+                    ? (
+                        validEnrollmentShape(enrollment)
+                          ? (
+                              enrollment.createdAt == request.time
+                                ? (
+                                    pendingRequestResolvedByManualEnrollment(
+                                      courseId,
+                                      studentUid
+                                    )
+                                      ? canCreateEnrollmentForOwnedCourse(
+                                          courseId,
+                                          studentUid,
+                                          enrollment
+                                        )
+                                      : false
+                                  )
+                                : false
+                            )
+                          : false
+                      )
+                    : false
+                )
+              : false
+          )
+        : false;
+    }
+
+    function canCreateEnrollmentForOwnedCourse(courseId, studentUid, enrollment) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      let entryPath = directoryPath(enrollment.email);
+      let entry = get(entryPath).data;
+      let requestPath = joinRequestPath(courseId, studentUid);
+      return exists(coursePath)
+        && course.ownerUid == request.auth.uid
         && enrollment.ownerUid == course.ownerUid
         && enrollment.subject == course.subject
         && enrollment.group == course.group
         && enrollment.period == course.period
-        && enrollment.createdAt == request.time
-        && exists(entryPath)
-        && directoryMatchesCurrentProfile(entry)
-        && entry.uid == studentUid
-        && entry.name == enrollment.name
-        && entry.email == enrollment.email
-        && entry.studentCode == enrollment.studentCode;
+        && (
+          (
+            exists(entryPath)
+            && directoryMatchesCurrentProfile(entry)
+            && entry.uid == studentUid
+            && entry.name == enrollment.name
+            && entry.email == enrollment.email
+            && entry.studentCode == enrollment.studentCode
+          )
+          || (
+            exists(requestPath)
+            && canCreateEnrollmentFromJoinRequest(
+              courseId,
+              studentUid,
+              course,
+              enrollment
+            )
+          )
+        );
     }
 
     function ownsExistingCourse(courseId) {
@@ -719,6 +1114,29 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
+      match /invitation/{invitationId} {
+        allow get: if invitationId == 'current'
+          && ownsExistingCourse(courseId);
+        allow list: if false;
+        allow create: if invitationId == 'current'
+          && canCreateCurrentInvitation(courseId);
+        allow update: if invitationId == 'current'
+          && canUpdateCurrentInvitation(courseId);
+        allow delete: if false;
+      }
+
+      match /join_requests/{studentUid} {
+        allow get: if (verifiedStudent() && request.auth.uid == studentUid)
+          || ownsExistingCourse(courseId);
+        allow list: if (ownsExistingCourse(courseId)
+            && resource.data.status == 'pending')
+          || (verifiedStudent()
+            && resource.data.studentUid == request.auth.uid);
+        allow create: if canCreateJoinRequest(courseId, studentUid);
+        allow update: if canDecideJoinRequest(courseId, studentUid);
+        allow delete: if false;
+      }
+
       match /enrollments/{studentUid} {
         allow get: if ownsExistingCourse(courseId)
           || (verifiedStudent() && request.auth.uid == studentUid);
@@ -728,10 +1146,25 @@ service cloud.firestore {
       }
     }
 
+    match /course_invites/{code} {
+      // Code lookup is an exact get for a verified student. The index only
+      // exposes a minimal course preview while its code is current and valid.
+      allow get: if canReadCurrentCourseInvite(code, resource.data.courseId);
+      allow list: if false;
+      allow create: if canCreateCourseInvite(code);
+      allow update, delete: if false;
+    }
+
     // Collection-group query for the authenticated student's own courses.
     // The query must constrain studentUid to the current UID; other groups
     // and unfiltered enumeration remain denied.
     match /{path=**}/enrollments/{enrollmentId} {
+      allow list: if verifiedStudent()
+        && resource.data.studentUid == request.auth.uid;
+    }
+
+    // A collection-group query must filter by the authenticated student's UID.
+    match /{path=**}/join_requests/{requestId} {
       allow list: if verifiedStudent()
         && resource.data.studentUid == request.auth.uid;
     }

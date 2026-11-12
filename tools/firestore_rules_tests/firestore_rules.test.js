@@ -45,6 +45,13 @@ const [emulatorHost, emulatorPort] = (
 
 let testEnvironment;
 
+async function assertPermissionDenied(operation) {
+  await assert.rejects(operation, (error) => {
+    assert.equal(error?.code, "permission-denied");
+    return true;
+  });
+}
+
 function profile(email, roles = ["student"], extraFields = {}) {
   return {
     name: "Usuario de prueba",
@@ -157,6 +164,225 @@ function enrollmentData(studentUid, ownerUid, email, profileData = profile(email
     createdAt: serverTimestamp(),
     ...extra,
   };
+}
+
+function courseInviteData(courseId, course = courseData(), extra = {}) {
+  return {
+    courseId,
+    subject: course.subject,
+    group: course.group,
+    period: course.period,
+    createdAt: serverTimestamp(),
+    ...extra,
+  };
+}
+
+function joinRequestData(studentUid, email, code, extra = {}) {
+  const studentProfile = profile(email);
+  return {
+    studentUid,
+    name: studentProfile.name,
+    email: studentProfile.email,
+    studentCode: studentProfile.studentCode,
+    subject: "Bases de Datos",
+    group: "Grupo 2",
+    period: "2027-1",
+    invitationCode: code,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    decidedBy: null,
+    decidedAt: null,
+    rejectionReason: null,
+    ...extra,
+  };
+}
+
+async function createInvitationAtomically(db, courseId, code, validForSeconds = 1209600) {
+  const courseRef = doc(db, "courses", courseId);
+  const currentRef = doc(db, "courses", courseId, "invitation", "current");
+  const inviteRef = doc(db, "course_invites", code);
+  return runTransaction(db, async (transaction) => {
+    const [course, current] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(currentRef),
+    ]);
+    if (!course.exists()) throw new Error("missing-course");
+    const currentData = {
+      code,
+      status: "active",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      validForSeconds,
+    };
+    transaction.set(currentRef, currentData);
+    transaction.set(inviteRef, courseInviteData(courseId, course.data()));
+    return currentData;
+  });
+}
+
+async function renewInvitationAtomically(db, courseId, code, validForSeconds = 1209600) {
+  const currentRef = doc(db, "courses", courseId, "invitation", "current");
+  const inviteRef = doc(db, "course_invites", code);
+  const courseRef = doc(db, "courses", courseId);
+  return runTransaction(db, async (transaction) => {
+    const [course, current] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(currentRef),
+    ]);
+    if (!course.exists() || !current.exists()) throw new Error("missing-invite");
+    transaction.set(currentRef, {
+      code,
+      status: "active",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      validForSeconds,
+    });
+    transaction.set(inviteRef, courseInviteData(courseId, course.data()));
+    return "renewed";
+  });
+}
+
+async function changeInvitationAtomically(db, courseId, change) {
+  const courseRef = doc(db, "courses", courseId);
+  const currentRef = doc(db, "courses", courseId, "invitation", "current");
+  return runTransaction(db, async (transaction) => {
+    const course = await transaction.get(courseRef);
+    const current = await transaction.get(currentRef);
+    if (!course.exists() || !current.exists()) throw new Error("missing-invitation");
+    transaction.update(currentRef, { ...change, updatedAt: serverTimestamp() });
+  });
+}
+
+async function submitJoinRequestAtomically(db, courseId, studentUid, code) {
+  const inviteRef = doc(db, "course_invites", code);
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const requestRef = doc(db, "courses", courseId, "join_requests", studentUid);
+  const profileRef = doc(db, "users", studentUid);
+  return runTransaction(db, async (transaction) => {
+    const [invite, enrollment, existing, studentProfile] = await Promise.all([
+      transaction.get(inviteRef),
+      transaction.get(enrollmentRef),
+      transaction.get(requestRef),
+      transaction.get(profileRef),
+    ]);
+    if (!invite.exists()) throw new Error("invite-unavailable");
+    if (enrollment.exists()) return "already-enrolled";
+    if (existing.exists()) return existing.data().status;
+    transaction.set(
+      requestRef,
+      joinRequestData(studentUid, studentProfile.data().email, code, {
+        subject: invite.data().subject,
+        group: invite.data().group,
+        period: invite.data().period,
+      }),
+    );
+    return "created";
+  });
+}
+
+async function decideJoinRequestAtomically(
+  db,
+  courseId,
+  studentUid,
+  deciderUid,
+  { status, reason = null } = {},
+) {
+  const courseRef = doc(db, "courses", courseId);
+  const requestRef = doc(db, "courses", courseId, "join_requests", studentUid);
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  return runTransaction(db, async (transaction) => {
+    const [course, request, enrollment] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(requestRef),
+      transaction.get(enrollmentRef),
+    ]);
+    if (!course.exists() || !request.exists()) throw new Error("missing-request");
+    if (request.data().status !== "pending") return "already-resolved";
+    if (status === "approved" && !enrollment.exists()) {
+      transaction.set(enrollmentRef, {
+        studentUid,
+        ownerUid: course.data().ownerUid,
+        name: request.data().name,
+        email: request.data().email,
+        studentCode: request.data().studentCode,
+        subject: course.data().subject,
+        group: course.data().group,
+        period: course.data().period,
+        status: "active",
+        createdAt: serverTimestamp(),
+      });
+    }
+    transaction.update(requestRef, {
+      status,
+      decidedBy: deciderUid,
+      decidedAt: serverTimestamp(),
+      rejectionReason: reason,
+    });
+    return status;
+  });
+}
+
+async function enrollManuallyAndResolvePending(db, courseId, studentUid, email) {
+  const courseRef = doc(db, "courses", courseId);
+  const directoryRef = doc(db, "student_directory", email);
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const requestRef = doc(db, "courses", courseId, "join_requests", studentUid);
+  return runTransaction(db, async (transaction) => {
+    const [course, directory, enrollment, request] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(directoryRef),
+      transaction.get(enrollmentRef),
+      transaction.get(requestRef),
+    ]);
+    if (!course.exists() || !directory.exists()) throw new Error("missing-source");
+    if (enrollment.exists()) return "already-enrolled";
+    const directoryEntry = directory.data();
+    transaction.set(enrollmentRef, enrollmentData(
+      studentUid,
+      course.data().ownerUid,
+      email,
+      {
+        name: directoryEntry.name,
+        email: directoryEntry.email,
+        studentCode: directoryEntry.studentCode,
+      },
+      {
+        subject: course.data().subject,
+        group: course.data().group,
+        period: course.data().period,
+      },
+    ));
+    if (request.exists() && request.data().status === "pending") {
+      transaction.update(requestRef, {
+        status: "approved",
+        decidedBy: "teacher-a",
+        decidedAt: serverTimestamp(),
+        rejectionReason: null,
+      });
+    }
+    return "created";
+  });
+}
+
+async function seedInvitationDisabled(courseId, code, { createdAt, status = "active" } = {}) {
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const courseSnapshot = await getDoc(doc(db, "courses", courseId));
+    const timestamp = createdAt ?? Timestamp.now();
+    await setDoc(doc(db, "courses", courseId, "invitation", "current"), {
+      code,
+      status,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await setDoc(doc(db, "course_invites", code), {
+      courseId,
+      subject: courseSnapshot.data().subject,
+      group: courseSnapshot.data().group,
+      period: courseSnapshot.data().period,
+      createdAt: timestamp,
+    });
+  });
 }
 
 async function enrollIdempotently(db, courseId, studentUid, payload) {
@@ -1752,17 +1978,17 @@ test("conjunto 3: directorio impide publicación ajena, sin verificar o falsific
   const anonymous = testEnvironment.unauthenticatedContext().firestore();
   const reference = doc(verified, "student_directory", email);
 
-  await assertFails(setDoc(doc(anonymous, "student_directory", email), directoryData(uid, email)));
-  await assertFails(setDoc(doc(unverified, "student_directory", email), directoryData(uid, email)));
-  await assertFails(setDoc(reference, directoryData("other", email)));
-  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { name: "Suplantación" })));
-  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { email: "other@example.test" })));
-  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { extra: true })));
-  await assertFails(setDoc(reference, directoryData(uid, email, profile(email), { updatedAt: Timestamp.now() })));
-  await assertFails(setDoc(doc(verified, "student_directory", "other@example.test"), directoryData(uid, "other@example.test")));
+  await assertPermissionDenied(setDoc(doc(anonymous, "student_directory", email), directoryData(uid, email)));
+  await assertPermissionDenied(setDoc(doc(unverified, "student_directory", email), directoryData(uid, email)));
+  await assertPermissionDenied(setDoc(reference, directoryData("other", email)));
+  await assertPermissionDenied(setDoc(reference, directoryData(uid, email, profile(email), { name: "Suplantación" })));
+  await assertPermissionDenied(setDoc(reference, directoryData(uid, email, profile(email), { email: "other@example.test" })));
+  await assertPermissionDenied(setDoc(reference, directoryData(uid, email, profile(email), { extra: true })));
+  await assertPermissionDenied(setDoc(reference, directoryData(uid, email, profile(email), { updatedAt: Timestamp.now() })));
+  await assertPermissionDenied(setDoc(doc(verified, "student_directory", "other@example.test"), directoryData(uid, "other@example.test")));
   await assertSucceeds(setDoc(reference, directoryData(uid, email)));
-  await assertFails(updateDoc(reference, { uid: "other", updatedAt: serverTimestamp() }));
-  await assertFails(deleteDoc(doc(userContext("other", "other@example.test", true), "student_directory", email)));
+  await assertPermissionDenied(updateDoc(reference, { uid: "other", updatedAt: serverTimestamp() }));
+  await assertPermissionDenied(deleteDoc(doc(userContext("other", "other@example.test", true), "student_directory", email)));
 });
 
 test("conjunto 3: docente conoce correo exacto, pero no enumera el directorio ni lee entradas obsoletas", async () => {
@@ -1803,7 +2029,7 @@ test("conjunto 3: nuevo titular verificado recupera correo liberado sin tomar un
   const oldPath = doc(old, "student_directory", releasedEmail);
   const newPath = doc(fresh, "student_directory", releasedEmail);
 
-  await assertFails(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
+  await assertPermissionDenied(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
   assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", releasedEmail)))).data().uid, oldUid);
 
   await testEnvironment.withSecurityRulesDisabled(async (context) => {
@@ -1814,8 +2040,8 @@ test("conjunto 3: nuevo titular verificado recupera correo liberado sin tomar un
   const recovered = await assertSucceeds(getDoc(doc(teacher, "student_directory", releasedEmail)));
   assert.equal(recovered.data().uid, newUid);
   assert.equal(recovered.data().name, "Nuevo titular");
-  await assertFails(deleteDoc(oldPath));
-  await assertFails(setDoc(oldPath, directoryData(oldUid, releasedEmail, oldProfile)));
+  await assertPermissionDenied(deleteDoc(oldPath));
+  await assertPermissionDenied(setDoc(oldPath, directoryData(oldUid, releasedEmail, oldProfile)));
   await assertSucceeds(setDoc(newPath, directoryData(newUid, releasedEmail, newProfile)));
 });
 
@@ -1891,13 +2117,13 @@ test("conjunto 3: otro docente, estudiante y admin no pueden crear ni alterar ma
   const anonymous = testEnvironment.unauthenticatedContext().firestore();
   const payload = enrollmentData("student", "teacher-a", "student@example.test");
   const path = ["courses", courseId, "enrollments", "student"];
-  await assertFails(setDoc(doc(student, ...path), payload));
-  await assertFails(setDoc(doc(teacherB, ...path), payload));
-  await assertFails(setDoc(doc(admin, ...path), payload));
-  await assertFails(setDoc(doc(anonymous, ...path), payload));
+  await assertPermissionDenied(setDoc(doc(student, ...path), payload));
+  await assertPermissionDenied(setDoc(doc(teacherB, ...path), payload));
+  await assertPermissionDenied(setDoc(doc(admin, ...path), payload));
+  await assertPermissionDenied(setDoc(doc(anonymous, ...path), payload));
   await assertFails(getDocs(collection(teacherB, "courses", courseId, "enrollments")));
   await assertSucceeds(setDoc(doc(teacherA, ...path), payload));
-  await assertFails(updateDoc(doc(teacherA, ...path), { name: "Otro" }));
+  await assertPermissionDenied(updateDoc(doc(teacherA, ...path), { name: "Otro" }));
   await assertFails(deleteDoc(doc(teacherA, ...path)));
   await assertFails(updateDoc(doc(student, ...path), { status: "inactive" }));
   await assertFails(deleteDoc(doc(student, ...path)));
@@ -1910,7 +2136,7 @@ test("conjunto 3: matrícula exige directorio y snapshots íntegros sin campos e
   const teacher = userContext("teacher", "teacher@example.test", true);
   const base = enrollmentData("student", "teacher", "student@example.test");
   const ref = doc(teacher, "courses", "course", "enrollments", "student");
-  await assertFails(setDoc(ref, base));
+  await assertPermissionDenied(setDoc(ref, base));
   await publishStudent("student", "student@example.test");
   const invalid = [
     { studentUid: "other" }, { ownerUid: "other" }, { name: "Nombre falso" },
@@ -1919,12 +2145,12 @@ test("conjunto 3: matrícula exige directorio y snapshots íntegros sin campos e
     { status: "pending" }, { createdAt: Timestamp.now() }, { roles: ["teacher"] },
   ];
   for (const variant of invalid) {
-    await assertFails(setDoc(ref, { ...base, ...variant }));
+    await assertPermissionDenied(setDoc(ref, { ...base, ...variant }));
   }
   await testEnvironment.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), "users", "student"), profile("student@example.test", ["teacher"]));
   });
-  await assertFails(setDoc(ref, base));
+  await assertPermissionDenied(setDoc(ref, base));
 });
 
 test("conjunto 3: reintento es único; paginación, conteos y roles combinados conservan acceso", async () => {
@@ -1944,7 +2170,7 @@ test("conjunto 3: reintento es único; paginación, conteos y roles combinados c
   const enrolledRef = doc(teacher, "courses", "course-a", "enrollments", "student-a");
   const originalAt = (await getDoc(enrolledRef)).data().createdAt;
   assert.equal(await assertSucceeds(enrollIdempotently(teacher, "course-a", "student-a", payloadA)), "already-enrolled");
-  await assertFails(setDoc(enrolledRef, payloadA));
+  await assertPermissionDenied(setDoc(enrolledRef, payloadA));
   assert.deepEqual((await getDoc(enrolledRef)).data().createdAt, originalAt);
   await assertSucceeds(enrollIdempotently(teacher, "course-a", "student-b", payloadB));
   const students = collection(teacher, "courses", "course-a", "enrollments");
@@ -1984,8 +2210,605 @@ test("conjunto 3: código opcional, perfil obsoleto y verificación controlan la
     await setDoc(doc(context.firestore(), "users", studentUid), profile(studentEmail, ["student"], { name: "Nombre actualizado", studentCode: null }));
   });
   await assertFails(getDoc(doc(teacher, "student_directory", studentEmail)));
-  await assertFails(setDoc(doc(teacher, "courses", "course", "enrollments", "another"), enrollmentData("another", teacherUid, studentEmail, noCode)));
+  await assertPermissionDenied(setDoc(doc(teacher, "courses", "course", "enrollments", "another"), enrollmentData("another", teacherUid, studentEmail, noCode)));
   const student = userContext(studentUid, studentEmail, true);
   await assertSucceeds(setDoc(doc(student, "student_directory", studentEmail), directoryData(studentUid, studentEmail, profile(studentEmail, ["student"], { name: "Nombre actualizado", studentCode: null }))));
   assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", studentEmail)))).data().name, "Nombre actualizado");
+});
+
+const inviteCodeA = "ABCDEFGHJKLMNPQR";
+const inviteCodeB = "23456789ABCDEFGH";
+
+test("conjunto 4: recorrido Dart usa índice permitido y nunca lee current privado como estudiante", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedProfile("student-b", "student-b@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const studentA = userContext("student-a", "student-a@example.test", true);
+  const studentB = userContext("student-b", "student-b@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  const preview = await assertSucceeds(getDoc(doc(studentA, "course_invites", inviteCodeA)));
+  assert.equal(preview.data().courseId, "course");
+  const privateCurrent = doc(studentA, "courses", "course", "invitation", "current");
+  // These are the two reads the previous Dart lookup/submission incorrectly made.
+  await assertPermissionDenied(getDoc(privateCurrent));
+  await assertPermissionDenied(runTransaction(studentA, (transaction) => transaction.get(privateCurrent)));
+  assert.equal(await assertSucceeds(submitJoinRequestAtomically(studentA, "course", "student-a", inviteCodeA)), "created");
+  await assertSucceeds(renewInvitationAtomically(teacher, "course", inviteCodeB));
+  await assertPermissionDenied(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  assert.equal((await assertSucceeds(getDoc(doc(studentB, "course_invites", inviteCodeB)))).data().courseId, "course");
+  assert.equal(await assertSucceeds(submitJoinRequestAtomically(studentB, "course", "student-b", inviteCodeB)), "created");
+});
+
+test("conjunto 4: invitación del propietario y consulta exacta exponen solo la ficha mínima", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedCourse("teacher-a", "course-a");
+  const teacherA = userContext("teacher-a", "teacher-a@example.test", true);
+  const teacherB = userContext("teacher-b", "teacher-b@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+  const student = userContext("student-a", "student-a@example.test", true);
+
+  await assertSucceeds(createInvitationAtomically(teacherA, "course-a", inviteCodeA));
+  const current = await assertSucceeds(
+    getDoc(doc(teacherA, "courses", "course-a", "invitation", "current")),
+  );
+  assert.deepEqual(Object.keys(current.data()).sort(), [
+    "code", "createdAt", "status", "updatedAt", "validForSeconds",
+  ]);
+  assert.equal(current.data().code, inviteCodeA);
+  assert.equal(current.data().status, "active");
+
+  const preview = await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeA)));
+  assert.deepEqual(Object.keys(preview.data()).sort(), [
+    "courseId", "createdAt", "group", "period", "subject",
+  ]);
+  assert.equal(preview.data().courseId, "course-a");
+  assert.equal(preview.data().subject, "Bases de Datos");
+  await assertFails(getDocs(collection(student, "course_invites")));
+  await assertFails(getDoc(doc(student, "courses", "course-a")));
+  await assertFails(
+    getDoc(doc(student, "courses", "course-a", "weekly_blocks", courseBlock().id)),
+  );
+  await assertFails(getDocs(collection(student, "courses", "course-a", "enrollments")));
+  await assertFails(
+    getDoc(doc(teacherB, "courses", "course-a", "invitation", "current")),
+  );
+  await assertFails(
+    getDoc(doc(admin, "courses", "course-a", "invitation", "current")),
+  );
+  await assertFails(getDoc(doc(admin, "course_invites", inviteCodeA)));
+});
+
+test("conjunto 4: las invitaciones exigen curso propio y una colisión no sobrescribe", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedCourse("teacher-a", "course-a");
+  await seedCourse("teacher-b", "course-b");
+  const teacherA = userContext("teacher-a", "teacher-a@example.test", true);
+  const teacherB = userContext("teacher-b", "teacher-b@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+
+  await assertSucceeds(createInvitationAtomically(teacherA, "course-a", inviteCodeA));
+  await assertSucceeds(createInvitationAtomically(teacherB, "course-b", inviteCodeB));
+  await assertPermissionDenied(createInvitationAtomically(teacherB, "course-b", inviteCodeA));
+  const original = await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeA)));
+  assert.equal(original.data().courseId, "course-a");
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(teacherB, "courses", "course-b", "invitation", "current")))).data().code,
+    inviteCodeB,
+  );
+  await assertFails(createInvitationAtomically(student, "course-a", inviteCodeB));
+  await assertFails(createInvitationAtomically(admin, "course-a", inviteCodeB));
+  await assertFails(
+    setDoc(doc(teacherB, "courses", "course-a", "invitation", "current"), {
+      code: inviteCodeB,
+      status: "active",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }),
+  );
+});
+
+test("conjunto 4: renovación/desactivación invalidan códigos anteriores y expiración usa hora de servidor", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const expiredCode = "JKLMNPQRSTUVWXYZ";
+  const expiredAt = Timestamp.fromMillis(Date.now() - 15 * 24 * 60 * 60 * 1000);
+  await seedInvitationDisabled("course", expiredCode, { createdAt: expiredAt });
+  await assertFails(getDoc(doc(student, "course_invites", expiredCode)));
+  await assert.rejects(
+    submitJoinRequestAtomically(student, "course", "student", expiredCode),
+  );
+
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertSucceeds(renewInvitationAtomically(teacher, "course", inviteCodeB));
+  await assertFails(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeB)));
+  await assert.rejects(
+    submitJoinRequestAtomically(student, "course", "student", inviteCodeA),
+  );
+
+  await assertSucceeds(updateDoc(
+    doc(teacher, "courses", "course", "invitation", "current"),
+    { status: "inactive", updatedAt: serverTimestamp() },
+  ));
+  await assertFails(getDoc(doc(student, "course_invites", inviteCodeB)));
+  await assert.rejects(
+    submitJoinRequestAtomically(student, "course", "student", inviteCodeB),
+  );
+  await assertFails(
+    deleteDoc(doc(teacher, "course_invites", inviteCodeB)),
+  );
+});
+
+test("conjunto 4: el estudiante verificado crea y consulta su solicitud sin duplicar", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedProfile("student-b", "student-b@example.test");
+  await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);
+  await seedCourse("teacher-a", "course-a");
+  const teacherA = userContext("teacher-a", "teacher-a@example.test", true);
+  const teacherB = userContext("teacher-b", "teacher-b@example.test", true);
+  const studentA = userContext("student-a", "student-a@example.test", true);
+  const studentB = userContext("student-b", "student-b@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacherA, "course-a", inviteCodeA));
+
+  assert.equal(
+    await assertSucceeds(
+      submitJoinRequestAtomically(studentA, "course-a", "student-a", inviteCodeA),
+    ),
+    "created",
+  );
+  assert.equal(
+    await assertSucceeds(
+      submitJoinRequestAtomically(studentA, "course-a", "student-a", inviteCodeA),
+    ),
+    "pending",
+  );
+  assert.equal(
+    await assertSucceeds(
+      submitJoinRequestAtomically(studentB, "course-a", "student-b", inviteCodeA),
+    ),
+    "created",
+  );
+  const ownRequestRef = doc(studentA, "courses", "course-a", "join_requests", "student-a");
+  const own = await assertSucceeds(getDoc(ownRequestRef));
+  assert.equal(own.data().studentUid, "student-a");
+  assert.equal(own.data().subject, "Bases de Datos");
+  assert.equal(own.data().group, "Grupo 2");
+  assert.equal(own.data().period, "2027-1");
+  assert.equal(own.data().status, "pending");
+  await assertFails(
+    getDoc(doc(studentA, "courses", "course-a", "join_requests", "student-b")),
+  );
+  await assertFails(setDoc(ownRequestRef, joinRequestData("student-a", "student-a@example.test", inviteCodeA)));
+
+  const teacherQueue = await assertSucceeds(
+    getDocs(query(
+      collection(teacherA, "courses", "course-a", "join_requests"),
+      where("status", "==", "pending"),
+      orderBy("createdAt", "desc"),
+      orderBy(documentId(), "desc"),
+    )),
+  );
+  assert.equal(teacherQueue.size, 2);
+  await assertFails(
+    getDocs(collection(teacherA, "courses", "course-a", "join_requests")),
+  );
+  await assertFails(
+    getDocs(query(
+      collection(teacherB, "courses", "course-a", "join_requests"),
+      where("status", "==", "pending"),
+    )),
+  );
+  const ownRequests = await assertSucceeds(
+    getDocs(query(
+      collectionGroup(studentA, "join_requests"),
+      where("studentUid", "==", "student-a"),
+      orderBy("createdAt", "desc"),
+      orderBy(documentId(), "desc"),
+    )),
+  );
+  assert.deepEqual(ownRequests.docs.map((request) => request.id), ["student-a"]);
+  await assertFails(getDocs(collectionGroup(studentA, "join_requests")));
+  await assertFails(
+    getDocs(query(collectionGroup(studentA, "join_requests"), where("studentUid", "==", "student-b"))),
+  );
+});
+
+test("conjunto 4: autenticación, rol, código, perfil y campos de solicitud se validan", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedProfile("teacher-2", "teacher-2@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const unverified = userContext("student", "student@example.test", false);
+  const wrongEmail = userContext("student", "changed@example.test", true);
+  const teacher2 = userContext("teacher-2", "teacher-2@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+  const anonymous = testEnvironment.unauthenticatedContext().firestore();
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  const requestRef = (db) => doc(db, "courses", "course", "join_requests", "student");
+
+  await assertFails(setDoc(requestRef(anonymous), joinRequestData("student", "student@example.test", inviteCodeA)));
+  await assertFails(setDoc(requestRef(unverified), joinRequestData("student", "student@example.test", inviteCodeA)));
+  await assertFails(setDoc(requestRef(wrongEmail), joinRequestData("student", "changed@example.test", inviteCodeA)));
+  await assertFails(setDoc(requestRef(teacher2), joinRequestData("teacher-2", "teacher-2@example.test", inviteCodeA)));
+  await assertFails(setDoc(requestRef(admin), joinRequestData("admin", "admin@example.test", inviteCodeA)));
+
+  const invalidRequests = [
+    { name: "Nombre falso" },
+    { email: "other@example.test" },
+    { studentCode: "STU-OTHER" },
+    { subject: "Otra materia" },
+    { group: "Otro grupo" },
+    { period: "2030-1" },
+    { invitationCode: "INVALIDO" },
+    { status: "approved" },
+    { decidedBy: "student" },
+    { decidedAt: Timestamp.now() },
+    { rejectionReason: "No debe elegir una decisión" },
+    { role: "teacher" },
+  ];
+  for (const variant of invalidRequests) {
+    await assertFails(
+      setDoc(
+        requestRef(student),
+        joinRequestData("student", "student@example.test", inviteCodeA, variant),
+      ),
+    );
+  }
+  assert.equal((await assertSucceeds(getDoc(requestRef(student)))).exists(), false);
+});
+
+test("conjunto 4: una invitación no crea solicitud para quien ya está inscrito", async () => {
+  const studentProfile = profile("student@example.test");
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = await publishStudent("student", "student@example.test", studentProfile);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(
+    setDoc(
+      doc(teacher, "courses", "course", "enrollments", "student"),
+      enrollmentData("student", "teacher", "student@example.test", studentProfile),
+    ),
+  );
+  await assertFails(
+    setDoc(
+      doc(student, "courses", "course", "join_requests", "student"),
+      joinRequestData("student", "student@example.test", inviteCodeA),
+    ),
+  );
+});
+
+test("conjunto 4: aprobar crea matrícula y decisión en una transacción; ambos son inmutables", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedCourse("teacher-a", "course-a");
+  const teacher = userContext("teacher-a", "teacher-a@example.test", true);
+  const student = userContext("student-a", "student-a@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course-a", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course-a", "student-a", inviteCodeA));
+  const requestRef = doc(teacher, "courses", "course-a", "join_requests", "student-a");
+  const enrollmentRef = doc(teacher, "courses", "course-a", "enrollments", "student-a");
+
+  await assertFails(updateDoc(requestRef, {
+    status: "approved",
+    decidedBy: "teacher-a",
+    decidedAt: serverTimestamp(),
+    rejectionReason: null,
+  }));
+  await assertPermissionDenied(setDoc(
+    enrollmentRef,
+    enrollmentData("student-a", "teacher-a", "student-a@example.test"),
+  ));
+  assert.equal(
+    await assertSucceeds(decideJoinRequestAtomically(
+      teacher, "course-a", "student-a", "teacher-a", { status: "approved" },
+    )),
+    "approved",
+  );
+  assert.equal((await assertSucceeds(getDoc(requestRef))).data().status, "approved");
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "active");
+  await assertSucceeds(getDoc(doc(student, "courses", "course-a")));
+  assert.equal(
+    await assertSucceeds(decideJoinRequestAtomically(
+      teacher, "course-a", "student-a", "teacher-a", { status: "rejected", reason: "otra" },
+    )),
+    "already-resolved",
+  );
+  await assertFails(updateDoc(requestRef, {
+    status: "rejected",
+    decidedBy: "teacher-a",
+    decidedAt: serverTimestamp(),
+    rejectionReason: "reabierta",
+  }));
+  await assertFails(updateDoc(enrollmentRef, { status: "inactive" }));
+});
+
+test("conjunto 4: rechazar conserva motivo y no concede acceso ni crea matrícula", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  const requestRef = doc(teacher, "courses", "course", "join_requests", "student");
+  const enrollmentRef = doc(student, "courses", "course", "enrollments", "student");
+  await assertFails(updateDoc(requestRef, {
+    status: "rejected",
+    decidedBy: "teacher",
+    decidedAt: serverTimestamp(),
+    rejectionReason: "",
+  }));
+  await assertSucceeds(decideJoinRequestAtomically(
+    teacher, "course", "student", "teacher", { status: "rejected", reason: "Cupo completo" },
+  ));
+  const result = await assertSucceeds(getDoc(doc(student, "courses", "course", "join_requests", "student")));
+  assert.equal(result.data().status, "rejected");
+  assert.equal(result.data().rejectionReason, "Cupo completo");
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).exists(), false);
+  await assertFails(getDoc(doc(student, "courses", "course")));
+  await assertFails(updateDoc(requestRef, {
+    status: "approved",
+    decidedBy: "teacher",
+    decidedAt: serverTimestamp(),
+    rejectionReason: null,
+  }));
+});
+
+test("conjunto 4: la aprobación que conserva matrícula manual resuelve pending sin duplicarla", async () => {
+  const studentProfile = profile("student@example.test");
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = await publishStudent("student", "student@example.test", studentProfile);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", "course", "enrollments", "student"),
+      enrollmentData("student", "teacher", "student@example.test", studentProfile),
+    );
+  });
+  const original = (await assertSucceeds(getDoc(enrollmentRef))).data();
+  await assertSucceeds(decideJoinRequestAtomically(
+    teacher, "course", "student", "teacher", { status: "approved" },
+  ));
+  const saved = (await assertSucceeds(getDoc(enrollmentRef))).data();
+  assert.deepEqual(saved, original);
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(teacher, "courses", "course", "join_requests", "student")))).data().status,
+    "approved",
+  );
+});
+
+test("conjunto 4: inscripción manual durante pending requiere resolver ambas escrituras juntas", async () => {
+  await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher-a", "course-a");
+  const teacher = userContext("teacher-a", "teacher-a@example.test", true);
+  const student = await publishStudent("student", "student@example.test");
+  await assertSucceeds(createInvitationAtomically(teacher, "course-a", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course-a", "student", inviteCodeA));
+  const payload = enrollmentData("student", "teacher-a", "student@example.test");
+  await assertPermissionDenied(enrollIdempotently(teacher, "course-a", "student", payload));
+  assert.equal(
+    await assertSucceeds(enrollManuallyAndResolvePending(
+      teacher, "course-a", "student", "student@example.test",
+    )),
+    "created",
+  );
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(student, "courses", "course-a", "join_requests", "student")))).data().status,
+    "approved",
+  );
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(student, "courses", "course-a", "enrollments", "student")))).data().status,
+    "active",
+  );
+});
+
+test("conjunto 4: matrícula posterior al rechazo conserva la decisión histórica", async () => {
+  const studentProfile = profile("student@example.test");
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = await publishStudent("student", "student@example.test", studentProfile);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  await assertSucceeds(decideJoinRequestAtomically(
+    teacher, "course", "student", "teacher", { status: "rejected", reason: "Revisar grupo" },
+  ));
+  await assertSucceeds(enrollManuallyAndResolvePending(
+    teacher, "course", "student", "student@example.test",
+  ));
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(student, "courses", "course", "join_requests", "student")))).data().status,
+    "rejected",
+  );
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(student, "courses", "course", "enrollments", "student")))).data().status,
+    "active",
+  );
+});
+
+test("conjunto 4: dos decisiones concurrentes no pueden aprobar y rechazar la misma solicitud", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  const outcomes = await Promise.allSettled([
+    decideJoinRequestAtomically(teacher, "course", "student", "teacher", { status: "approved" }),
+    decideJoinRequestAtomically(teacher, "course", "student", "teacher", { status: "rejected", reason: "No" }),
+  ]);
+  const request = (await assertSucceeds(getDoc(doc(student, "courses", "course", "join_requests", "student")))).data();
+  assert.ok(["approved", "rejected"].includes(request.status));
+  assert.ok(outcomes.some((outcome) =>
+    outcome.status === "fulfilled" && ["approved", "rejected", "already-resolved"].includes(outcome.value),
+  ));
+  const enrollment = await assertSucceeds(
+    getDoc(doc(student, "courses", "course", "enrollments", "student")),
+  );
+  assert.equal(enrollment.exists(), request.status === "approved");
+});
+
+
+test("conjunto 4 ampliado: editar pausar reactivar y desactivar conservan código e historia", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedProfile("student-b", "student-b@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const studentA = userContext("student-a", "student-a@example.test", true);
+  const studentB = userContext("student-b", "student-b@example.test", true);
+  const currentRef = doc(teacher, "courses", "course", "invitation", "current");
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA, 3600));
+  const original = (await getDoc(currentRef)).data();
+  await assertSucceeds(submitJoinRequestAtomically(studentA, "course", "student-a", inviteCodeA));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {validForSeconds: 7200}));
+  const edited = (await getDoc(currentRef)).data();
+  assert.equal(edited.code, original.code);
+  assert.deepEqual(edited.createdAt, original.createdAt);
+  assert.equal(edited.validForSeconds, 7200);
+  // A preview was already open when the teacher paused it.
+  await assertSucceeds(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "paused"}));
+  await assertPermissionDenied(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  await assertPermissionDenied(submitJoinRequestAtomically(studentB, "course", "student-b", inviteCodeA));
+  // Decisions remain available for a request sent while the code was valid.
+  await assertSucceeds(decideJoinRequestAtomically(teacher, "course", "student-a", "teacher", {status: "approved"}));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {validForSeconds: 10800}));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "active"}));
+  await assertSucceeds(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  await assertSucceeds(submitJoinRequestAtomically(studentB, "course", "student-b", inviteCodeA));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "inactive"}));
+  await assertPermissionDenied(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  await assertPermissionDenied(changeInvitationAtomically(teacher, "course", {status: "active"}));
+  await assertPermissionDenied(changeInvitationAtomically(teacher, "course", {status: "paused"}));
+  await assertPermissionDenied(changeInvitationAtomically(teacher, "course", {validForSeconds: 14400}));
+  assert.equal((await getDoc(doc(studentA, "courses", "course", "join_requests", "student-a"))).data().status, "approved");
+  assert.equal((await getDoc(doc(studentA, "courses", "course", "enrollments", "student-a"))).data().status, "active");
+  assert.equal((await getDoc(doc(studentB, "courses", "course", "join_requests", "student-b"))).data().status, "pending");
+  await assertSucceeds(renewInvitationAtomically(teacher, "course", inviteCodeB, 86400));
+  await assertPermissionDenied(getDoc(doc(studentB, "course_invites", inviteCodeA)));
+  await assertSucceeds(getDoc(doc(studentB, "course_invites", inviteCodeB)));
+});
+
+test("conjunto 4 ampliado: vigencia finita tipos timestamps y fuente única", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  for (const invalid of [0, -1, 3599, 7776001, "3600", null, 3600.5]) {
+    await assertPermissionDenied(createInvitationAtomically(teacher, "course", inviteCodeA, invalid));
+  }
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA, 3600));
+  const currentRef = doc(teacher, "courses", "course", "invitation", "current");
+  for (const change of [
+    {validForSeconds: 3599}, {validForSeconds: 7776001}, {validForSeconds: "7200"},
+    {expiresAt: Timestamp.now()}, {createdAt: Timestamp.now()},
+    {updatedAt: Timestamp.fromMillis(1)}, {ownerUid: "other"},
+  ]) {
+    await assertPermissionDenied(updateDoc(currentRef, {...change, ...(change.updatedAt ? {} : {updatedAt: serverTimestamp()})}));
+  }
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {validForSeconds: 7776000}));
+  assert.equal((await getDoc(currentRef)).data().validForSeconds, 7776000);
+  assert.equal((await getDoc(currentRef)).data().code, inviteCodeA);
+});
+
+test("conjunto 4 ampliado: legacy mantiene 14 días y se edita sin migración destructiva", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const createdAt = Timestamp.fromMillis(Date.now() - 13 * 86400000);
+  await seedInvitationDisabled("course", inviteCodeA, {createdAt});
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "paused"}));
+  await assertPermissionDenied(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "active"}));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {validForSeconds: 30 * 86400}));
+  const current = (await getDoc(doc(teacher, "courses", "course", "invitation", "current"))).data();
+  assert.equal(current.code, inviteCodeA);
+  assert.deepEqual(current.createdAt, createdAt);
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+});
+
+test("conjunto 4 ampliado: vencido no admite solicitudes edición ni reactivación", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const createdAt = Timestamp.fromMillis(Date.now() - 15 * 86400000);
+  await seedInvitationDisabled("course", inviteCodeA, {createdAt, status: "paused"});
+  await assertPermissionDenied(changeInvitationAtomically(teacher, "course", {status: "active"}));
+  await assertPermissionDenied(changeInvitationAtomically(teacher, "course", {validForSeconds: 30 * 86400}));
+  await assertPermissionDenied(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertPermissionDenied(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "inactive"}));
+  await assertSucceeds(renewInvitationAtomically(teacher, "course", inviteCodeB));
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeB)));
+});
+
+test("conjunto 4 ampliado: ficha abierta se revalida tras renovar desactivar o acortar", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeA)));
+  await assertSucceeds(renewInvitationAtomically(teacher, "course", inviteCodeB));
+  await assertPermissionDenied(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  await assertSucceeds(getDoc(doc(student, "course_invites", inviteCodeB)));
+  await assertSucceeds(changeInvitationAtomically(teacher, "course", {status: "inactive"}));
+  await assertPermissionDenied(submitJoinRequestAtomically(student, "course", "student", inviteCodeB));
+  // Current one-hour lifetime elapsed after the earlier preview. Server time wins.
+  await seedInvitationDisabled("course", inviteCodeA, {createdAt: Timestamp.fromMillis(Date.now() - 2 * 3600000)});
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), "courses", "course", "invitation", "current"), {validForSeconds: 3600});
+  });
+  await assertPermissionDenied(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  assert.equal((await getDoc(doc(student, "courses", "course", "join_requests", "student"))).exists(), false);
+});
+
+test("conjunto 4 ampliado: otro docente admin y estudiante no gestionan invitaciones ajenas", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("other", "other@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  for (const [uid, email] of [["other","other@example.test"], ["admin","admin@example.test"], ["student","student@example.test"]]) {
+    const db = userContext(uid, email, true);
+    for (const change of [{status:"paused"}, {status:"inactive"}, {status:"active"}, {validForSeconds:7200}]) {
+      await assertPermissionDenied(updateDoc(doc(db, "courses", "course", "invitation", "current"), {...change, updatedAt:serverTimestamp()}));
+    }
+    await assertPermissionDenied(renewInvitationAtomically(db, "course", inviteCodeB));
+  }
 });

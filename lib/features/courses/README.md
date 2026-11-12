@@ -7,3 +7,5 @@ El propietario se deriva de Firebase Auth. El cliente no edita ni elimina cursos
 En modo debug, la revisión ofrece **Diagnosticar sin guardar (debug)** y el aviso ofrece **Ver diagnóstico**. Permiten copiar los valores consumidos por el comparador sin crear cursos ni exportar identificadores reales o datos de perfil. Procedimiento y estado pendiente: [diagnóstico de horarios](../../../docs/diagnostico_conflictos_horarios.md).
 
 El conjunto 3 enlaza el detalle del curso docente con la gestión de estudiantes. La inscripción y sus consultas viven en [`enrollments`](../enrollments/README.md); el padre y los bloques del curso siguen siendo la fuente de información del calendario. El estudiante solo obtiene acceso de lectura a un curso en el que está inscrito.
+
+El conjunto 4 añade invitaciones temporales y decisiones de acceso mediante [`course_entry`](../course_entry/README.md). El código solo permite solicitar; la matrícula sigue en `enrollments` y el horario permanece protegido hasta que exista ese documento canónico.

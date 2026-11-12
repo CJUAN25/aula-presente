@@ -152,3 +152,59 @@ El docente autorizado crea en su curso mediante una transacción que comprueba l
 El estudiante reconstruye el curso y el horario guardado y reutiliza `generatePlannedMeetings` para consultar encuentros **previstos**. Si tiene también `teacher`, conserva por separado el espacio de cursos que imparte. Una sesión cerrada, un rol retirado o un cambio de cuenta impide reutilizar una respuesta antigua en la interfaz. El resultado de la transacción se devuelve sin una lectura posterior que convierta un guardado confirmado en error aparente. Un fallo de red durante la transacción puede dejar resultado incierto: la interfaz debe ofrecer consultar la lista y reintentar con el mismo ID, sin afirmar que se canceló.
 
 El contrato, los frames vigentes, las pruebas y los límites se describen en [seguimiento_conjunto_3.md](seguimiento_conjunto_3.md). El usuario informó que desplegó las reglas y el índice y comprobó manualmente el recorrido en el TECNO; [activacion_conjunto_3.md](activacion_conjunto_3.md) conserva los pasos para reproducirlo. Codex no ejecutó esa prueba real. Excel, invitaciones, solicitudes de ingreso, edición/retiro/reincorporación, asistencia, QR, Bluetooth y reportes permanecen fuera de este conjunto.
+
+## Conjunto funcional 4: ingreso por código temporal
+
+El módulo `lib/features/course_entry/` genera y gestiona invitaciones de cursos propios, permite la consulta puntual de un código, crea solicitudes verificadas y consulta las solicitudes del docente y del estudiante. `presentation/` usa repositorios inyectados; no accede directamente a Firestore. La invitación no concede acceso: el ingreso efectivo requiere una decisión del docente propietario y una matrícula canónica.
+
+### Invitaciones
+
+La configuración privada única se guarda en `courses/{courseId}/invitation/current` con exactamente estos campos:
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `code` | string | 16 caracteres del alfabeto `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (32 símbolos; excluye `0`, `1`, `I`, `O`). El cliente lo crea con `Random.secure()`, lo normaliza antes de formar la ruta y lo muestra en cuatro grupos de cuatro. |
+| `status` | string | `active`, `paused` o `inactive` (desactivación definitiva para ese código). |
+| `createdAt` | timestamp | `serverTimestamp()`; reinicia la vigencia al renovar. |
+| `updatedAt` | timestamp | `serverTimestamp()` en cada cambio confirmado. |
+| `validForSeconds` | int | Duración total desde `createdAt`: 3600–7776000 segundos (1 hora–90 días), por defecto 1209600 (14 días). Ausente en documentos antiguos, que conservan 14 días. |
+
+El índice de consulta exacta `course_invites/{code}` mantiene exactamente `courseId`, `subject`, `group`, `period` y `createdAt`. No contiene horario, bloques, docente, directorio, perfiles ni otra fuente de vencimiento. Solo un estudiante verificado con perfil válido puede hacer `get` de un código conocido. No permite `list`. Las reglas comparan código/creación con `current`, estado activo y `request.time < createdAt + validForSeconds` (14 días si el campo está ausente). El estudiante **no lee** `invitation/current`: esa lectura en el Dart anterior causaba `permission-denied` incluso con códigos nuevos. Solo las reglas acceden internamente al documento privado. Consulta y envío usan el índice permitido y revalidan en servidor al confirmar.
+
+Flutter muestra al docente el vencimiento derivado de la creación confirmada más la duración, o espera si todavía no hay timestamp confirmado. El estado guardado se distingue de la vigencia efectiva y no se calcula con `DateTime.now()` para bloquear acciones. El estudiante no anuncia una fecha privada que el índice no proporciona. Pausar no detiene el tiempo; reactivar exige vigencia futura; editar conserva creación/código y exige que la vigencia anterior y propuesta sean futuras. Desactivar es definitivo para ese código. Renovar genera otro y puede reemplazar uno vencido o desactivado. No se modifican solicitudes previas, decisiones, roles ni matrículas.
+
+El docente verificado con perfil `teacher` solo puede leer, crear, renovar o desactivar `current` en un curso propio. Crear/renovar escribe el nuevo `current` y `course_invites/{code}` en una transacción; el código anterior deja de ser consultable al cambiar el puntero y no se borran los documentos históricos. Si un identificador aleatorio colisiona, las reglas bloquean sobrescribir el documento. Como no se permite sondear códigos antiguos o ajenos, el cliente conserva `permission-denied` como tal y no lo trata como una colisión inferida.
+
+### Solicitudes y decisiones
+
+La ruta es `courses/{courseId}/join_requests/{studentUid}`; el UID y curso se derivan de la ruta. El esquema exacto es:
+
+| Campo | Tipo | Restricción |
+|---|---|---|
+| `studentUid` | string | Debe ser igual al UID autenticado y al ID del documento. |
+| `name` | string | Snapshot del perfil, de 1 a 100 caracteres. |
+| `email` | string | Snapshot del correo verificado; de 3 a 254 caracteres, igual al token y perfil al solicitar. |
+| `studentCode` | string o null | Snapshot del perfil; si es texto, de 1 a 40 caracteres. |
+| `subject` | string | Snapshot mínimo de curso, cotejado con el documento padre, de 1 a 120 caracteres no blancos. |
+| `group` | string | Snapshot de curso cotejado; de 1 a 40 caracteres no blancos. |
+| `period` | string | Snapshot de curso cotejado; de 1 a 32 caracteres no blancos. |
+| `invitationCode` | string | Código normalizado usado para solicitar; las reglas lo verifican contra invitación actual. Se persiste para validar el origen, pero el modelo y la UI no lo muestran ni lo registran. |
+| `status` | string | `pending`, `approved` o `rejected`; al crear es `pending`. |
+| `createdAt` | timestamp | `serverTimestamp()` de la solicitud; inmutable. |
+| `decidedBy` | string o null | UID del docente propietario; null al crear. |
+| `decidedAt` | timestamp o null | `serverTimestamp()` al decidir; null al crear. |
+| `rejectionReason` | string o null | null al crear o aprobar; en rechazo, motivo recortado de 1 a 500 caracteres. |
+
+Una cuenta con `student` y correo verificado puede crear y leer la solicitud cuyo ID sea su UID, y consultar únicamente su `collectionGroup('join_requests')` filtrado por `studentUid == request.auth.uid`. El docente verificado propietario puede leer documentos puntuales de su curso y listar solo documentos pendientes. `admin` sin permiso `teacher` no recibe acceso académico. No se puede enumerar invitaciones, estudiantes, solicitudes de otro UID ni cursos a partir de un código.
+
+Enviar se valida de nuevo en una transacción: invitación todavía actual/activa/no vencida, perfil autenticado, matrícula existente y solicitud estable. El ID UID hace idempotente el reintento: una solicitud pending se reutiliza; un rechazo se conserva como decisión histórica y no permite reenvío en esta versión; quien ya está matriculado recibe el estado existente sin duplicado. Los campos de materia, grupo y período permiten mostrar solicitudes pendientes y decisiones después de expirar el código, sin abrir el curso o el horario antes de la matrícula.
+
+Aprobar solo permite `pending → approved`, actualiza actor/fecha y crea o reutiliza `courses/{courseId}/enrollments/{studentUid}` en la misma transacción. El mapa de matrícula conserva exactamente el esquema del conjunto 3; los datos de identidad y curso proceden de snapshots cotejados con la solicitud. Rechazar solo permite `pending → rejected`, exige motivo y nunca crea matrícula. `getAfter()` exige que una aprobación y matrícula nueva aparezcan juntas; las decisiones finales no se pueden volver a cambiar. Si una matrícula ya existe, se conserva sin reescribirla. Si el flujo manual del conjunto 3 encuentra una solicitud pending, la inscripción y su resolución como approved ocurren en la misma transacción; una inscripción manual posterior a rejected deja intacta esa historia y aparece en Mis materias. Races de aprobación, rechazo, solicitud y matrícula se resuelven por el ID estable y el reintento transaccional; una escritura confirmada no se marca fallida por un refresco posterior.
+
+### Consultas e índices
+
+- Pendientes docentes: subcolección del curso, `status == 'pending'`, `createdAt DESC`, ID DESC, con páginas. Índice de grupo `join_requests`, `COLLECTION`, `status ASC`, `createdAt DESC`, `__name__ DESC`.
+- Solicitudes del estudiante: `collectionGroup('join_requests')`, `studentUid == uid`, `createdAt DESC`, ID DESC, con páginas. Índice de grupo `join_requests`, `COLLECTION_GROUP`, `studentUid ASC`, `createdAt DESC`, `__name__ DESC`.
+- Búsqueda del código: `get` puntual por documento, sin índice compuesto ni lista general.
+
+Las reglas, estados, métodos Dart, frames de Figma, carreras, pruebas y limitaciones de este conjunto están en [seguimiento_conjunto_4.md](seguimiento_conjunto_4.md). La validación real informada por el propietario y los pasos para revisar la pantalla final están en [activacion_conjunto_4.md](activacion_conjunto_4.md). Codex no desplegó Firebase ni ejecutó el teléfono.

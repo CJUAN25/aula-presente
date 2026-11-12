@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/course_entry_repository_scope.dart';
 import '../../../app/theme/app_theme.dart';
+import '../../course_entry/presentation/student_course_entry_screens.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_detail_screen.dart';
 import '../../courses/presentation/course_presentation_components.dart';
@@ -223,10 +225,30 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          const CourseStateCard(
-            title: 'Vincular otra materia',
-            message: 'Los códigos de unión y las solicitudes del estudiante llegarán en otra entrega. Pide al docente que te agregue manualmente.',
-            icon: Icons.info_outline,
+          CourseSecondaryButton(
+            label: 'Vincular otra materia',
+            icon: Icons.key_outlined,
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => StudentCourseCodeScreen(
+                  repository: CourseEntryRepositoryScope.read(context),
+                  enrollmentRepository: widget.repository,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          CourseSecondaryButton(
+            label: 'Consultar solicitudes de ingreso',
+            icon: Icons.assignment_outlined,
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => MyJoinRequestsScreen(
+                  repository: CourseEntryRepositoryScope.read(context),
+                  enrollmentRepository: widget.repository,
+                ),
+              ),
+            ),
           ),
         ],
       ),

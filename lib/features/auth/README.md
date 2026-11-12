@@ -7,7 +7,7 @@
 - `application/`: validación de formularios.
 - `presentation/auth_screens.dart`: registro, inicio, verificación, recuperación, selección de espacios y perfiles; resuelve la navegación según estados tipados.
 
-`AulaPresenteApp` conecta Firebase Auth y Firestore con `administration` y `enrollments` mediante sus respectivos repositorios y scopes. Las vistas no realizan llamadas Firestore directas. La implementación de solicitud docente vive en `lib/features/administration/`; la inscripción manual y la consulta de materias, en `lib/features/enrollments/`.
+`AulaPresenteApp` conecta Firebase Auth y Firestore con `administration`, `enrollments` y `course_entry` mediante sus respectivos repositorios y scopes. Las vistas no realizan llamadas Firestore directas. La implementación de solicitud docente vive en `lib/features/administration/`; la inscripción manual y consulta de materias, en `lib/features/enrollments/`; las invitaciones por código y decisiones de ingreso, en `lib/features/course_entry/`.
 
 ## Perfiles y acceso
 
