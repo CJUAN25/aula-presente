@@ -1,4 +1,16 @@
-# Estado actual — 11 de noviembre de 2026
+# Estado actual — 14 de noviembre de 2026
+
+## Conjunto funcional 5: retiro y reincorporación con historial
+
+Implementación local en `feature/conjunto-5-retiro-y-reincorporacion`, creada desde `75c3b959c644d7674f8235dc19a8b47d6577d1a7` de Conjunto 4. Conserva una sola matrícula en `courses/{courseId}/enrollments/{studentUid}`; las transiciones individuales escriben estado e historial en una transacción, mantienen `createdAt` y no se eliminan. La inscripción manual y el ingreso por código informan una matrícula retirada sin duplicarla ni reabrirla.
+
+**Estado:** implementación revisada y cerrada en `feature/conjunto-5-retiro-y-reincorporacion`. Se consultaron los frames vigentes M01/M14/M18/M13/M15/M33/M34 y los espacios E02/E08 en modo lectura. No se modificó Figma. Los detalles del contrato, hallazgos y resultados están en [seguimiento_conjunto_5.md](seguimiento_conjunto_5.md); los pasos de activación y reproducción con dos cuentas están en [activacion_conjunto_5.md](activacion_conjunto_5.md).
+
+**Comprobaciones locales reportadas por Codex antes de este cierre:** `flutter analyze` sin problemas; 195/195 pruebas Flutter; 74/74 pruebas de reglas en el emulador ficticio; sintaxis JS y JSON de índices válidos; `git diff --check` aprobado; widgets C5 a 320/390/430 px con escala 1.6 sin excepciones; APK debug compilada en `build/app/outputs/flutter-apk/app-debug.apk` (226,372,526 bytes). En el cierre se volvieron a validar el JSON de índices y `git diff --check`; no se repitieron análisis, pruebas Flutter, emulador ni APK porque solo se ajustaron documentación y el manifiesto de índices. La revisión independiente corrigió el acceso del estudiante a su matrícula, el orden del historial, fechas de confirmación, conteo al volver y título de aprobación histórica.
+
+**Activación y prueba manual informadas por el propietario:** Firebase real permitió completar el recorrido en el TECNO: el docente retiró y reincorporó al estudiante, el historial se conservó y el estudiante perdió y recuperó el acceso a la misma materia y a su horario. En consola, el propietario confirmó los siete índices **Habilitados**. Codex no publicó las reglas/índices ni ejecutó esa prueba. Al activar, se conservó el índice histórico de `enrollments` de grupo de colección (`studentUid ASC`, `createdAt DESC`, `__name__ DESC`): el propietario rechazó eliminarlo y su declaración exacta se reincorporó al manifiesto porque no equivale al nuevo índice que filtra por `status`.
+
+La comparación visual pixel a pixel sigue pendiente. El cierre local se publica en la rama del conjunto 5; `main` y la release `v0.1.0-entrega-1` se conservan separados.
 
 ## Conjunto funcional 4: ingreso por código temporal
 

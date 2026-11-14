@@ -29,6 +29,7 @@ String courseEntryErrorMessage(Object? error, {bool uncertainWrite = false}) {
       CourseEntryFailureKind.courseUnavailable =>
         'El curso ya no está disponible para esta operación.',
       CourseEntryFailureKind.alreadyResolved => 'La solicitud ya fue resuelta. Actualiza la lista para consultar su estado.',
+      CourseEntryFailureKind.enrollmentWithdrawn => 'La matrícula está retirada. El docente propietario debe reincorporar al estudiante; no se puede aprobar la solicitud para reactivar el acceso.',
       CourseEntryFailureKind.permissionDenied => 'Firestore rechazó la operación por permisos. Comprueba tu rol y las reglas publicadas.',
       CourseEntryFailureKind.network =>
         uncertainWrite

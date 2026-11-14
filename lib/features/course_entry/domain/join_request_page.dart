@@ -25,6 +25,7 @@ enum JoinRequestResultKind {
   alreadyPending,
   alreadyRejected,
   alreadyEnrolled,
+  alreadyWithdrawn,
 }
 
 class JoinRequestResult {

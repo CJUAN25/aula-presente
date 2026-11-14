@@ -9,6 +9,7 @@ enum CourseEntryFailureKind {
   inviteUnavailable,
   courseUnavailable,
   alreadyResolved,
+  enrollmentWithdrawn,
   permissionDenied,
   network,
   invalidData,

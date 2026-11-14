@@ -6,6 +6,7 @@ enum EnrollmentFailureKind {
   studentRoleRequired,
   invalidInput,
   candidateChanged,
+  staleEnrollment,
   courseUnavailable,
   permissionDenied,
   network,

@@ -14,6 +14,7 @@ import 'package:aula_presente/features/courses/domain/course.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment_status_change.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
 import 'package:aula_presente/features/schedule/domain/course_schedule.dart';
@@ -87,7 +88,7 @@ JoinRequest _request({
   rejectionReason: rejectionReason,
 );
 
-Enrollment _enrollment() => Enrollment(
+Enrollment _enrollment({String status = 'active'}) => Enrollment(
   courseId: 'course-1',
   studentUid: 'student-1',
   ownerUid: 'teacher-1',
@@ -97,7 +98,7 @@ Enrollment _enrollment() => Enrollment(
   subject: 'Bases de Datos',
   group: 'G2',
   period: '2026-2',
-  status: 'active',
+  status: status,
   createdAt: _createdAt,
 );
 
@@ -110,6 +111,7 @@ class _EntryRepository implements CourseEntryRepository {
   JoinDecisionResultStatus decisionStatus = JoinDecisionResultStatus.approved;
   Completer<JoinRequestResult>? pendingSubmit;
   bool failNextCourseList = false;
+  bool rejectApprovalForWithdrawnEnrollment = false;
   Object? lookupError;
   Object? renewError;
   int createCalls = 0;
@@ -202,7 +204,9 @@ class _EntryRepository implements CourseEntryRepository {
     return JoinRequestResult(
       kind: submitKind,
       courseId: 'course-1',
-      request: submitKind == JoinRequestResultKind.alreadyEnrolled
+      request:
+          submitKind == JoinRequestResultKind.alreadyEnrolled ||
+              submitKind == JoinRequestResultKind.alreadyWithdrawn
           ? null
           : request,
     );
@@ -239,6 +243,12 @@ class _EntryRepository implements CourseEntryRepository {
     String? rejectionReason,
   }) async {
     decisionCalls++;
+    if (decision == JoinRequestDecision.approve &&
+        rejectApprovalForWithdrawnEnrollment) {
+      throw const CourseEntryFailure(
+        CourseEntryFailureKind.enrollmentWithdrawn,
+      );
+    }
     final status = decision == JoinRequestDecision.approve
         ? decisionStatus
         : rejectionReason == null
@@ -286,15 +296,47 @@ class _EnrollmentRepository implements EnrollmentRepository {
   @override
   Future<EnrollmentPage> listCourseStudents({
     required String courseId,
+    String status = 'active',
     EnrollmentCursor? cursor,
     int pageSize = 25,
   }) async => EnrollmentPage(items: const [], nextCursor: null);
 
   @override
+  String newStatusEventId({
+    required String courseId,
+    required String studentUid,
+  }) => 'status-event-1';
+
+  @override
+  Future<EnrollmentStatusChangeResult> changeEnrollmentStatus({
+    required Enrollment expected,
+    required String nextStatus,
+    required String operationId,
+  }) async =>
+      EnrollmentStatusChangeResult(enrollment: expected, alreadyApplied: false);
+
+  @override
+  Future<Enrollment> getCourseEnrollment({
+    required String courseId,
+    required String studentUid,
+  }) async => _enrollment();
+
+  @override
+  Future<EnrollmentHistoryPage> listEnrollmentHistory({
+    required String courseId,
+    required String studentUid,
+    EnrollmentHistoryCursor? cursor,
+    int pageSize = 25,
+  }) async => EnrollmentHistoryPage(items: const [], nextCursor: null);
+
+  @override
   Future<EnrollmentPage> listMyCourses({
     EnrollmentCursor? cursor,
     int pageSize = 25,
-  }) async => EnrollmentPage(items: items, nextCursor: null);
+  }) async => EnrollmentPage(
+    items: items.where((item) => item.status == 'active').toList(),
+    nextCursor: null,
+  );
 
   @override
   Future<int> countCourseStudents(String courseId) async => 0;
@@ -717,6 +759,63 @@ void main() {
     expect(repository.submitCalls, 1);
   });
 
+  testWidgets('un código no crea solicitud si la matrícula está retirada', (
+    tester,
+  ) async {
+    final repository = _EntryRepository()
+      ..uid = 'student-1'
+      ..submitKind = JoinRequestResultKind.alreadyWithdrawn;
+    await tester.pumpWidget(
+      _app(
+        ConfirmCourseRequestScreen(
+          preview: _preview(),
+          repository: repository,
+          enrollmentRepository: _EnrollmentRepository(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Solicitar unirme'));
+    await tester.pumpAndSettle();
+    expect(find.text('Tu inscripción está retirada.'), findsOneWidget);
+    expect(find.text('No se creó otra solicitud'), findsOneWidget);
+    expect(repository.submitCalls, 1);
+    expect(repository.decisionCalls, 0);
+    expect(find.text('Horario semanal'), findsNothing);
+  });
+
+  testWidgets(
+    'una aprobación histórica no afirma acceso cuando la matrícula está retirada',
+    (tester) async {
+      final enrollmentRepository = _EnrollmentRepository()
+        ..items.add(_enrollment(status: 'withdrawn'));
+      await tester.pumpWidget(
+        _app(
+          CourseJoinRequestStatusScreen(
+            preview: _preview(),
+            status: JoinRequestStatus.approved,
+            request: _request(status: JoinRequestStatus.approved),
+            repository: _EntryRepository()..uid = 'student-1',
+            enrollmentRepository: enrollmentRepository,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Solicitud aprobada'), findsOneWidget);
+      expect(find.text('Aprobación histórica'), findsOneWidget);
+      expect(find.text('Acceso confirmado'), findsNothing);
+      expect(
+        find.textContaining('Mis materias muestra solo matrículas activas'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Ver mis materias'));
+      await tester.pumpAndSettle();
+      expect(find.text('Aún no tienes materias inscritas'), findsOneWidget);
+      expect(find.text('Horario semanal'), findsNothing);
+    },
+  );
+
   testWidgets(
     'un fallo al refrescar la lista no revierte una aprobación confirmada',
     (tester) async {
@@ -743,6 +842,47 @@ void main() {
       expect(find.text('No se confirmó la decisión'), findsNothing);
       expect(repository.decisionCalls, 1);
       expect(repository.courseListCalls, 2);
+    },
+  );
+
+  testWidgets(
+    'la aprobación no reactiva una matrícula retirada ni queda disponible para repetir',
+    (tester) async {
+      final repository = _EntryRepository()
+        ..uid = 'teacher-1'
+        ..rejectApprovalForWithdrawnEnrollment = true;
+      await tester.pumpWidget(
+        _app(
+          TeacherJoinRequestsScreen(course: _course(), repository: repository),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Estudiante de prueba'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Aprobar ingreso'));
+      await tester.pumpAndSettle();
+      expect(find.text('La matrícula está retirada'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'La aprobación no cambió la solicitud ni el estado del estudiante.',
+        ),
+        findsOneWidget,
+      );
+      expect(repository.request.status, JoinRequestStatus.pending);
+      expect(repository.decisionCalls, 1);
+      await tester.scrollUntilVisible(
+        find.text('Aprobar ingreso'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.widgetWithText(FilledButton, 'Aprobar ingreso'),
+            )
+            .onPressed,
+        isNull,
+      );
     },
   );
 

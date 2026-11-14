@@ -4,7 +4,8 @@ Estas pruebas usan exclusivamente el emulador local y el proyecto ficticio
 `demo-aula-presente-firestore-rules-tests`. No autentican contra Firebase ni
 publican reglas. Las reglas probadas se leen directamente de `../../firestore.rules`.
 El emulador se configura en `firebase.json`; `firestore.indexes.json` contiene
-el índice para filtrar solicitudes por estado y ordenarlas por fecha.
+los índices compuestos de solicitudes, cursos, matrículas y listas filtradas por
+estado.
 
 Desde la raíz del proyecto, con Node.js 24.12 o posterior, Java 21 o posterior y
 Firebase CLI instalados, instala las dependencias y ejecuta las pruebas así:
@@ -18,7 +19,7 @@ firebase emulators:exec --only firestore --project demo-aula-presente-firestore-
 
 La ruta de Java se puede ajustar si el JDK está instalado en otra ubicación.
 
-La suite contiene 70 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
+La suite contiene 74 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
 los permisos de perfiles, `demo_records` y solicitud/aprobación docente; también
 cubre cursos padre y la subcolección `weekly_blocks`, creación atómica de hasta
 ocho bloques, ocurrencias, solapes, consultas y lecturas privadas por propietario,
@@ -33,7 +34,11 @@ renovación, desactivación y expiración calculada con `request.time`; vista m�
 por código exacto; solicitudes propias, filtros/índices y aislamiento; validación
 de identidad, snapshots y estado inicial; aprobación/rechazo atómicos e inmutables;
 matrícula manual con solicitud pending y preservación de decisiones rechazadas;
-y carreras entre decisiones.
+y carreras entre decisiones. El conjunto 5 prueba las transiciones atómicas
+`active → withdrawn` y `withdrawn → active`, eventos de historial inmutables,
+preservación del snapshot y la fecha de creación, rol y propiedad del docente,
+revalidación del acceso del estudiante y rechazo de solicitudes por código o
+aprobaciones que intenten reactivar una inscripción retirada.
 
 La línea base anterior reportó el máximo de 1.000 expresiones del emulador en las
 pruebas de publicación/recuperación del directorio, creación/validación e
@@ -57,4 +62,6 @@ La suite valida las reglas y el patrón transaccional desde el cliente JS; no ej
 el repositorio Dart de Flutter contra el emulador. La serialización canónica de
 dominio y el flujo de presentación Flutter tienen pruebas independientes.
 
-La ampliación del 9 de noviembre añade el recorrido fiel del repositorio: un índice recién escrito permite lectura del estudiante, pero leer `invitation/current` directamente o en transacción sigue denegado. Esa lectura privada era un defecto en Dart; no se abrió con reglas. Se prueban además vigencia configurable finita, pausa/reactivación, desactivación definitiva, edición sin cambio de código, legacy de 14 días, ficha abierta, historial conservado y docentes ajenos. La configuración efectiva solo vive en `current.validForSeconds`; el índice no replica vencimientos. Las 70 pruebas incluyen las nueve regresiones que antes agotaban expresiones; la última revisión del log registró cero diagnósticos de ese límite.
+La ampliación del 9 de noviembre añade el recorrido fiel del repositorio: un índice recién escrito permite lectura del estudiante, pero leer `invitation/current` directamente o en transacción sigue denegado. Esa lectura privada era un defecto en Dart; no se abrió con reglas. Se prueban además vigencia configurable finita, pausa/reactivación, desactivación definitiva, edición sin cambio de código, legacy de 14 días, ficha abierta, historial conservado y docentes ajenos. La configuración efectiva solo vive en `current.validForSeconds`; el índice no replica vencimientos. Las 70 pruebas de esa revisión incluyeron las nueve regresiones que antes agotaban expresiones; la revisión del log registró cero diagnósticos de ese límite.
+
+En la verificación local del conjunto 5, `firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "npm test --prefix tools/firestore_rules_tests"` pasó 74/74 con Firestore Emulator 1.22.0, Firebase CLI 15.32.1, Node.js 24.14.1 y el JBR local 25.0.2. Las reglas y los índices solo se probaron en el emulador; no se publicaron ni se probaron contra Firebase real. Las reglas y los índices actualizados deben desplegarse antes de usar el conjunto 5 en el proyecto real.

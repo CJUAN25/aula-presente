@@ -21,6 +21,7 @@ String enrollmentErrorMessage(Object? error, {bool uncertainWrite = false}) {
       EnrollmentFailureKind.invalidInput =>
         'Revisa el correo y el código antes de continuar.',
       EnrollmentFailureKind.candidateChanged => 'Los datos de esta cuenta cambiaron. Búscala otra vez antes de confirmar.',
+      EnrollmentFailureKind.staleEnrollment => 'La inscripción cambió desde que abriste la ficha. Actualiza la lista antes de decidir.',
       EnrollmentFailureKind.courseUnavailable =>
         'Este curso ya no está disponible para tu cuenta.',
       EnrollmentFailureKind.permissionDenied => 'Firestore rechazó la operación por permisos. Comprueba tu acceso y las reglas publicadas.',

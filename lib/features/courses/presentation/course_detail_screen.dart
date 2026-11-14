@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme/app_theme.dart';
 import '../../../app/enrollment_repository_scope.dart';
+import '../../../app/enrollment_route_observer.dart';
+import '../../enrollments/domain/enrollment_failure.dart';
+import '../../enrollments/domain/enrollment_repository.dart';
+import '../../enrollments/presentation/enrollment_components.dart';
 import '../../enrollments/presentation/teacher_enrollment_screens.dart';
 import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/planned_meeting.dart';
@@ -176,16 +180,172 @@ class CourseDetailScreen extends StatelessWidget {
   }
 }
 
-class CourseCalendarScreen extends StatelessWidget {
-  const CourseCalendarScreen({super.key, required this.course});
+class CourseCalendarScreen extends StatefulWidget {
+  const CourseCalendarScreen({
+    super.key,
+    required this.course,
+    this.studentRepository,
+  });
 
   final Course course;
+  final EnrollmentRepository? studentRepository;
+
+  @override
+  State<CourseCalendarScreen> createState() => _CourseCalendarScreenState();
+}
+
+class _CourseCalendarScreenState extends State<CourseCalendarScreen>
+    with WidgetsBindingObserver, RouteAware {
+  late final String? _sessionUid = widget.studentRepository?.currentUid;
+  ModalRoute<void>? _subscribedRoute;
+  Course? _authorizedCourse;
+  Object? _accessError;
+  bool _loadingAccess = false;
+  bool _withdrawn = false;
+  int _accessEpoch = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.studentRepository != null) {
+      WidgetsBinding.instance.addObserver(this);
+      _refreshStudentAccess();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (widget.studentRepository == null) return;
+    final route = ModalRoute.of(context);
+    if (route is ModalRoute<void> && route != _subscribedRoute) {
+      if (_subscribedRoute != null) {
+        aulaPresenteRouteObserver.unsubscribe(this);
+      }
+      _subscribedRoute = route;
+      aulaPresenteRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPopNext() => _refreshStudentAccess();
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (widget.studentRepository == null) return;
+    if (state == AppLifecycleState.resumed) {
+      _refreshStudentAccess();
+    } else {
+      _accessEpoch++;
+      if (mounted) {
+        setState(() {
+          _authorizedCourse = null;
+          _accessError = null;
+          _withdrawn = false;
+          _loadingAccess = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.studentRepository != null) {
+      WidgetsBinding.instance.removeObserver(this);
+      aulaPresenteRouteObserver.unsubscribe(this);
+    }
+    super.dispose();
+  }
+
+  Future<void> _refreshStudentAccess() async {
+    final repository = widget.studentRepository;
+    if (repository == null || _loadingAccess) return;
+    final sessionUid = _sessionUid;
+    if (sessionUid == null || repository.currentUid != sessionUid) {
+      setState(() {
+        _authorizedCourse = null;
+        _accessError = const EnrollmentFailure(
+          EnrollmentFailureKind.unauthenticated,
+        );
+        _withdrawn = false;
+        _loadingAccess = false;
+      });
+      return;
+    }
+    final epoch = ++_accessEpoch;
+    setState(() {
+      _authorizedCourse = null;
+      _accessError = null;
+      _withdrawn = false;
+      _loadingAccess = true;
+    });
+    try {
+      final enrollment = await repository.getCourseEnrollment(
+        courseId: widget.course.id,
+        studentUid: sessionUid,
+      );
+      if (!mounted || epoch != _accessEpoch) return;
+      if (repository.currentUid != sessionUid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+      }
+      if (enrollment.status != 'active') {
+        setState(() => _withdrawn = true);
+        return;
+      }
+      setState(() => _authorizedCourse = widget.course);
+    } catch (error) {
+      if (mounted && epoch == _accessEpoch) {
+        setState(() {
+          _authorizedCourse = null;
+          _accessError = error;
+        });
+      }
+    } finally {
+      if (mounted && epoch == _accessEpoch) {
+        setState(() => _loadingAccess = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final course = widget.studentRepository == null
+        ? widget.course
+        : _authorizedCourse;
+    if (widget.studentRepository != null && course == null) {
+      return CoursePage(
+        title: 'Calendario del curso',
+        leading: IconButton(
+          tooltip: 'Volver al curso',
+          onPressed: () => Navigator.of(context).maybePop(),
+          icon: const Icon(Icons.arrow_back),
+        ),
+        child: Center(
+          child: _loadingAccess
+              ? const CourseLoading(message: 'Comprobando tu inscripción…')
+              : _withdrawn
+              ? CourseStateCard(
+                  title: 'Tu inscripción fue retirada',
+                  message: 'El horario dejó de estar disponible. Contacta al docente si necesitas que te reincorpore.',
+                  icon: Icons.info_outline,
+                  action: TextButton(
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    child: const Text('Volver a mis materias'),
+                  ),
+                )
+              : _accessError != null
+              ? EnrollmentFailureCard(
+                  error: _accessError!,
+                  onRetry: _refreshStudentAccess,
+                )
+              : const CourseLoading(message: 'Comprobando tu inscripción…'),
+        ),
+      );
+    }
+    final authorizedCourse = course!;
     final meetings = generatePlannedMeetings(
-      courseId: course.id,
-      schedule: course.schedule,
+      courseId: authorizedCourse.id,
+      schedule: authorizedCourse.schedule,
     );
     return CoursePage(
       title: 'Calendario del curso',
@@ -217,8 +377,8 @@ class CourseCalendarScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         CoursePageHeading(
-                          eyebrow: course.group,
-                          title: course.subject,
+                          eyebrow: authorizedCourse.group,
+                          title: authorizedCourse.subject,
                           description: 'Encuentros calculados desde el horario semanal. Son previstos; no representan asistencia abierta o realizada.',
                         ),
                         const SizedBox(height: 14),
@@ -238,8 +398,9 @@ class CourseCalendarScreen extends StatelessWidget {
                     onTap: () => Navigator.of(context).push<void>(
                       MaterialPageRoute<void>(
                         builder: (_) => PlannedMeetingDetailScreen(
-                          course: course,
+                          course: authorizedCourse,
                           meeting: meeting,
+                          studentRepository: widget.studentRepository,
                         ),
                       ),
                     ),
@@ -256,10 +417,179 @@ class PlannedMeetingDetailScreen extends StatelessWidget {
     super.key,
     required this.course,
     required this.meeting,
+    this.studentRepository,
   });
 
   final Course course;
   final PlannedMeeting meeting;
+  final EnrollmentRepository? studentRepository;
+
+  @override
+  Widget build(BuildContext context) => studentRepository == null
+      ? _buildMeeting(context)
+      : _AuthorizedPlannedMeetingScreen(
+          course: course,
+          meeting: meeting,
+          repository: studentRepository!,
+        );
+
+  Widget _buildMeeting(BuildContext context) => _MeetingDetailContent(
+    course: course,
+    meeting: meeting,
+    accessMessage: null,
+  );
+}
+
+class _AuthorizedPlannedMeetingScreen extends StatefulWidget {
+  const _AuthorizedPlannedMeetingScreen({
+    required this.course,
+    required this.meeting,
+    required this.repository,
+  });
+
+  final Course course;
+  final PlannedMeeting meeting;
+  final EnrollmentRepository repository;
+
+  @override
+  State<_AuthorizedPlannedMeetingScreen> createState() =>
+      _AuthorizedPlannedMeetingScreenState();
+}
+
+class _AuthorizedPlannedMeetingScreenState
+    extends State<_AuthorizedPlannedMeetingScreen>
+    with WidgetsBindingObserver, RouteAware {
+  late final String? _sessionUid = widget.repository.currentUid;
+  ModalRoute<void>? _subscribedRoute;
+  bool _loading = true;
+  bool _withdrawn = false;
+  Object? _error;
+  int _epoch = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkAccess(force: true);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is ModalRoute<void> && route != _subscribedRoute) {
+      if (_subscribedRoute != null) {
+        aulaPresenteRouteObserver.unsubscribe(this);
+      }
+      _subscribedRoute = route;
+      aulaPresenteRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPopNext() => _checkAccess(force: true);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkAccess(force: true);
+    } else {
+      _epoch++;
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _withdrawn = false;
+          _error = null;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    aulaPresenteRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  Future<void> _checkAccess({bool force = false}) async {
+    if (_loading && !force) return;
+    final uid = _sessionUid;
+    final epoch = ++_epoch;
+    setState(() {
+      _loading = true;
+      _withdrawn = false;
+      _error = null;
+    });
+    try {
+      if (uid == null || widget.repository.currentUid != uid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+      }
+      final enrollment = await widget.repository.getCourseEnrollment(
+        courseId: widget.course.id,
+        studentUid: uid,
+      );
+      if (!mounted || epoch != _epoch) return;
+      if (widget.repository.currentUid != uid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+      }
+      if (enrollment.status != 'active') {
+        setState(() => _withdrawn = true);
+      }
+    } catch (error) {
+      if (mounted && epoch == _epoch) setState(() => _error = error);
+    } finally {
+      if (mounted && epoch == _epoch) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const CoursePage(
+        title: 'Detalle del encuentro',
+        child: CourseLoading(message: 'Comprobando tu inscripción…'),
+      );
+    }
+    if (_withdrawn || _error != null) {
+      return CoursePage(
+        title: 'Detalle del encuentro',
+        leading: IconButton(
+          tooltip: 'Volver al calendario',
+          onPressed: () => Navigator.of(context).maybePop(),
+          icon: const Icon(Icons.arrow_back),
+        ),
+        child: _withdrawn
+            ? CourseStateCard(
+                title: 'Tu inscripción fue retirada',
+                message: 'Este encuentro ya no está disponible. Contacta al docente si necesitas que te reincorpore.',
+                icon: Icons.info_outline,
+                action: TextButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                  child: const Text('Volver al calendario'),
+                ),
+              )
+            : EnrollmentFailureCard(error: _error!, onRetry: _checkAccess),
+      );
+    }
+    return _MeetingDetailContent(
+      course: widget.course,
+      meeting: widget.meeting,
+      accessMessage: null,
+    );
+  }
+}
+
+class _MeetingDetailContent extends StatelessWidget {
+  const _MeetingDetailContent({
+    required this.course,
+    required this.meeting,
+    required this.accessMessage,
+  });
+
+  final Course course;
+  final PlannedMeeting meeting;
+  final String? accessMessage;
 
   @override
   Widget build(BuildContext context) => CoursePage(
@@ -271,39 +601,50 @@ class PlannedMeetingDetailScreen extends StatelessWidget {
     ),
     child: CourseContent(
       children: [
-        CoursePageHeading(
-          eyebrow: 'Encuentro previsto',
-          title: course.subject,
-          description: course.group,
-        ),
-        const SizedBox(height: 20),
-        CoursePanel(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _CourseMetadata(label: 'Fecha', value: _dateLabel(meeting.date)),
-              const SizedBox(height: 14),
-              _CourseMetadata(
-                label: 'Horario',
-                value: '${meeting.startTime}–${meeting.endTime}',
-              ),
-              const SizedBox(height: 14),
-              _CourseMetadata(
-                label: 'Día',
-                value: _weekdayName(meeting.weekday),
-              ),
-              if (meeting.room?.isNotEmpty == true) ...[
-                const SizedBox(height: 14),
-                _CourseMetadata(label: 'Aula', value: meeting.room!),
-              ],
-              const SizedBox(height: 14),
-              const _CourseMetadata(
-                label: 'Estado',
-                value: 'Previsto · no es una sesión de asistencia',
-              ),
-            ],
+        if (accessMessage != null)
+          CourseStateCard(
+            title: 'Tu inscripción fue retirada',
+            message: accessMessage!,
+            icon: Icons.info_outline,
+          )
+        else ...[
+          CoursePageHeading(
+            eyebrow: 'Encuentro previsto',
+            title: course.subject,
+            description: course.group,
           ),
-        ),
+          const SizedBox(height: 20),
+          CoursePanel(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _CourseMetadata(
+                  label: 'Fecha',
+                  value: _dateLabel(meeting.date),
+                ),
+                const SizedBox(height: 14),
+                _CourseMetadata(
+                  label: 'Horario',
+                  value: '${meeting.startTime}–${meeting.endTime}',
+                ),
+                const SizedBox(height: 14),
+                _CourseMetadata(
+                  label: 'Día',
+                  value: _weekdayName(meeting.weekday),
+                ),
+                if (meeting.room?.isNotEmpty == true) ...[
+                  const SizedBox(height: 14),
+                  _CourseMetadata(label: 'Aula', value: meeting.room!),
+                ],
+                const SizedBox(height: 14),
+                const _CourseMetadata(
+                  label: 'Estado',
+                  value: 'Previsto · no es una sesión de asistencia',
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     ),
   );

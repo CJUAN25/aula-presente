@@ -1,4 +1,5 @@
-/// One immutable active enrollment. The course/student pair is the document path.
+/// Canonical course/student enrollment. The snapshots and creation time are
+/// immutable; only [status] and the last transition markers can change.
 class Enrollment {
   const Enrollment({
     required this.courseId,
@@ -12,6 +13,8 @@ class Enrollment {
     required this.period,
     required this.status,
     required this.createdAt,
+    this.lastStatusEventId,
+    this.lastStatusChangedAt,
   });
 
   final String courseId;
@@ -27,4 +30,11 @@ class Enrollment {
 
   /// Null only for the immediate result of a confirmed server write.
   final DateTime? createdAt;
+
+  /// Missing on legacy enrollments that have never changed status.
+  final String? lastStatusEventId;
+
+  /// Missing together with [lastStatusEventId] on legacy enrollments. It is
+  /// null on the immediate result of a confirmed server timestamp write.
+  final DateTime? lastStatusChangedAt;
 }

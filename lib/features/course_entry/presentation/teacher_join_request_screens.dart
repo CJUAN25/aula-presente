@@ -302,6 +302,10 @@ class _ReviewJoinRequestScreenState extends State<ReviewJoinRequestScreen> {
     final result = _result;
     final request = result?.request ?? widget.request;
     final status = request.status;
+    final withdrawnEnrollment =
+        _error is CourseEntryFailure &&
+        (_error as CourseEntryFailure).kind ==
+            CourseEntryFailureKind.enrollmentWithdrawn;
     return CoursePage(
       title: 'Revisar solicitud',
       leading: IconButton(
@@ -384,11 +388,19 @@ class _ReviewJoinRequestScreenState extends State<ReviewJoinRequestScreen> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              CourseEntryFailureCard(
-                error: _error!,
-                uncertainWrite: true,
-                onRetry: null,
-              ),
+              if (withdrawnEnrollment)
+                const CourseStateCard(
+                  title: 'La matrícula está retirada',
+                  message: 'La aprobación no cambió la solicitud ni el estado del estudiante. Abre Gestión de estudiantes → Retirados e histórico y reincorpora esta matrícula; después vuelve aquí si la solicitud sigue pendiente.',
+                  color: AppColors.danger,
+                  icon: Icons.history,
+                )
+              else
+                CourseEntryFailureCard(
+                  error: _error!,
+                  uncertainWrite: true,
+                  onRetry: null,
+                ),
             ],
             if (status == JoinRequestStatus.pending) ...[
               const SizedBox(height: 20),
@@ -396,7 +408,7 @@ class _ReviewJoinRequestScreenState extends State<ReviewJoinRequestScreen> {
                 label: _busy ? 'Aprobando…' : 'Aprobar ingreso',
                 icon: Icons.check,
                 busy: _busy,
-                onPressed: _busy ? null : _approve,
+                onPressed: _busy || withdrawnEnrollment ? null : _approve,
               ),
               const SizedBox(height: 12),
               CourseSecondaryButton(

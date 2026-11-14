@@ -57,6 +57,10 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     'status',
     'createdAt',
   };
+  static const _enrollmentTransitionKeys = {
+    'lastStatusEventId',
+    'lastStatusChangedAt',
+  };
   static const _profileKeys = {'name', 'email', 'studentCode', 'roles'};
 
   CollectionReference<Map<String, dynamic>> get _courses =>
@@ -419,8 +423,14 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
         }
 
         if (enrollment.exists) {
+          final existingEnrollment = _enrollmentFromSnapshot(
+            enrollment,
+            preview.courseId,
+          );
           return JoinRequestResult(
-            kind: JoinRequestResultKind.alreadyEnrolled,
+            kind: existingEnrollment.status == 'withdrawn'
+                ? JoinRequestResultKind.alreadyWithdrawn
+                : JoinRequestResultKind.alreadyEnrolled,
             courseId: preview.courseId,
           );
         }
@@ -740,6 +750,11 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
               CourseEntryFailureKind.permissionDenied,
             );
           }
+          if (enrollment.status == 'withdrawn') {
+            throw const CourseEntryFailure(
+              CourseEntryFailureKind.enrollmentWithdrawn,
+            );
+          }
         } else if (decision == JoinRequestDecision.approve) {
           enrollment = Enrollment(
             courseId: courseId,
@@ -992,10 +1007,17 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     String courseId,
   ) {
     final data = snapshot.data();
+    final keys = data?.keys.toSet() ?? const <String>{};
+    final hasEventId = data?.containsKey('lastStatusEventId') ?? false;
+    final hasChangedAt = data?.containsKey('lastStatusChangedAt') ?? false;
     if (!snapshot.exists ||
         data == null ||
-        data.keys.toSet().length != _enrollmentKeys.length ||
-        !data.keys.toSet().containsAll(_enrollmentKeys) ||
+        !keys.containsAll(_enrollmentKeys) ||
+        keys.difference({
+          ..._enrollmentKeys,
+          ..._enrollmentTransitionKeys,
+        }).isNotEmpty ||
+        hasEventId != hasChangedAt ||
         data['studentUid'] != snapshot.id ||
         data['ownerUid'] is! String ||
         data['name'] is! String ||
@@ -1004,9 +1026,15 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
         data['subject'] is! String ||
         data['group'] is! String ||
         data['period'] is! String ||
-        data['status'] != 'active' ||
+        (data['status'] != 'active' && data['status'] != 'withdrawn') ||
         data['createdAt'] is! Timestamp) {
       throw const FormatException('Invalid canonical enrollment document.');
+    }
+    if (hasEventId &&
+        (data['lastStatusEventId'] is! String ||
+            (data['lastStatusEventId'] as String).isEmpty ||
+            data['lastStatusChangedAt'] is! Timestamp)) {
+      throw const FormatException('Invalid enrollment transition marker.');
     }
     return Enrollment(
       courseId: courseId,
@@ -1018,8 +1046,14 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
       subject: data['subject'] as String,
       group: data['group'] as String,
       period: data['period'] as String,
-      status: 'active',
+      status: data['status'] as String,
       createdAt: (data['createdAt'] as Timestamp).toDate(),
+      lastStatusEventId: hasEventId
+          ? data['lastStatusEventId'] as String
+          : null,
+      lastStatusChangedAt: hasChangedAt
+          ? (data['lastStatusChangedAt'] as Timestamp).toDate()
+          : null,
     );
   }
 

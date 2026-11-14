@@ -276,6 +276,40 @@ class _ConfirmCourseRequestScreenState
     }
     final result = _result;
     if (result != null) {
+      if (result.kind == JoinRequestResultKind.alreadyWithdrawn) {
+        return CoursePage(
+          title: 'Solicitud de ingreso',
+          leading: IconButton(
+            tooltip: 'Volver a mis materias',
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: const Icon(Icons.arrow_back),
+          ),
+          child: CourseContent(
+            children: [
+              const CoursePageHeading(title: 'Tu inscripción está retirada.'),
+              const SizedBox(height: 16),
+              _CoursePreviewCard(preview: widget.preview),
+              const SizedBox(height: 16),
+              const CourseStateCard(
+                title: 'No se creó otra solicitud',
+                message: 'Ya existe una inscripción histórica para este curso. Pide al docente que revise el historial y te reincorpore. El código no puede crear otra matrícula ni reactivar el acceso.',
+                color: AppColors.information,
+                icon: Icons.history,
+              ),
+              const SizedBox(height: 20),
+              CoursePrimaryButton(
+                label: 'Volver a mis materias',
+                onPressed: () => Navigator.of(context).maybePop(),
+              ),
+              const SizedBox(height: 12),
+              CourseSecondaryButton(
+                label: 'Consultar mis solicitudes',
+                onPressed: _openMyRequests,
+              ),
+            ],
+          ),
+        );
+      }
       if (result.kind == JoinRequestResultKind.alreadyEnrolled) {
         return CoursePage(
           title: 'Cursos encontrados',
@@ -384,12 +418,12 @@ class CourseJoinRequestStatusScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final heading = switch (status) {
       JoinRequestStatus.pending => 'Tu solicitud fue enviada.',
-      JoinRequestStatus.approved => 'Tu ingreso fue aprobado.',
+      JoinRequestStatus.approved => 'Tu solicitud fue aprobada.',
       JoinRequestStatus.rejected => 'La solicitud fue rechazada.',
     };
     final message = switch (status) {
       JoinRequestStatus.pending => 'El docente decide el ingreso. Puedes volver para consultar la respuesta después.',
-      JoinRequestStatus.approved => 'La materia ya está en tu matrícula. Abre Mis materias para consultar el curso y su horario.',
+      JoinRequestStatus.approved => 'La solicitud aprobada permanece en el historial. Mis materias muestra solo matrículas activas; si el docente retiró esta inscripción, pídele que te reincorpore.',
       JoinRequestStatus.rejected =>
         request?.rejectionReason ??
             'El docente decidió no aprobar este ingreso.',
@@ -397,7 +431,7 @@ class CourseJoinRequestStatusScreen extends StatelessWidget {
     return CoursePage(
       title: switch (status) {
         JoinRequestStatus.pending => 'Vinculación pendiente',
-        JoinRequestStatus.approved => 'Ingreso aprobado',
+        JoinRequestStatus.approved => 'Solicitud aprobada',
         JoinRequestStatus.rejected => 'Solicitud rechazada',
       },
       leading: IconButton(
@@ -418,7 +452,7 @@ class CourseJoinRequestStatusScreen extends StatelessWidget {
             title: status == JoinRequestStatus.rejected
                 ? 'Motivo de la decisión'
                 : status == JoinRequestStatus.approved
-                ? 'Acceso confirmado'
+                ? 'Aprobación histórica'
                 : 'El docente decide el ingreso',
             message: message,
             icon: status == JoinRequestStatus.rejected

@@ -402,6 +402,45 @@ async function enrollIdempotently(db, courseId, studentUid, payload) {
   });
 }
 
+async function changeEnrollmentStatusAtomically(
+  db,
+  courseId,
+  studentUid,
+  operationId,
+  nextStatus,
+  { changedBy = "teacher", eventPatch = {}, enrollmentPatch = {} } = {},
+) {
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const eventRef = doc(
+    db,
+    "courses",
+    courseId,
+    "enrollments",
+    studentUid,
+    "status_events",
+    operationId,
+  );
+  return runTransaction(db, async (transaction) => {
+    const enrollmentSnapshot = await transaction.get(enrollmentRef);
+    if (!enrollmentSnapshot.exists()) throw new Error("missing-enrollment");
+    const currentStatus = enrollmentSnapshot.data().status;
+    transaction.update(enrollmentRef, {
+      status: nextStatus,
+      lastStatusEventId: operationId,
+      lastStatusChangedAt: serverTimestamp(),
+      ...enrollmentPatch,
+    });
+    transaction.set(eventRef, {
+      fromStatus: currentStatus,
+      toStatus: nextStatus,
+      changedAt: serverTimestamp(),
+      changedBy,
+      ...eventPatch,
+    });
+    return nextStatus;
+  });
+}
+
 async function seedTeacherAccessRequest(uid, profileData, extraFields = {}) {
   await testEnvironment.withSecurityRulesDisabled(async (context) => {
     await setDoc(
@@ -2090,6 +2129,7 @@ test("conjunto 3: la consulta de grupo exige UID propio y no expone otras inscri
   const ownQuery = query(
     collectionGroup(studentA, "enrollments"),
     where("studentUid", "==", "student-a"),
+    where("status", "==", "active"),
     orderBy("createdAt", "desc"),
     orderBy(documentId(), "desc"),
   );
@@ -2180,7 +2220,7 @@ test("conjunto 3: reintento es único; paginación, conteos y roles combinados c
   assert.equal((await assertSucceeds(getCountFromServer(students))).data().count, 2);
 
   await assertSucceeds(enrollIdempotently(otherTeacher, "course-b", "student-a", enrollmentData("student-a", "other-teacher", "student-a@example.test")));
-  const ownCourses = await assertSucceeds(getDocs(query(collectionGroup(studentA, "enrollments"), where("studentUid", "==", "student-a"), orderBy("createdAt", "desc"), orderBy(documentId(), "desc"))));
+  const ownCourses = await assertSucceeds(getDocs(query(collectionGroup(studentA, "enrollments"), where("studentUid", "==", "student-a"), where("status", "==", "active"), orderBy("createdAt", "desc"), orderBy(documentId(), "desc"))));
   assert.equal(ownCourses.size, 2);
   await assertSucceeds(getDoc(doc(studentA, "courses", "course-a")));
   await assertSucceeds(getDoc(doc(studentA, "courses", "course-b")));
@@ -2811,4 +2851,327 @@ test("conjunto 4 ampliado: otro docente admin y estudiante no gestionan invitaci
     }
     await assertPermissionDenied(renewInvitationAtomically(db, "course", inviteCodeB));
   }
+});
+
+test("conjunto 5: retiro y reincorporación guardan historial atómico y revocan acceso", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = await publishStudent("student", "student@example.test");
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
+  const blockId = courseBlock().id;
+  await assertSucceeds(setDoc(
+    enrollmentRef,
+    enrollmentData("student", "teacher", "student@example.test"),
+  ));
+  const createdAt = (await getDoc(enrollmentRef)).data().createdAt;
+
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "withdraw-1", "withdrawn",
+  ));
+  const withdrawn = (await assertSucceeds(getDoc(enrollmentRef))).data();
+  const withdrawalEvent = (await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+    "withdraw-1",
+  )))).data();
+  assert.equal(withdrawn.status, "withdrawn");
+  assert.equal(withdrawn.lastStatusEventId, "withdraw-1");
+  assert.deepEqual(withdrawn.createdAt, createdAt);
+  assert.equal(withdrawalEvent.fromStatus, "active");
+  assert.equal(withdrawalEvent.toStatus, "withdrawn");
+  assert.equal(withdrawalEvent.changedBy, "teacher");
+  assert.deepEqual(withdrawn.lastStatusChangedAt, withdrawalEvent.changedAt);
+  await assertPermissionDenied(getDoc(doc(student, "courses", "course")));
+  await assertPermissionDenied(getDoc(doc(student, "courses", "course", "weekly_blocks", blockId)));
+  assert.equal((await assertSucceeds(getDocs(query(
+    collectionGroup(student, "enrollments"),
+    where("studentUid", "==", "student"),
+    where("status", "==", "active"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  )))).size, 0);
+  assert.equal((await assertSucceeds(getDoc(doc(
+    student,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+  )))).data().status, "withdrawn");
+  await assertPermissionDenied(getDoc(doc(
+    student,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+    "withdraw-1",
+  )));
+
+  const activeTeacherList = await assertSucceeds(getDocs(query(
+    collection(teacher, "courses", "course", "enrollments"),
+    where("status", "==", "active"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  )));
+  const withdrawnTeacherList = await assertSucceeds(getDocs(query(
+    collection(teacher, "courses", "course", "enrollments"),
+    where("status", "==", "withdrawn"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  )));
+  assert.equal(activeTeacherList.size, 0);
+  assert.equal(withdrawnTeacherList.size, 1);
+  assert.equal((await assertSucceeds(getCountFromServer(query(
+    collection(teacher, "courses", "course", "enrollments"),
+    where("status", "==", "active"),
+  )))).data().count, 0);
+
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "reinstate-1", "active",
+  ));
+  const activeAgain = (await assertSucceeds(getDoc(enrollmentRef))).data();
+  assert.equal(activeAgain.status, "active");
+  assert.equal(activeAgain.lastStatusEventId, "reinstate-1");
+  assert.deepEqual(activeAgain.createdAt, createdAt);
+  assert.equal((await assertSucceeds(getDoc(doc(student, "courses", "course")))).data().subject, "Bases de Datos");
+  assert.equal((await assertSucceeds(getDoc(doc(student, "courses", "course", "weekly_blocks", blockId)))).data().weekday, 1);
+  await assertPermissionDenied(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "withdraw-1", "withdrawn",
+  ));
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "active");
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "withdraw-2", "withdrawn",
+  ));
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "reinstate-2", "active",
+  ));
+  const twiceActive = (await assertSucceeds(getDoc(enrollmentRef))).data();
+  assert.equal(twiceActive.status, "active");
+  assert.equal(twiceActive.lastStatusEventId, "reinstate-2");
+  assert.deepEqual(twiceActive.createdAt, createdAt);
+  const history = await assertSucceeds(getDocs(collection(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+  )));
+  assert.deepEqual(new Set(history.docs.map((event) => event.id)), new Set([
+    "withdraw-1",
+    "reinstate-1",
+    "withdraw-2",
+    "reinstate-2",
+  ]));
+  const eventsById = Object.fromEntries(history.docs.map((event) => [event.id, event.data()]));
+  assert.deepEqual(
+    ["withdraw-1", "reinstate-1", "withdraw-2", "reinstate-2"].map((id) => [
+      eventsById[id].fromStatus,
+      eventsById[id].toStatus,
+    ]),
+    [
+      ["active", "withdrawn"],
+      ["withdrawn", "active"],
+      ["active", "withdrawn"],
+      ["withdrawn", "active"],
+    ],
+  );
+  await assertPermissionDenied(getDocs(collection(
+    student,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+  )));
+  await assertPermissionDenied(updateDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+    "withdraw-1",
+  ), { toStatus: "active" }));
+  await assertPermissionDenied(deleteDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+    "withdraw-1",
+  )));
+  await assertPermissionDenied(deleteDoc(enrollmentRef));
+});
+
+test("conjunto 5: solo el docente verificado dueño puede cambiar el estado", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("other-teacher", "other-teacher@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const otherTeacher = userContext("other-teacher", "other-teacher@example.test", true);
+  const admin = userContext("admin", "admin@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const unverifiedTeacher = userContext("teacher", "teacher@example.test", false);
+  const anonymous = testEnvironment.unauthenticatedContext().firestore();
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
+  await publishStudent("student", "student@example.test");
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+
+  for (const [db, actor] of [
+    [otherTeacher, "other-teacher"],
+    [admin, "admin"],
+    [student, "student"],
+    [unverifiedTeacher, "teacher"],
+    [anonymous, "anonymous"],
+  ]) {
+    await assertPermissionDenied(changeEnrollmentStatusAtomically(
+      db,
+      "course",
+      "student",
+      `denied-${actor}`,
+      "withdrawn",
+      { changedBy: actor },
+    ));
+  }
+  await assertPermissionDenied(updateDoc(enrollmentRef, { status: "withdrawn" }));
+  await assertPermissionDenied(setDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+    "event-alone",
+  ), {
+    fromStatus: "active",
+    toStatus: "withdrawn",
+    changedAt: serverTimestamp(),
+    changedBy: "teacher",
+  }));
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "active");
+  assert.equal((await assertSucceeds(getDocs(collection(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+  )))).size, 0);
+});
+
+test("conjunto 5: cambios rechazan eventos falsos, snapshots alterados y transiciones inválidas", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
+  await publishStudent("student", "student@example.test");
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+
+  const invalidChanges = [
+    { nextStatus: "active", operationId: "same-status" },
+    { nextStatus: "pending", operationId: "invalid-status" },
+    { nextStatus: "withdrawn", operationId: "wrong-actor", options: { eventPatch: { changedBy: "student" } } },
+    { nextStatus: "withdrawn", operationId: "wrong-origin", options: { eventPatch: { fromStatus: "withdrawn" } } },
+    { nextStatus: "withdrawn", operationId: "client-time", options: { eventPatch: { changedAt: Timestamp.now() } } },
+    { nextStatus: "withdrawn", operationId: "extra-event", options: { eventPatch: { reason: "extra" } } },
+    { nextStatus: "withdrawn", operationId: "changed-created", options: { enrollmentPatch: { createdAt: Timestamp.now() } } },
+    { nextStatus: "withdrawn", operationId: "changed-name", options: { enrollmentPatch: { name: "Identidad alterada" } } },
+    { nextStatus: "withdrawn", operationId: "changed-owner", options: { enrollmentPatch: { ownerUid: "other" } } },
+    { nextStatus: "withdrawn", operationId: "wrong-event-id", options: { enrollmentPatch: { lastStatusEventId: "different" } } },
+    { nextStatus: "withdrawn", operationId: "client-change-time", options: { enrollmentPatch: { lastStatusChangedAt: Timestamp.now() } } },
+  ];
+  for (const invalid of invalidChanges) {
+    await assertPermissionDenied(changeEnrollmentStatusAtomically(
+      teacher,
+      "course",
+      "student",
+      invalid.operationId,
+      invalid.nextStatus,
+      invalid.options,
+    ));
+  }
+  await assertPermissionDenied(setDoc(
+    enrollmentRef,
+    enrollmentData("student", "teacher", "student@example.test", profile("student@example.test"), {
+      status: "withdrawn",
+    }),
+  ));
+  await assertPermissionDenied(setDoc(
+    doc(teacher, "courses", "course", "enrollments", "student-2"),
+    enrollmentData("student-2", "teacher", "student@example.test", profile("student@example.test"), {
+      lastStatusEventId: "forged",
+      lastStatusChangedAt: serverTimestamp(),
+    }),
+  ));
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "active");
+  assert.equal((await assertSucceeds(getDocs(collection(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+    "status_events",
+  )))).size, 0);
+});
+
+test("conjunto 5: código y aprobación no reactivan un enrollment retirado", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = await publishStudent("student", "student@example.test");
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher, "course", "student", "withdraw-before-code", "withdrawn",
+  ));
+
+  assert.equal(await assertSucceeds(submitJoinRequestAtomically(
+    student, "course", "student", inviteCodeA,
+  )), "already-enrolled");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    student,
+    "courses",
+    "course",
+    "join_requests",
+    "student",
+  )))).exists(), false);
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", "course", "join_requests", "student"),
+      joinRequestData("student", "student@example.test", inviteCodeA),
+    );
+  });
+  await assertPermissionDenied(decideJoinRequestAtomically(
+    teacher,
+    "course",
+    "student",
+    "teacher",
+    { status: "approved" },
+  ));
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "withdrawn");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "join_requests",
+    "student",
+  )))).data().status, "pending");
+  await assertPermissionDenied(setDoc(
+    enrollmentRef,
+    enrollmentData("student", "teacher", "student@example.test"),
+  ));
 });

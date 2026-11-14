@@ -335,6 +335,34 @@ void main() {
   );
 
   test(
+    'requesting a withdrawn course returns a distinct result without writes',
+    () async {
+      final store = _Store()
+        ..documents['users/student-one'] = _studentProfile()
+        ..documents['course_invites/$_code'] = _lookup()
+        ..documents['courses/course-1/enrollments/student-one'] =
+            _withdrawnEnrollment();
+      final repository = FirestoreCourseEntryRepository(
+        auth: _Auth(_User('student-one', 'student@example.invalid')),
+        firestore: store,
+      );
+
+      final result = await repository.requestJoin(_code);
+
+      expect(result.kind, JoinRequestResultKind.alreadyWithdrawn);
+      expect(
+        store.documents['courses/course-1/enrollments/student-one']?['status'],
+        'withdrawn',
+      );
+      expect(store.transactionWrites, isEmpty);
+      expect(
+        store.documents['courses/course-1/join_requests/student-one'],
+        isNull,
+      );
+    },
+  );
+
+  test(
     'confirmed request remains successful if its optional readback fails',
     () async {
       final store = _Store()
@@ -408,6 +436,44 @@ void main() {
     expect(requestUpdate.data['decidedBy'], 'teacher-one');
     expect(requestUpdate.data['decidedAt'], isA<FieldValue>());
     expect(requestUpdate.data['rejectionReason'], isNull);
+  });
+
+  test('approval does not reactivate a withdrawn enrollment', () async {
+    final store = _Store()
+      ..documents['users/teacher-one'] = _teacherProfile()
+      ..documents['courses/course-1'] = _course()
+      ..documents['courses/course-1/join_requests/student-one'] =
+          _pendingRequest()
+      ..documents['courses/course-1/enrollments/student-one'] =
+          _withdrawnEnrollment();
+    final repository = FirestoreCourseEntryRepository(
+      auth: _Auth(_User('teacher-one', 'teacher@example.invalid')),
+      firestore: store,
+    );
+
+    await expectLater(
+      repository.decideJoinRequest(
+        courseId: 'course-1',
+        studentUid: 'student-one',
+        decision: JoinRequestDecision.approve,
+      ),
+      throwsA(
+        isA<CourseEntryFailure>().having(
+          (failure) => failure.kind,
+          'kind',
+          CourseEntryFailureKind.enrollmentWithdrawn,
+        ),
+      ),
+    );
+    expect(store.transactionWrites, isEmpty);
+    expect(
+      store.documents['courses/course-1/enrollments/student-one']?['status'],
+      'withdrawn',
+    );
+    expect(
+      store.documents['courses/course-1/join_requests/student-one']?['status'],
+      'pending',
+    );
   });
 
   test('rejection saves a reason without creating an enrollment', () async {
@@ -554,6 +620,21 @@ Map<String, dynamic> _pendingRequest() => {
   'decidedBy': null,
   'decidedAt': null,
   'rejectionReason': null,
+};
+
+Map<String, dynamic> _withdrawnEnrollment() => {
+  'studentUid': 'student-one',
+  'ownerUid': 'teacher-one',
+  'name': 'Estudiante Uno',
+  'email': 'student@example.invalid',
+  'studentCode': '0012',
+  'subject': 'Bases de Datos',
+  'group': 'G2',
+  'period': '2026-2',
+  'status': 'withdrawn',
+  'createdAt': _createdAt,
+  'lastStatusEventId': 'withdraw-op',
+  'lastStatusChangedAt': _updatedAt,
 };
 
 class _Auth implements FirebaseAuth {

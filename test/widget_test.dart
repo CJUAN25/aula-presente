@@ -21,8 +21,10 @@ import 'package:aula_presente/features/course_entry/domain/course_invitation.dar
 import 'package:aula_presente/features/course_entry/domain/course_preview.dart';
 import 'package:aula_presente/features/course_entry/domain/join_request.dart';
 import 'package:aula_presente/features/course_entry/domain/join_request_page.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment_status_change.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
 
 class _FakeAuthRepository implements AuthRepository {
@@ -313,9 +315,37 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
   @override
   Future<EnrollmentPage> listCourseStudents({
     required String courseId,
+    String status = 'active',
     EnrollmentCursor? cursor,
     int pageSize = 25,
   }) async => EnrollmentPage(items: const [], nextCursor: null);
+
+  @override
+  String newStatusEventId({
+    required String courseId,
+    required String studentUid,
+  }) => 'test-status-event';
+
+  @override
+  Future<EnrollmentStatusChangeResult> changeEnrollmentStatus({
+    required Enrollment expected,
+    required String nextStatus,
+    required String operationId,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<Enrollment> getCourseEnrollment({
+    required String courseId,
+    required String studentUid,
+  }) async => throw UnimplementedError();
+
+  @override
+  Future<EnrollmentHistoryPage> listEnrollmentHistory({
+    required String courseId,
+    required String studentUid,
+    EnrollmentHistoryCursor? cursor,
+    int pageSize = 25,
+  }) async => throw UnimplementedError();
 
   @override
   Future<EnrollmentPage> listMyCourses({

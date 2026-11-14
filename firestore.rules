@@ -345,7 +345,8 @@ service cloud.firestore {
         ])
         && enrollment.keys().hasOnly([
           'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
-          'subject', 'group', 'period', 'status', 'createdAt'
+          'subject', 'group', 'period', 'status', 'createdAt',
+          'lastStatusEventId', 'lastStatusChangedAt'
         ])
         && enrollment.studentUid is string
         && enrollment.ownerUid is string
@@ -359,8 +360,102 @@ service cloud.firestore {
         && nonBlankCourseText(enrollment.subject, 120)
         && nonBlankCourseText(enrollment.group, 40)
         && nonBlankCourseText(enrollment.period, 32)
-        && enrollment.status == 'active'
-        && enrollment.createdAt is timestamp;
+        && enrollment.status in ['active', 'withdrawn']
+        && enrollment.createdAt is timestamp
+        && (
+          (
+            !('lastStatusEventId' in enrollment)
+            && !('lastStatusChangedAt' in enrollment)
+          )
+          || (
+            enrollment.lastStatusEventId is string
+            && enrollment.lastStatusEventId.size() >= 1
+            && enrollment.lastStatusEventId.size() <= 128
+            && enrollment.lastStatusChangedAt is timestamp
+          )
+        );
+    }
+
+    function validEnrollmentStatusEvent(event) {
+      return event.keys().hasAll([
+          'fromStatus', 'toStatus', 'changedAt', 'changedBy'
+        ])
+        && event.keys().hasOnly([
+          'fromStatus', 'toStatus', 'changedAt', 'changedBy'
+        ])
+        && event.fromStatus in ['active', 'withdrawn']
+        && event.toStatus in ['active', 'withdrawn']
+        && event.fromStatus != event.toStatus
+        && event.changedAt is timestamp
+        && event.changedBy is string;
+    }
+
+    function canChangeEnrollmentStatus(courseId, studentUid) {
+      let eventId = request.resource.data.lastStatusEventId;
+      let eventPath = /databases/$(database)/documents/courses/$(courseId)/enrollments/$(studentUid)/status_events/$(eventId);
+      let eventAfter = getAfter(eventPath).data;
+      let next = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && validEnrollmentShape(next)
+        && resource.data.studentUid == studentUid
+        && resource.data.ownerUid == request.auth.uid
+        && resource.data.status in ['active', 'withdrawn']
+        && next.studentUid == resource.data.studentUid
+        && next.ownerUid == resource.data.ownerUid
+        && next.name == resource.data.name
+        && next.email == resource.data.email
+        && next.studentCode == resource.data.studentCode
+        && next.subject == resource.data.subject
+        && next.group == resource.data.group
+        && next.period == resource.data.period
+        && next.createdAt == resource.data.createdAt
+        && next.status in ['active', 'withdrawn']
+        && next.status != resource.data.status
+        && next.lastStatusEventId is string
+        && next.lastStatusChangedAt == request.time
+        && next.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'lastStatusEventId', 'lastStatusChangedAt'
+        ])
+        && !exists(eventPath)
+        && existsAfter(eventPath)
+        && validEnrollmentStatusEvent(eventAfter)
+        && eventAfter.fromStatus == resource.data.status
+        && eventAfter.toStatus == next.status
+        && eventAfter.changedAt == request.time
+        && eventAfter.changedBy == request.auth.uid;
+    }
+
+    function canCreateEnrollmentStatusEvent(courseId, studentUid, eventId) {
+      let enrollmentPathValue = enrollmentPath(courseId, studentUid);
+      let enrollmentBefore = get(enrollmentPathValue).data;
+      let enrollmentAfter = getAfter(enrollmentPathValue).data;
+      let event = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && validEnrollmentStatusEvent(event)
+        && event.changedBy == request.auth.uid
+        && event.changedAt == request.time
+        && event.fromStatus == enrollmentBefore.status
+        && event.toStatus == enrollmentAfter.status
+        && event.fromStatus in ['active', 'withdrawn']
+        && event.toStatus in ['active', 'withdrawn']
+        && event.fromStatus != event.toStatus
+        && enrollmentBefore.studentUid == studentUid
+        && enrollmentBefore.ownerUid == request.auth.uid
+        && enrollmentAfter.studentUid == enrollmentBefore.studentUid
+        && enrollmentAfter.ownerUid == enrollmentBefore.ownerUid
+        && enrollmentAfter.name == enrollmentBefore.name
+        && enrollmentAfter.email == enrollmentBefore.email
+        && enrollmentAfter.studentCode == enrollmentBefore.studentCode
+        && enrollmentAfter.subject == enrollmentBefore.subject
+        && enrollmentAfter.group == enrollmentBefore.group
+        && enrollmentAfter.period == enrollmentBefore.period
+        && enrollmentAfter.createdAt == enrollmentBefore.createdAt
+        && enrollmentAfter.status == event.toStatus
+        && enrollmentAfter.lastStatusEventId == eventId
+        && enrollmentAfter.lastStatusChangedAt == request.time
+        && enrollmentAfter.diff(enrollmentBefore).affectedKeys().hasOnly([
+          'status', 'lastStatusEventId', 'lastStatusChangedAt'
+        ]);
     }
 
     function validInvitationCode(code) {
@@ -722,7 +817,10 @@ service cloud.firestore {
                     ? (
                         validEnrollmentShape(enrollment)
                           ? (
-                              enrollment.createdAt == request.time
+                              enrollment.status == 'active'
+                                && !('lastStatusEventId' in enrollment)
+                                && !('lastStatusChangedAt' in enrollment)
+                                && enrollment.createdAt == request.time
                                 ? (
                                     pendingRequestResolvedByManualEnrollment(
                                       courseId,
@@ -1142,7 +1240,18 @@ service cloud.firestore {
           || (verifiedStudent() && request.auth.uid == studentUid);
         allow list: if ownsExistingCourse(courseId);
         allow create: if canCreateEnrollment(courseId, studentUid);
-        allow update, delete: if false;
+        allow update: if canChangeEnrollmentStatus(courseId, studentUid);
+        allow delete: if false;
+
+        match /status_events/{eventId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if canCreateEnrollmentStatusEvent(
+            courseId,
+            studentUid,
+            eventId
+          );
+          allow update, delete: if false;
+        }
       }
     }
 
@@ -1160,7 +1269,8 @@ service cloud.firestore {
     // and unfiltered enumeration remain denied.
     match /{path=**}/enrollments/{enrollmentId} {
       allow list: if verifiedStudent()
-        && resource.data.studentUid == request.auth.uid;
+        && resource.data.studentUid == request.auth.uid
+        && resource.data.status == 'active';
     }
 
     // A collection-group query must filter by the authenticated student's UID.

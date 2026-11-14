@@ -16,6 +16,7 @@ import 'course_repository_scope.dart';
 import 'course_entry_repository_scope.dart';
 import 'enrollment_repository_scope.dart';
 import 'teacher_access_repository_scope.dart';
+import 'enrollment_route_observer.dart';
 
 class AulaPresenteApp extends StatelessWidget {
   const AulaPresenteApp({
@@ -54,6 +55,7 @@ class AulaPresenteApp extends StatelessWidget {
               title: 'Aula Presente',
               debugShowCheckedModeBanner: false,
               theme: AppTheme.dark,
+              navigatorObservers: [aulaPresenteRouteObserver],
               home: AuthStartScreen(repository: auth),
             ),
           ),

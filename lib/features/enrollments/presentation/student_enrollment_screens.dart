@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/enrollment_route_observer.dart';
 import '../../../app/course_entry_repository_scope.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../course_entry/presentation/student_course_entry_screens.dart';
@@ -272,37 +273,100 @@ class StudentEnrolledCourseScreen extends StatefulWidget {
 }
 
 class _StudentEnrolledCourseScreenState
-    extends State<StudentEnrolledCourseScreen> {
+    extends State<StudentEnrolledCourseScreen>
+    with WidgetsBindingObserver, RouteAware {
   late final String? _sessionUid;
+  ModalRoute<void>? _subscribedRoute;
   Course? _course;
   Object? _error;
+  bool _withdrawn = false;
   bool _loading = false;
+  int _loadEpoch = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sessionUid = widget.repository.currentUid;
     _load();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is ModalRoute<void> && route != _subscribedRoute) {
+      if (_subscribedRoute != null) {
+        aulaPresenteRouteObserver.unsubscribe(this);
+      }
+      _subscribedRoute = route;
+      aulaPresenteRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPopNext() => _load();
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    aulaPresenteRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
   Future<void> _load() async {
     if (_loading) return;
+    if (_sessionUid == null || widget.repository.currentUid != _sessionUid) {
+      setState(() {
+        _course = null;
+        _error = const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+        _withdrawn = false;
+      });
+      return;
+    }
+    final epoch = ++_loadEpoch;
     setState(() {
       _loading = true;
       _error = null;
       _course = null;
+      _withdrawn = false;
     });
     try {
+      final enrollment = await widget.repository.getCourseEnrollment(
+        courseId: widget.enrollment.courseId,
+        studentUid: _sessionUid,
+      );
+      if (!mounted || epoch != _loadEpoch) return;
+      if (widget.repository.currentUid != _sessionUid) return;
+      if (enrollment.status != 'active') {
+        setState(() {
+          _course = null;
+          _withdrawn = true;
+        });
+        return;
+      }
       final course = await widget.repository.getMyEnrolledCourse(
         widget.enrollment.courseId,
       );
-      if (mounted && widget.repository.currentUid == _sessionUid) {
+      if (mounted &&
+          epoch == _loadEpoch &&
+          widget.repository.currentUid == _sessionUid) {
         setState(() => _course = course);
       }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted && epoch == _loadEpoch) {
+        setState(() {
+          _course = null;
+          _error = error;
+        });
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && epoch == _loadEpoch) setState(() => _loading = false);
     }
   }
 
@@ -333,6 +397,17 @@ class _StudentEnrolledCourseScreenState
           const SizedBox(height: 20),
           if (_loading && course == null)
             const CourseLoading(message: 'Cargando información del curso…'),
+          if (_withdrawn)
+            CourseStateCard(
+              title: 'Tu inscripción fue retirada',
+              message: 'El docente retiró tu acceso a esta materia. El registro y su historial se conservan; contacta al docente para solicitar una reincorporación.',
+              color: AppColors.information,
+              icon: Icons.info_outline,
+              action: TextButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+                child: const Text('Volver a mis materias'),
+              ),
+            ),
           if (_error != null)
             EnrollmentFailureCard(error: _error, onRetry: _load),
           if (_error == null && course != null) ...[
@@ -381,7 +456,10 @@ class _StudentEnrolledCourseScreenState
               icon: Icons.calendar_month_outlined,
               onPressed: () => Navigator.of(context).push<void>(
                 MaterialPageRoute<void>(
-                  builder: (_) => CourseCalendarScreen(course: course),
+                  builder: (_) => CourseCalendarScreen(
+                    course: course,
+                    studentRepository: widget.repository,
+                  ),
                 ),
               ),
             ),
@@ -401,21 +479,61 @@ class StudentScheduleScreen extends StatefulWidget {
   State<StudentScheduleScreen> createState() => _StudentScheduleScreenState();
 }
 
-class _StudentScheduleScreenState extends State<StudentScheduleScreen> {
+class _StudentScheduleScreenState extends State<StudentScheduleScreen>
+    with WidgetsBindingObserver, RouteAware {
   late final String? _sessionUid;
+  ModalRoute<void>? _subscribedRoute;
   final List<Course> _courses = [];
   bool _loading = false;
   Object? _error;
+  int _loadEpoch = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sessionUid = widget.repository.currentUid;
     _load();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is ModalRoute<void> && route != _subscribedRoute) {
+      if (_subscribedRoute != null) {
+        aulaPresenteRouteObserver.unsubscribe(this);
+      }
+      _subscribedRoute = route;
+      aulaPresenteRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPopNext() => _load();
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    aulaPresenteRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
   Future<void> _load() async {
     if (_loading) return;
+    if (_sessionUid == null || widget.repository.currentUid != _sessionUid) {
+      setState(() {
+        _courses.clear();
+        _error = const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+      });
+      return;
+    }
+    final epoch = ++_loadEpoch;
     setState(() {
       _loading = true;
       _error = null;
@@ -426,14 +544,26 @@ class _StudentScheduleScreenState extends State<StudentScheduleScreen> {
       EnrollmentCursor? cursor;
       do {
         final page = await widget.repository.listMyCourses(cursor: cursor);
+        if (!mounted || epoch != _loadEpoch) return;
+        if (widget.repository.currentUid != _sessionUid) {
+          throw const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+        }
         for (final item in page.items) {
           courses.add(
             await widget.repository.getMyEnrolledCourse(item.courseId),
           );
+          if (!mounted || epoch != _loadEpoch) return;
+          if (widget.repository.currentUid != _sessionUid) {
+            throw const EnrollmentFailure(
+              EnrollmentFailureKind.unauthenticated,
+            );
+          }
         }
         cursor = page.nextCursor;
       } while (cursor != null);
-      if (mounted && widget.repository.currentUid == _sessionUid) {
+      if (mounted &&
+          epoch == _loadEpoch &&
+          widget.repository.currentUid == _sessionUid) {
         setState(() {
           _courses
             ..clear()
@@ -441,9 +571,14 @@ class _StudentScheduleScreenState extends State<StudentScheduleScreen> {
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _error = error);
+      if (mounted && epoch == _loadEpoch) {
+        setState(() {
+          _courses.clear();
+          _error = error;
+        });
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && epoch == _loadEpoch) setState(() => _loading = false);
     }
   }
 
@@ -515,7 +650,10 @@ class _StudentScheduleScreenState extends State<StudentScheduleScreen> {
                 iconAsset: '8315a.svg',
                 onTap: () => Navigator.of(context).push<void>(
                   MaterialPageRoute<void>(
-                    builder: (_) => CourseCalendarScreen(course: slot.course),
+                    builder: (_) => CourseCalendarScreen(
+                      course: slot.course,
+                      studentRepository: widget.repository,
+                    ),
                   ),
                 ),
               ),
@@ -531,8 +669,10 @@ class _StudentScheduleScreenState extends State<StudentScheduleScreen> {
                   iconAsset: '8315a.svg',
                   onTap: () => Navigator.of(context).push<void>(
                     MaterialPageRoute<void>(
-                      builder: (_) =>
-                          CourseCalendarScreen(course: occurrence.course),
+                      builder: (_) => CourseCalendarScreen(
+                        course: occurrence.course,
+                        studentRepository: widget.repository,
+                      ),
                     ),
                   ),
                 ),

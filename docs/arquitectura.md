@@ -14,7 +14,7 @@ El mapa de módulos y sus responsabilidades está en [lib/features/README.md](..
 
 - Una cuenta puede tener permisos de estudiante, docente o ambos. La autorización docente y administrativa procede de una fuente confiable; elegir un rol en la interfaz no concede permisos. El alta de solicitud no concede `teacher`: una aprobación manual con transacción protegida por reglas lo agrega al perfil.
 - Los cursos oficiales distinguen materia, grupo y período. El docente autorizado define cursos y horarios; el estudiante consulta horarios de cursos vinculados.
-- El conjunto 3 inicia la matrícula con un vínculo activo y fecha de ingreso del servidor. Su evolución futura conservará vigencia e historial de retiros/reincorporaciones; el ingreso tardío no genera faltas anteriores.
+- El conjunto 3 inicia la matrícula con un vínculo activo y fecha de ingreso del servidor; el conjunto 5 añade estados active/withdrawn e historial de retiros/reincorporaciones sobre el mismo documento. El ingreso tardío o reincorporación no genera asistencias o faltas anteriores.
 - Las sesiones corresponden a ocurrencias concretas del horario. Cambios, cancelaciones, reposiciones y clases extraordinarias deben evitar contar dos veces una sesión.
 - Bluetooth, QR y registro manual operan sobre la misma sesión y deben prevenir duplicados. NFC es una posibilidad futura.
 - Correcciones manuales requieren motivo e historial. Las justificaciones pueden adjuntar PDF.
@@ -151,7 +151,7 @@ El docente autorizado crea en su curso mediante una transacción que comprueba l
 
 El estudiante reconstruye el curso y el horario guardado y reutiliza `generatePlannedMeetings` para consultar encuentros **previstos**. Si tiene también `teacher`, conserva por separado el espacio de cursos que imparte. Una sesión cerrada, un rol retirado o un cambio de cuenta impide reutilizar una respuesta antigua en la interfaz. El resultado de la transacción se devuelve sin una lectura posterior que convierta un guardado confirmado en error aparente. Un fallo de red durante la transacción puede dejar resultado incierto: la interfaz debe ofrecer consultar la lista y reintentar con el mismo ID, sin afirmar que se canceló.
 
-El contrato, los frames vigentes, las pruebas y los límites se describen en [seguimiento_conjunto_3.md](seguimiento_conjunto_3.md). El usuario informó que desplegó las reglas y el índice y comprobó manualmente el recorrido en el TECNO; [activacion_conjunto_3.md](activacion_conjunto_3.md) conserva los pasos para reproducirlo. Codex no ejecutó esa prueba real. Excel, invitaciones, solicitudes de ingreso, edición/retiro/reincorporación, asistencia, QR, Bluetooth y reportes permanecen fuera de este conjunto.
+El contrato, los frames vigentes, las pruebas y los límites se describen en [seguimiento_conjunto_3.md](seguimiento_conjunto_3.md). El usuario informó que desplegó las reglas y el índice y comprobó manualmente el recorrido en el TECNO; [activacion_conjunto_3.md](activacion_conjunto_3.md) conserva los pasos para reproducirlo. Codex no ejecutó esa prueba real. Excel, invitaciones, solicitudes de ingreso, edición general de matrícula, retiros y reincorporaciones permanecían fuera del conjunto 3; el retiro individual con historial se incorpora en el conjunto 5. Asistencia, QR, Bluetooth y reportes siguen fuera de estos conjuntos.
 
 ## Conjunto funcional 4: ingreso por código temporal
 
@@ -208,3 +208,26 @@ Aprobar solo permite `pending → approved`, actualiza actor/fecha y crea o reut
 - Búsqueda del código: `get` puntual por documento, sin índice compuesto ni lista general.
 
 Las reglas, estados, métodos Dart, frames de Figma, carreras, pruebas y limitaciones de este conjunto están en [seguimiento_conjunto_4.md](seguimiento_conjunto_4.md). La validación real informada por el propietario y los pasos para revisar la pantalla final están en [activacion_conjunto_4.md](activacion_conjunto_4.md). Codex no desplegó Firebase ni ejecutó el teléfono.
+
+## Conjunto funcional 5: retiro y reincorporación con historial
+
+El conjunto 5 conserva `courses/{courseId}/enrollments/{studentUid}` como la única matrícula vigente por curso y estudiante. El documento mantiene su ID, propietario, identidad, snapshots de curso y `createdAt`; estos campos no cambian al retirar o reincorporar. Los valores válidos de `status` son `active` y `withdrawn`. Las matrículas anteriores con `status: 'active'` continúan siendo válidas aunque no tengan metadatos de transición; no requieren migración.
+
+La primera inscripción crea el tramo inicial activo con `createdAt` de servidor. Cada transición confirmada añade un evento en `courses/{courseId}/enrollments/{studentUid}/status_events/{operationId}`. La estructura exacta es:
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `fromStatus` | string | Estado previo (`active` o `withdrawn`). |
+| `toStatus` | string | Estado nuevo, obligatoriamente distinto y válido. |
+| `changedAt` | timestamp | `serverTimestamp()`; las reglas lo cotejan con `request.time`. |
+| `changedBy` | string | UID del docente verificado propietario que confirma la transición. |
+
+El documento canónico incluye, después del primer cambio, `lastStatusEventId` (string con el ID del evento) y `lastStatusChangedAt` (timestamp de servidor). Ambos campos son opcionales en inscripciones legacy sin transiciones y aparecen juntos después de cambiar estado. El ID se genera antes de iniciar la transacción y se conserva ante un reintento incierto. Solo se permiten `active → withdrawn` y `withdrawn → active`; cada cambio del estado y su evento se escriben en una sola transacción. Reintentar el último `operationId` no duplica el evento. Reutilizar un ID histórico, confirmar desde una ficha obsoleta o intentar saltarse el estado actual se rechaza. No se borran matrículas ni eventos y los eventos no se editan.
+
+Solo el docente verificado, con perfil válido y propietario del curso puede cambiar estado o consultar la subcolección de historial. Un administrador sin rol docente propietario, un docente de otro curso, una cuenta no verificada y el estudiante no pueden ejecutar transiciones. El estudiante autenticado puede leer puntualmente su matrícula para conocer su estado, pero solo enumera sus matrículas activas mediante una consulta con `studentUid == uid` y `status == 'active'`; no puede leer `status_events`. Las lecturas del curso, sus bloques y horarios requieren matrícula activa. La interfaz quita de memoria el horario del estudiante al actualizar la app, regresar de una ruta o recibir una denegación.
+
+La inscripción manual del conjunto 3 y la solicitud por código del conjunto 4 nunca duplican ni reactivan una matrícula retirada. La inscripción manual devuelve el estado retirado para abrir la ficha existente; un código válido de ese curso informa que el estudiante debe pedir reincorporación al docente. Una aprobación histórica de solicitud no es un camino alternativo para volver a activar la matrícula. La reincorporación docente vuelve a usar el UID de la ruta y conserva las decisiones e historial anteriores.
+
+Las listas del docente filtran `status` antes de paginar: activas y retiradas son vistas separadas; el contador solo cuenta activas. Las materias del estudiante usan la consulta `collectionGroup('enrollments')` con `studentUid` y `status == 'active'`. `firestore.indexes.json` conserva los índices existentes y declara índices para `status ASC, createdAt DESC, __name__ DESC` (alcance `COLLECTION`) y para `studentUid ASC, status ASC, createdAt DESC, __name__ DESC` (alcance `COLLECTION_GROUP`). El historial se ordena por `changedAt DESC` e ID descendente con cursor estable.
+
+El contrato, nodos visuales, cambios de reglas/índices, pruebas y APK están en [seguimiento_conjunto_5.md](seguimiento_conjunto_5.md). El propietario informó que publicó reglas e índices y completó con Firebase real el recorrido de retiro y reincorporación en el TECNO; Codex no hizo ese despliegue ni ejecutó esa prueba. Los pasos para reproducirla y el comando de activación como referencia futura están en [activacion_conjunto_5.md](activacion_conjunto_5.md). El manifiesto conserva el índice previo `COLLECTION_GROUP` de `studentUid ASC, createdAt DESC, __name__ DESC` que ya estaba en la base del conjunto 4 y que no equivale al índice nuevo con `status`; el propietario reportó los siete índices habilitados. Sesiones, asistencia, retiros masivos, Excel, cambios retroactivos o programados, métricas y reportes siguen fuera de alcance.
