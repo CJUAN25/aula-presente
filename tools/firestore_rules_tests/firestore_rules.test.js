@@ -2113,6 +2113,37 @@ test("conjunto 3: inscripción válida expone solo curso y bloques al estudiante
   await assertFails(getDocs(collection(student, "courses")));
 });
 
+test("conjunto 6: alta confirmada desde correo exacto habilita curso y horario sin duplicar", async () => {
+  const courseId = "course-excel";
+  const teacherEmail = "teacher-a@example.test";
+  const selectedEmail = "selected@example.test";
+  const unselectedEmail = "unselected@example.test";
+  await seedProfile("teacher-a", teacherEmail, ["teacher"]);
+  await seedProfile("selected", selectedEmail);
+  await seedProfile("unselected", unselectedEmail);
+  await seedCourse("teacher-a", courseId);
+  const teacher = userContext("teacher-a", teacherEmail, true);
+  const selected = await publishStudent("selected", selectedEmail);
+  const unselected = await publishStudent("unselected", unselectedEmail);
+  const blockId = courseBlock().id;
+
+  assert.equal((await assertSucceeds(getDoc(doc(teacher, "student_directory", selectedEmail)))).data().uid, "selected");
+  await assertPermissionDenied(getDoc(doc(selected, "courses", courseId)));
+  await assertPermissionDenied(getDoc(doc(selected, "courses", courseId, "weekly_blocks", blockId)));
+  await assertPermissionDenied(getDoc(doc(unselected, "courses", courseId)));
+
+  assert.equal(await assertSucceeds(enrollManuallyAndResolvePending(teacher, courseId, "selected", selectedEmail)), "created");
+  const enrollmentRef = doc(teacher, "courses", courseId, "enrollments", "selected");
+  const createdAt = (await assertSucceeds(getDoc(enrollmentRef))).data().createdAt;
+  assert.equal((await assertSucceeds(getDoc(doc(selected, "courses", courseId)))).data().subject, "Bases de Datos");
+  assert.equal((await assertSucceeds(getDoc(doc(selected, "courses", courseId, "weekly_blocks", blockId)))).data().weekday, 1);
+  await assertPermissionDenied(getDoc(doc(unselected, "courses", courseId)));
+
+  assert.equal(await assertSucceeds(enrollManuallyAndResolvePending(teacher, courseId, "selected", selectedEmail)), "already-enrolled");
+  assert.deepEqual((await assertSucceeds(getDoc(enrollmentRef))).data().createdAt, createdAt);
+  assert.equal((await assertSucceeds(getDocs(collection(teacher, "courses", courseId, "enrollments")))).size, 1);
+});
+
 test("conjunto 3: la consulta de grupo exige UID propio y no expone otras inscripciones", async () => {
   await seedProfile("teacher-a", "teacher-a@example.test", ["teacher"]);
   await seedProfile("teacher-b", "teacher-b@example.test", ["teacher"]);

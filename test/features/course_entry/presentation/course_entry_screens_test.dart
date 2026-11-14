@@ -290,6 +290,7 @@ class _EnrollmentRepository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    bool resolvePendingWhenAlreadyEnrolled = true,
   }) async =>
       EnrollmentResult(enrollment: _enrollment(), alreadyEnrolled: false);
 

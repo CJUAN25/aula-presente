@@ -121,6 +121,7 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    bool resolvePendingWhenAlreadyEnrolled = true,
   }) async {
     try {
       EnrollmentValidator.documentId(courseId);
@@ -171,7 +172,8 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
           // A manual invite must not silently reactivate a withdrawn student
           // or resolve a join request as approved. Reinstatement is an explicit
           // status transition with its own audit event.
-          if (enrollment.status == 'active' &&
+          if (resolvePendingWhenAlreadyEnrolled &&
+              enrollment.status == 'active' &&
               joinRequestDoc.exists &&
               joinRequestDoc.data()?['status'] == 'pending') {
             _requireSameUser(uid);

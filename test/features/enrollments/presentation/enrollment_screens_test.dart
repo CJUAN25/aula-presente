@@ -91,6 +91,7 @@ class _Repository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    bool resolvePendingWhenAlreadyEnrolled = true,
   }) async {
     final pending = pendingDecision;
     if (pending != null) return pending.future;

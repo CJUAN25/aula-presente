@@ -19,7 +19,7 @@ firebase emulators:exec --only firestore --project demo-aula-presente-firestore-
 
 La ruta de Java se puede ajustar si el JDK está instalado en otra ubicación.
 
-La suite contiene 74 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
+La suite contiene 75 casos de Rules Unit Testing con el SDK de JavaScript. Conserva
 los permisos de perfiles, `demo_records` y solicitud/aprobación docente; también
 cubre cursos padre y la subcolección `weekly_blocks`, creación atómica de hasta
 ocho bloques, ocurrencias, solapes, consultas y lecturas privadas por propietario,
@@ -64,4 +64,6 @@ dominio y el flujo de presentación Flutter tienen pruebas independientes.
 
 La ampliación del 9 de noviembre añade el recorrido fiel del repositorio: un índice recién escrito permite lectura del estudiante, pero leer `invitation/current` directamente o en transacción sigue denegado. Esa lectura privada era un defecto en Dart; no se abrió con reglas. Se prueban además vigencia configurable finita, pausa/reactivación, desactivación definitiva, edición sin cambio de código, legacy de 14 días, ficha abierta, historial conservado y docentes ajenos. La configuración efectiva solo vive en `current.validForSeconds`; el índice no replica vencimientos. Las 70 pruebas de esa revisión incluyeron las nueve regresiones que antes agotaban expresiones; la revisión del log registró cero diagnósticos de ese límite.
 
-En la verificación local del conjunto 5, `firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "npm test --prefix tools/firestore_rules_tests"` pasó 74/74 con Firestore Emulator 1.22.0, Firebase CLI 15.32.1, Node.js 24.14.1 y el JBR local 25.0.2. Las reglas y los índices solo se probaron en el emulador; no se publicaron ni se probaron contra Firebase real. Las reglas y los índices actualizados deben desplegarse antes de usar el conjunto 5 en el proyecto real.
+En la verificación local del conjunto 5, `firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "npm test --prefix tools/firestore_rules_tests"` pasó 74/74 con Firestore Emulator 1.22.0, Firebase CLI 15.32.1, Node.js 24.14.1 y el JBR local 25.0.2. Codex solo probó reglas e índices en el emulador; el propietario informó después que los desplegó y validó el recorrido en Firebase real y el TECNO.
+
+El conjunto 6 añade un caso que reproduce la confirmación de un alta desde un correo exacto ya publicado: antes de la transacción, el estudiante no lee el curso ni sus bloques; después accede a ambos, mientras una cuenta no seleccionada sigue sin acceso. Repetir el alta devuelve la matrícula existente, conserva `createdAt` y no crea un segundo documento. La suite pasó **75/75** el 14 de noviembre de 2026 con el proyecto ficticio anterior. Esta prueba usa el SDK JavaScript y el patrón transaccional canónico; no ejecuta FlutterFire contra el emulador. No se cambiaron reglas ni índices para el conjunto 6.

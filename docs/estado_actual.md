@@ -1,5 +1,17 @@
 # Estado actual — 14 de noviembre de 2026
 
+## Conjunto funcional 6: altas por Excel
+
+La rama local `feature/conjunto-6-importacion-excel` parte de `901ff6715f2dbf8808558e77721ed4f98c1ea8de`, cierre publicado del conjunto 5. Permite elegir un `.xls` BIFF8 o `.xlsx` en el dispositivo, revisar correo exacto y código contra el directorio, seleccionar altas elegibles y confirmarlas con transacciones individuales sobre la matrícula canónica. Una matrícula activa no se duplica y una retirada no se reactiva. El archivo no se sube a Firebase y las columnas de documento, teléfono, EPS y otras ajenas se descartan. El curso viene de la pantalla docente, no del Excel.
+
+**Implementado y probado localmente:** lector con fixtures ficticios, revisión y resultados por fila, navegación M01→M02→M03→M04→M19→M23→M05, control de doble toque y retorno a la lista. `flutter pub get` pasó, `flutter analyze` no encontró problemas, `flutter test` pasó **222/222**, Firestore Emulator pasó **75/75** con proyecto ficticio, `git diff --check` pasó y se compiló la APK debug en `build/app/outputs/flutter-apk/app-debug.apk`. Las pruebas dirigidas incluyeron 7 del lector, 32 de coordinador/repositorio y 8 de interfaz. La revisión independiente detectó una hoja vacía sin explicación y hojas incompatibles omitidas; se corrigieron y probaron. El contrato, los límites y la evidencia están en [seguimiento_conjunto_6.md](seguimiento_conjunto_6.md); el recorrido corto para el TECNO está en [activacion_conjunto_6.md](activacion_conjunto_6.md).
+
+**Validación manual reportada por el propietario:** en el TECNO con Firebase real, el docente importó una copia `.xls` y confirmó el alta de una cuenta de prueba cuyo correo y código coincidían. El estudiante vio el curso en **Mis materias** sin solicitud ni aceptación adicional. Otra cuenta sin código estudiantil para el cotejo no pudo vincularse; no se especifica si el dato faltaba en la fila o en el perfil. Al reimportar el mismo archivo en el mismo curso, la cuenta apareció como **«Ya inscrita»** y no se ofreció otra vez como alta. Codex no ejecutó ni observó esta prueba en el teléfono.
+
+El propietario no reportó prueba en el TECNO del `.xlsx`, del Excel original sin modificar ni de otros estados. La lectura local sí se probó con un `.xls` BIFF8 ficticio equivalente de 35 filas y un `.xlsx` mixto. No se probó un libro auténticamente cifrado ni se hizo comparación pixel a pixel de Flutter con Figma. El flujo importa cuentas existentes con el cotejo requerido; una cuenta sin vínculo disponible puede revisarse al volver a importar después. No se crea reserva ni alta automática futura. La incidencia del correo institucional de Outlook sigue pendiente por separado, sin causa confirmada. No se cambiaron ni desplegaron reglas o índices para el conjunto 6; `main` y la release `v0.1.0-entrega-1` permanecen separados.
+
+**Incidencia independiente de Outlook:** el propietario reportó que su cuenta institucional aparece en Firebase Authentication y la app indica verificación pendiente, pero no ha recibido el mensaje. La causa no está determinada. El conjunto 6 no cambia el correo ni relaja la verificación; la demostración utiliza cuentas controladas que ya puedan verificar y entrar al espacio Estudiante.
+
 ## Conjunto funcional 5: retiro y reincorporación con historial
 
 Implementación local en `feature/conjunto-5-retiro-y-reincorporacion`, creada desde `75c3b959c644d7674f8235dc19a8b47d6577d1a7` de Conjunto 4. Conserva una sola matrícula en `courses/{courseId}/enrollments/{studentUid}`; las transiciones individuales escriben estado e historial en una transacción, mantienen `createdAt` y no se eliminan. La inscripción manual y el ingreso por código informan una matrícula retirada sin duplicarla ni reabrirla.
@@ -10,7 +22,7 @@ Implementación local en `feature/conjunto-5-retiro-y-reincorporacion`, creada d
 
 **Activación y prueba manual informadas por el propietario:** Firebase real permitió completar el recorrido en el TECNO: el docente retiró y reincorporó al estudiante, el historial se conservó y el estudiante perdió y recuperó el acceso a la misma materia y a su horario. En consola, el propietario confirmó los siete índices **Habilitados**. Codex no publicó las reglas/índices ni ejecutó esa prueba. Al activar, se conservó el índice histórico de `enrollments` de grupo de colección (`studentUid ASC`, `createdAt DESC`, `__name__ DESC`): el propietario rechazó eliminarlo y su declaración exacta se reincorporó al manifiesto porque no equivale al nuevo índice que filtra por `status`.
 
-La comparación visual pixel a pixel sigue pendiente. El cierre local se publica en la rama del conjunto 5; `main` y la release `v0.1.0-entrega-1` se conservan separados.
+La comparación visual pixel a pixel sigue pendiente. El conjunto 5 quedó publicado en `feature/conjunto-5-retiro-y-reincorporacion`; `main` y la release `v0.1.0-entrega-1` se conservan separados.
 
 ## Conjunto funcional 4: ingreso por código temporal
 

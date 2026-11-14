@@ -6,6 +6,7 @@ import '../../course_entry/presentation/course_invitation_screens.dart';
 import '../../course_entry/presentation/teacher_join_request_screens.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_presentation_components.dart';
+import '../../excel_import/presentation/excel_import_screen.dart';
 import '../application/enrollment_validator.dart';
 import '../domain/enrollment.dart';
 import '../domain/enrollment_failure.dart';
@@ -104,6 +105,23 @@ class _TeacherEnrollmentHubScreenState
     if (mounted) _refresh();
   }
 
+  Future<void> _openExcelImport() async {
+    final openStudents = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => ExcelImportScreen(
+          course: widget.course,
+          repository: widget.repository,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (openStudents == true) {
+      await _openStudents();
+    } else {
+      _refresh();
+    }
+  }
+
   Future<void> _openInvitation() => Navigator.of(context).push<void>(
     MaterialPageRoute<void>(
       builder: (_) => CourseInvitationScreen(
@@ -174,10 +192,11 @@ class _TeacherEnrollmentHubScreenState
                 EnrollmentFailureCard(error: _error, onRetry: _refresh),
               ],
               const SizedBox(height: 16),
-              const EnrollmentTile(
-                title: 'Importar / actualizar Excel',
-                subtitle: 'Disponible en una entrega posterior',
+              EnrollmentTile(
+                title: 'Importar Excel',
+                subtitle: 'Revisar coincidencias y confirmar altas',
                 iconAsset: 'bcab7.svg',
+                onTap: _openExcelImport,
               ),
               EnrollmentTile(
                 title: 'Agregar estudiante',

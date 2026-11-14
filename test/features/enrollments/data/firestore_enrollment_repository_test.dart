@@ -429,6 +429,67 @@ void main() {
     },
   );
 
+  test(
+    'Excel retry leaves a newly existing enrollment and request unchanged',
+    () async {
+      final store = _Store()
+        ..existingEnrollment = _activeEnrollment()
+        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Student One',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+        resolvePendingWhenAlreadyEnrolled: false,
+      );
+
+      expect(result.alreadyEnrolled, isTrue);
+      expect(result.enrollment.status, 'active');
+      expect(store.transactionWriteCount, 0);
+      expect(store.transactionUpdatePath, isNull);
+      expect(store.joinRequest!['status'], 'pending');
+    },
+  );
+
+  test(
+    'Excel new enrollment still resolves its pending request atomically',
+    () async {
+      final store = _Store()
+        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Student One',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+        resolvePendingWhenAlreadyEnrolled: false,
+      );
+
+      expect(result.alreadyEnrolled, isFalse);
+      expect(store.transactionWriteCount, 1);
+      expect(
+        store.transactionUpdatePath,
+        'courses/course-00/join_requests/student-one',
+      );
+      expect(store.joinRequest!['status'], 'approved');
+    },
+  );
+
   test('status change writes the enrollment and event atomically', () async {
     final store = _Store()..existingEnrollment = _activeEnrollment();
     final repository = FirestoreEnrollmentRepository(

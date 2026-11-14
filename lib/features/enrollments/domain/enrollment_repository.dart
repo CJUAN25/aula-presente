@@ -18,6 +18,10 @@ abstract interface class EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+
+    /// Importing an already-existing enrollment must not decide a pending
+    /// request that belongs to a separate admission flow.
+    bool resolvePendingWhenAlreadyEnrolled = true,
   });
 
   /// Allocates a stable transition ID before the caller starts its transaction.

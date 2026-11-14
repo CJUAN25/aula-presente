@@ -310,6 +310,7 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    bool resolvePendingWhenAlreadyEnrolled = true,
   }) async => throw UnimplementedError();
 
   @override
