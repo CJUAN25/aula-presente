@@ -19,7 +19,7 @@ String enrollmentErrorMessage(Object? error, {bool uncertainWrite = false}) {
       EnrollmentFailureKind.studentRoleRequired =>
         'Esta cuenta no tiene permiso de estudiante.',
       EnrollmentFailureKind.invalidInput =>
-        'Revisa el correo y el código antes de continuar.',
+        'Revisa los datos y la fecha efectiva seleccionada antes de continuar.',
       EnrollmentFailureKind.candidateChanged => 'Los datos de esta cuenta cambiaron. Búscala otra vez antes de confirmar.',
       EnrollmentFailureKind.staleEnrollment => 'La inscripción cambió desde que abriste la ficha. Actualiza la lista antes de decidir.',
       EnrollmentFailureKind.courseUnavailable =>

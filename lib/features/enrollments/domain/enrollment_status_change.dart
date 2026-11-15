@@ -1,4 +1,5 @@
 import 'enrollment.dart';
+import '../../schedule/domain/academic_date.dart';
 
 class EnrollmentStatusChangeResult {
   const EnrollmentStatusChangeResult({
@@ -20,6 +21,7 @@ class EnrollmentStatusEvent {
     required this.toStatus,
     required this.changedAt,
     required this.changedBy,
+    this.effectiveDate,
   });
 
   /// The document ID under `status_events/{operationId}`.
@@ -28,6 +30,10 @@ class EnrollmentStatusEvent {
   final String toStatus;
   final DateTime changedAt;
   final String changedBy;
+
+  /// Null only for callers constructing legacy test data. Repository reads
+  /// derive missing historical values from the UTC-5 Bogotá civil day.
+  final AcademicDate? effectiveDate;
 }
 
 class EnrollmentHistoryCursor {

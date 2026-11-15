@@ -7,7 +7,12 @@ import 'package:aula_presente/features/enrollments/domain/enrollment_failure.dar
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_status_change.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment_page.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment_result.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
+import 'package:aula_presente/features/enrollments/presentation/course_enrollment_history_screen.dart';
+import 'package:aula_presente/features/enrollments/presentation/enrollment_history_screen.dart';
 import 'package:aula_presente/features/enrollments/presentation/student_enrollment_screens.dart';
 import 'package:aula_presente/features/enrollments/presentation/teacher_enrollment_screens.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
@@ -44,20 +49,70 @@ const _candidate = StudentCandidate(
   studentCode: '0012',
 );
 
-Enrollment _enrollment({DateTime? createdAt, String status = 'active'}) =>
-    Enrollment(
-      courseId: 'course-1',
-      studentUid: 'student-1',
-      ownerUid: 'teacher-1',
-      name: _candidate.name,
-      email: _candidate.email,
-      studentCode: _candidate.studentCode,
-      subject: 'Curso de prueba',
-      group: '02',
-      period: '2026-2',
-      status: status,
-      createdAt: createdAt,
-    );
+Enrollment _enrollment({
+  DateTime? createdAt,
+  String status = 'active',
+  String courseId = 'course-1',
+  String studentUid = 'student-1',
+  String ownerUid = 'teacher-1',
+  String? name,
+  String email = 'student@example.invalid',
+  String? studentCode = '0012',
+  String subject = 'Curso de prueba',
+  String group = '02',
+  String period = '2026-2',
+  String? rosterEntryId,
+  AcademicDate? effectiveStartDate,
+}) => Enrollment(
+  courseId: courseId,
+  studentUid: studentUid,
+  ownerUid: ownerUid,
+  name: name ?? _candidate.name,
+  email: email,
+  studentCode: studentCode,
+  subject: subject,
+  group: group,
+  period: period,
+  status: status,
+  createdAt: createdAt,
+  rosterEntryId: rosterEntryId,
+  effectiveStartDate: effectiveStartDate,
+);
+
+PendingEnrollment _pendingEnrollment({
+  String courseId = 'course-1',
+  String ownerUid = 'teacher-1',
+  String email = 'pending@example.invalid',
+  String studentCode = '0023',
+  String name = 'Estudiante pendiente',
+  String status = 'pending',
+  String rosterEntryId = 'pending@example.invalid',
+  String? studentUid,
+  DateTime? linkedAt,
+  DateTime? createdAt,
+}) {
+  final timestamp = createdAt ?? DateTime.utc(2026, 11, 5, 9);
+  return PendingEnrollment(
+    courseId: courseId,
+    ownerUid: ownerUid,
+    subject: 'Curso de prueba',
+    group: '02',
+    period: '2026-2',
+    email: email,
+    studentCode: studentCode,
+    name: name,
+    status: status,
+    effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 5),
+    rosterEntryId: rosterEntryId,
+    studentUid: studentUid,
+    authorizedAt: timestamp,
+    linkedAt: linkedAt,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    lastEventId: null,
+    lastStatusChangedAt: null,
+  );
+}
 
 class _Repository implements EnrollmentRepository {
   String? uid = 'teacher-1';
@@ -66,14 +121,33 @@ class _Repository implements EnrollmentRepository {
   bool failList = false;
   bool denyStatusChange = false;
   bool failAfterStatusWrite = false;
+  Object? failPendingLink;
+  PendingEnrollmentLinkSummary pendingLinkSummary =
+      PendingEnrollmentLinkSummary(rows: const []);
   int writes = 0;
   int statusAttempts = 0;
   int statusChanges = 0;
   int statusEventIds = 0;
   int directoryCalls = 0;
+  int pendingLinkCalls = 0;
+  int myCoursesCalls = 0;
+  final callOrder = <String>[];
   Completer<EnrollmentResult>? pendingDecision;
+  Completer<EnrollmentHistoryPage>? pendingHistoryPage;
   final records = <Enrollment>[];
   final statusEvents = <EnrollmentStatusEvent>[];
+  CourseRosterSnapshot rosterSnapshot = CourseRosterSnapshot(
+    activeEnrollments: const [],
+    withdrawnEnrollments: const [],
+    pendingEnrollments: const [],
+    withdrawnPendingEnrollments: const [],
+    complete: true,
+  );
+  bool failRosterSnapshot = false;
+  Completer<CourseRosterSnapshot>? pendingRosterSnapshot;
+  PendingEnrollment? pendingAuthorization;
+  final pendingStatusEvents = <PendingEnrollmentStatusEvent>[];
+  int rosterSnapshotReads = 0;
 
   @override
   String? get currentUid => uid;
@@ -81,6 +155,7 @@ class _Repository implements EnrollmentRepository {
   @override
   Future<void> ensureStudentDirectoryEntry() async {
     directoryCalls++;
+    callOrder.add('directory');
   }
 
   @override
@@ -91,6 +166,7 @@ class _Repository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    AcademicDate? effectiveStartDate,
     bool resolvePendingWhenAlreadyEnrolled = true,
   }) async {
     final pending = pendingDecision;
@@ -126,10 +202,14 @@ class _Repository implements EnrollmentRepository {
   Future<EnrollmentPage> listMyCourses({
     EnrollmentCursor? cursor,
     int pageSize = 25,
-  }) async => EnrollmentPage(
-    items: records.where((record) => record.status == 'active').toList(),
-    nextCursor: null,
-  );
+  }) async {
+    myCoursesCalls++;
+    callOrder.add('courses');
+    return EnrollmentPage(
+      items: records.where((record) => record.status == 'active').toList(),
+      nextCursor: null,
+    );
+  }
 
   @override
   Future<int> countCourseStudents(String courseId) async {
@@ -137,6 +217,55 @@ class _Repository implements EnrollmentRepository {
       throw const EnrollmentFailure(EnrollmentFailureKind.network);
     }
     return records.where((record) => record.status == 'active').length;
+  }
+
+  @override
+  Future<int> countCoursePendingEnrollments(String courseId) async => 0;
+
+  @override
+  Future<CourseRosterSnapshot> loadCourseRosterSnapshot({
+    required String courseId,
+  }) async {
+    rosterSnapshotReads++;
+    if (failRosterSnapshot) {
+      throw const EnrollmentFailure(EnrollmentFailureKind.network);
+    }
+    final pending = pendingRosterSnapshot;
+    if (pending != null) return pending.future;
+    return rosterSnapshot;
+  }
+
+  @override
+  Future<PendingEnrollment?> getCoursePendingEnrollment({
+    required String courseId,
+    required String email,
+  }) async {
+    final pending = pendingAuthorization;
+    if (pending == null ||
+        pending.courseId != courseId ||
+        pending.email != email) {
+      return null;
+    }
+    return pending;
+  }
+
+  @override
+  Future<PendingEnrollmentHistoryPage> listPendingEnrollmentHistory({
+    required String courseId,
+    required String email,
+    PendingEnrollmentHistoryCursor? cursor,
+    int pageSize = 25,
+  }) async => PendingEnrollmentHistoryPage(
+    items: pendingStatusEvents,
+    nextCursor: null,
+  );
+
+  @override
+  Future<PendingEnrollmentLinkSummary> linkOwnPendingEnrollments() async {
+    pendingLinkCalls++;
+    callOrder.add('link');
+    if (failPendingLink case final error?) throw error;
+    return pendingLinkSummary;
   }
 
   @override
@@ -150,6 +279,7 @@ class _Repository implements EnrollmentRepository {
     required Enrollment expected,
     required String nextStatus,
     required String operationId,
+    AcademicDate? effectiveDate,
   }) async {
     statusAttempts++;
     if (denyStatusChange) {
@@ -228,15 +358,22 @@ class _Repository implements EnrollmentRepository {
     required String studentUid,
     EnrollmentHistoryCursor? cursor,
     int pageSize = 25,
-  }) async => EnrollmentHistoryPage(
-    items: statusEvents
-        .where((event) => event.changedBy == 'teacher-1')
-        .toList(),
-    nextCursor: null,
-  );
+  }) async {
+    final pending = pendingHistoryPage;
+    if (pending != null) return pending.future;
+    return EnrollmentHistoryPage(
+      items: statusEvents
+          .where((event) => event.changedBy == 'teacher-1')
+          .toList(),
+      nextCursor: null,
+    );
+  }
 
   @override
   Future<Course> getMyEnrolledCourse(String courseId) async => _course();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 Widget _app(Widget screen, {double scale = 1}) => MaterialApp(
@@ -298,6 +435,144 @@ Future<void> _tapStatusAction(WidgetTester tester, String label) async {
 
 void main() {
   testWidgets(
+    'Mis materias publica el directorio antes de enlazar y consulta después',
+    (tester) async {
+      final repository = _Repository()
+        ..uid = 'student-1'
+        ..records.add(_enrollment())
+        ..pendingLinkSummary = PendingEnrollmentLinkSummary(
+          rows: const [
+            PendingEnrollmentLinkRowResult(
+              courseId: 'course-2',
+              email: 'student@example.invalid',
+              outcome: PendingEnrollmentLinkOutcome.linked,
+            ),
+          ],
+        );
+
+      await tester.pumpWidget(
+        _app(StudentCoursesScreen(repository: repository)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(repository.callOrder.take(3), ['directory', 'link', 'courses']);
+      expect(repository.pendingLinkCalls, 1);
+      expect(find.text('Curso de prueba'), findsOneWidget);
+      expect(find.textContaining('Se vinculó 1 materia'), findsOneWidget);
+    },
+  );
+
+  for (final width in [320.0, 390.0, 430.0]) {
+    testWidgets(
+      'gestión separa comparar lista y solo agregar a ${width.toInt()} px',
+      (tester) async {
+        tester.view.physicalSize = Size(width * 2, 844 * 2);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await tester.pumpWidget(
+          _app(
+            TeacherEnrollmentHubScreen(
+              course: _course(),
+              repository: _Repository(),
+            ),
+            scale: 1.6,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        await tester.scrollUntilVisible(
+          find.text('Actualizar lista con Excel'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(find.text('Actualizar lista con Excel'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('Solo agregar estudiantes'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(find.text('Solo agregar estudiantes'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('Pendientes de vincular'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(find.text('Pendientes de vincular'), findsOneWidget);
+      },
+    );
+  }
+
+  testWidgets(
+    'si falla la vinculación conserva y muestra materias y permite reintentar',
+    (tester) async {
+      final repository = _Repository()
+        ..uid = 'student-1'
+        ..records.add(_enrollment())
+        ..failPendingLink = const EnrollmentFailure(
+          EnrollmentFailureKind.network,
+        );
+
+      await tester.pumpWidget(
+        _app(StudentCoursesScreen(repository: repository)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Curso de prueba'), findsOneWidget);
+      expect(
+        find.text('No se comprobaron las inscripciones pendientes'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Tus materias actuales siguen disponibles.'),
+        findsOneWidget,
+      );
+
+      repository.failPendingLink = null;
+      await tester.tap(find.text('Reintentar comprobación'));
+      await tester.pumpAndSettle();
+
+      expect(repository.pendingLinkCalls, 2);
+      expect(find.text('Curso de prueba'), findsOneWidget);
+    },
+  );
+
+  for (final width in [320.0, 390.0, 430.0]) {
+    testWidgets(
+      'estado de vinculación se adapta a ${width.toInt()} px con texto 1.6',
+      (tester) async {
+        tester.view.physicalSize = Size(width * 2, 844 * 2);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final repository = _Repository()
+          ..uid = 'student-1'
+          ..pendingLinkSummary = PendingEnrollmentLinkSummary(
+            rows: const [
+              PendingEnrollmentLinkRowResult(
+                courseId: 'course-2',
+                email: 'student@example.invalid',
+                outcome: PendingEnrollmentLinkOutcome.needsReview,
+              ),
+            ],
+          );
+
+        await tester.pumpWidget(
+          _app(StudentCoursesScreen(repository: repository), scale: 1.6),
+        );
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(
+          find.text('Hay inscripciones que requieren atención'),
+          findsOneWidget,
+        );
+      },
+    );
+  }
+
+  testWidgets(
     'el contador activo se actualiza al volver del historial tras reincorporar',
     (tester) async {
       final repository = _Repository()
@@ -310,11 +585,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('0'), findsOneWidget);
       await tester.scrollUntilVisible(
-        find.text('Retirados e histórico'),
+        find.text('Retirados'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Retirados e histórico'));
+      await tester.tap(find.text('Retirados'));
       await tester.pumpAndSettle();
       await tester.tap(find.text(_candidate.name));
       await tester.pumpAndSettle();
@@ -327,7 +602,9 @@ void main() {
       expect(find.text(_candidate.name), findsNothing);
       await tester.tap(find.byTooltip('Volver'));
       await tester.pumpAndSettle();
-      await tester.drag(find.byType(ListView).first, const Offset(0, 600));
+      expect(find.text('Gestionar estudiantes'), findsOneWidget);
+      expect(find.byType(ListView), findsOneWidget);
+      await tester.drag(find.byType(ListView).first, const Offset(0, 1200));
       await tester.pumpAndSettle();
       expect(find.text('1'), findsOneWidget);
       expect(find.text('Estudiantes inscritos'), findsOneWidget);
@@ -469,21 +746,29 @@ void main() {
       await tester.tap(find.text('Ver estudiantes'));
       await tester.pumpAndSettle();
       expect(find.text(_candidate.name), findsNothing);
-      await tester.ensureVisible(find.text('Retirados e histórico'));
-      await tester.tap(find.text('Retirados e histórico'));
+      await tester.ensureVisible(find.text('Retirados'));
+      await tester.tap(find.text('Retirados'));
       await tester.pumpAndSettle();
       expect(find.text(_candidate.name), findsOneWidget);
       await tester.tap(find.text(_candidate.name));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Ver historial de inscripción'));
-      await tester.tap(find.text('Ver historial de inscripción'));
+      await tester.ensureVisible(find.text('Ver historial de matrícula'));
+      await tester.tap(find.text('Ver historial de matrícula'));
       await tester.pumpAndSettle();
-      expect(find.text('Ingreso registrado'), findsOneWidget);
-      expect(find.textContaining('05/11/2026 · 09:00'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Ingreso confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Ingreso confirmado'), findsOneWidget);
+      expect(
+        find.textContaining('Fecha registrada · 05/11/2026'),
+        findsOneWidget,
+      );
       expect(find.text('Retiro confirmado'), findsOneWidget);
       expect(
         tester.getTopLeft(find.text('Retiro confirmado')).dy,
-        lessThan(tester.getTopLeft(find.text('Ingreso registrado')).dy),
+        lessThan(tester.getTopLeft(find.text('Ingreso confirmado')).dy),
       );
       expect(find.textContaining('07/11/2026 · 21:31'), findsOneWidget);
       expect(find.textContaining('08/11/2026 · 02:30'), findsNothing);
@@ -514,22 +799,30 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text(_candidate.name));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Ver historial de inscripción'));
-      await tester.tap(find.text('Ver historial de inscripción'));
+      await tester.ensureVisible(find.text('Ver historial de matrícula'));
+      await tester.tap(find.text('Ver historial de matrícula'));
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Ingreso confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Reincorporación confirmada'), findsOneWidget);
       expect(find.text('Retiro confirmado'), findsOneWidget);
-      expect(find.text('Ingreso registrado'), findsOneWidget);
+      expect(find.text('Ingreso confirmado'), findsOneWidget);
       expect(find.textContaining('07/11/2026 · 21:32'), findsOneWidget);
       expect(find.textContaining('07/11/2026 · 21:31'), findsOneWidget);
-      expect(find.textContaining('05/11/2026 · 09:00'), findsOneWidget);
+      expect(
+        find.textContaining('Fecha registrada · 05/11/2026'),
+        findsOneWidget,
+      );
       expect(
         tester.getTopLeft(find.text('Reincorporación confirmada')).dy,
         lessThan(tester.getTopLeft(find.text('Retiro confirmado')).dy),
       );
       expect(
         tester.getTopLeft(find.text('Retiro confirmado')).dy,
-        lessThan(tester.getTopLeft(find.text('Ingreso registrado')).dy),
+        lessThan(tester.getTopLeft(find.text('Ingreso confirmado')).dy),
       );
     },
   );
@@ -692,6 +985,8 @@ void main() {
           createdAt: activeEnrollment.createdAt,
           status: 'withdrawn',
         );
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
         await tester.pumpWidget(
           _app(
             CourseStudentsScreen(
@@ -704,7 +999,12 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(find.text('Retirados e histórico'), findsOneWidget);
+        expect(find.text('Retirados'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text(_candidate.name),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
         expect(find.text(_candidate.name), findsOneWidget);
 
         await tester.pumpWidget(
@@ -762,4 +1062,372 @@ void main() {
       expect(find.text('Incorpora a tu estudiante.'), findsOneWidget);
     });
   }
+
+  testWidgets(
+    'gestión abre historial unificado por curso y conserva eventos previos al vínculo',
+    (tester) async {
+      final enrolled = _enrollment(
+        name: 'Estudiante reincorporado',
+        email: 'reincorporado@example.invalid',
+        studentUid: 'student-rejoined',
+        rosterEntryId: 'reincorporado@example.invalid',
+        createdAt: DateTime.utc(2026, 11, 5, 14),
+        effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 5),
+      );
+      final linkedPending = _pendingEnrollment(
+        email: enrolled.email,
+        name: enrolled.name,
+        rosterEntryId: enrolled.rosterEntryId!,
+        status: 'linked',
+        studentUid: enrolled.studentUid,
+        linkedAt: DateTime.utc(2026, 11, 6, 14),
+      );
+      final currentWithdrawn = _enrollment(
+        name: 'Estudiante retirado',
+        email: 'retirado@example.invalid',
+        studentUid: 'student-withdrawn',
+        rosterEntryId: 'retirado@example.invalid',
+        status: 'withdrawn',
+        createdAt: DateTime.utc(2026, 11, 4, 14),
+        effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 4),
+      );
+      final pending = _pendingEnrollment();
+      final withdrawnPending = _pendingEnrollment(
+        email: 'autorizacion-retirada@example.invalid',
+        name: 'Autorización retirada',
+        rosterEntryId: 'autorizacion-retirada@example.invalid',
+        status: 'withdrawn',
+      );
+      final repository = _Repository()
+        ..records.add(enrolled)
+        ..rosterSnapshot = CourseRosterSnapshot(
+          activeEnrollments: [enrolled],
+          withdrawnEnrollments: [currentWithdrawn],
+          pendingEnrollments: [pending, linkedPending],
+          withdrawnPendingEnrollments: [withdrawnPending],
+          complete: true,
+        )
+        ..pendingAuthorization = linkedPending
+        ..statusEvents.addAll([
+          EnrollmentStatusEvent(
+            operationId: 'rejoin',
+            fromStatus: 'withdrawn',
+            toStatus: 'active',
+            changedAt: DateTime.utc(2026, 11, 14, 2, 30),
+            changedBy: 'teacher-1',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 14),
+          ),
+          EnrollmentStatusEvent(
+            operationId: 'withdraw',
+            fromStatus: 'active',
+            toStatus: 'withdrawn',
+            changedAt: DateTime.utc(2026, 11, 10, 2, 30),
+            changedBy: 'teacher-1',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 10),
+          ),
+        ])
+        ..pendingStatusEvents.addAll([
+          PendingEnrollmentStatusEvent(
+            operationId: 'linked',
+            fromStatus: 'pending',
+            toStatus: 'linked',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 5),
+            changedAt: DateTime.utc(2026, 11, 6, 14),
+            changedBy: enrolled.studentUid,
+          ),
+        ]);
+
+      await tester.pumpWidget(
+        _app(
+          TeacherEnrollmentHubScreen(course: _course(), repository: repository),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Historial de matrícula'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Historial de matrícula').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Curso de prueba · Grupo 02 · 2026-2'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Estudiante reincorporado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.text('Activo · reincorporado@example.invalid'),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.text('Estudiante retirado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Retirado · retirado@example.invalid'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Estudiante pendiente'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.text('Pendiente de vincular · pending@example.invalid'),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.text('Autorización retirada'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.text(
+          'Autorización retirada · autorizacion-retirada@example.invalid',
+        ),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.text('Estudiante reincorporado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Estudiante reincorporado'), findsOneWidget);
+      expect(repository.writes, 0);
+      expect(repository.statusChanges, 0);
+
+      await tester.tap(find.text('Estudiante reincorporado'));
+      await tester.pumpAndSettle();
+      expect(find.text('Historial de matrícula'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Ingreso confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Ingreso confirmado'), findsOneWidget);
+      expect(find.text('Fecha efectiva · 2026-11-05'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Retiro confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Retiro confirmado'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Reincorporación confirmada'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Reincorporación confirmada'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Autorización previa'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Autorización previa'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Cuenta vinculada'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Cuenta vinculada'), findsOneWidget);
+      expect(repository.writes, 0);
+      expect(repository.statusChanges, 0);
+    },
+  );
+
+  testWidgets(
+    'una reincorporación queda Activa, sale de Retirados y abre el mismo historial desde la ficha',
+    (tester) async {
+      final enrolled = _enrollment(
+        name: 'Estudiante reincorporado',
+        email: 'reincorporado@example.invalid',
+        studentUid: 'student-rejoined',
+        createdAt: DateTime.utc(2026, 11, 5, 14),
+        effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 5),
+        status: 'active',
+      );
+      final repository = _Repository()
+        ..records.add(enrolled)
+        ..statusEvents.addAll([
+          EnrollmentStatusEvent(
+            operationId: 'rejoin',
+            fromStatus: 'withdrawn',
+            toStatus: 'active',
+            changedAt: DateTime.utc(2026, 11, 14, 2, 30),
+            changedBy: 'teacher-1',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 14),
+          ),
+          EnrollmentStatusEvent(
+            operationId: 'withdraw',
+            fromStatus: 'active',
+            toStatus: 'withdrawn',
+            changedAt: DateTime.utc(2026, 11, 10, 2, 30),
+            changedBy: 'teacher-1',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 10),
+          ),
+        ]);
+
+      await tester.pumpWidget(
+        _app(
+          CourseStudentsScreen(
+            course: _course(),
+            repository: repository,
+            status: 'withdrawn',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Retirados'), findsOneWidget);
+      expect(
+        find.text('No hay estudiantes retirados actualmente'),
+        findsOneWidget,
+      );
+      expect(find.text('Estudiante reincorporado'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _app(CourseStudentsScreen(course: _course(), repository: repository)),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Estudiante reincorporado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Estudiante reincorporado'), findsOneWidget);
+      await tester.tap(find.text('Estudiante reincorporado'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ver historial de matrícula'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Ingreso confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Ingreso confirmado'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Retiro confirmado'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Retiro confirmado'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Reincorporación confirmada'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Reincorporación confirmada'), findsOneWidget);
+      expect(find.text('Fecha efectiva · 2026-11-05'), findsOneWidget);
+    },
+  );
+
+  testWidgets('el historial del curso permite reintentar un error de lectura', (
+    tester,
+  ) async {
+    final repository = _Repository()..failRosterSnapshot = true;
+    repository.rosterSnapshot = CourseRosterSnapshot(
+      activeEnrollments: [_enrollment(name: 'Fila tras reintento')],
+      withdrawnEnrollments: const [],
+      pendingEnrollments: const [],
+      withdrawnPendingEnrollments: const [],
+      complete: true,
+    );
+    await tester.pumpWidget(
+      _app(
+        CourseEnrollmentHistoryScreen(
+          course: _course(),
+          repository: repository,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('No pudimos cargar la información'), findsOneWidget);
+    expect(find.text('Fila tras reintento'), findsNothing);
+
+    repository.failRosterSnapshot = false;
+    await tester.tap(find.text('Reintentar'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Fila tras reintento'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Fila tras reintento'), findsOneWidget);
+    expect(repository.rosterSnapshotReads, 2);
+  });
+
+  testWidgets(
+    'el cambio de cuenta descarta la respuesta tardía del historial',
+    (tester) async {
+      final repository = _Repository();
+      final pending = Completer<CourseRosterSnapshot>();
+      repository.pendingRosterSnapshot = pending;
+      await tester.pumpWidget(
+        _app(
+          CourseEnrollmentHistoryScreen(
+            course: _course(),
+            repository: repository,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Cargando historial del curso…'), findsOneWidget);
+
+      repository.uid = 'teacher-2';
+      pending.complete(
+        CourseRosterSnapshot(
+          activeEnrollments: [_enrollment(name: 'No mostrar tras el cambio')],
+          withdrawnEnrollments: const [],
+          pendingEnrollments: const [],
+          withdrawnPendingEnrollments: const [],
+          complete: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('La sesión cambió. Vuelve a entrar.'), findsOneWidget);
+      expect(find.text('No mostrar tras el cambio'), findsNothing);
+    },
+  );
+
+  testWidgets('el historial individual oculta resultados si cambia la cuenta', (
+    tester,
+  ) async {
+    final repository = _Repository();
+    final pending = Completer<EnrollmentHistoryPage>();
+    repository.pendingHistoryPage = pending;
+    await tester.pumpWidget(
+      _app(
+        EnrollmentHistoryScreen(
+          course: _course(),
+          enrollment: _enrollment(
+            createdAt: DateTime.utc(2026, 11, 5, 14),
+            effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 5),
+          ),
+          repository: repository,
+        ),
+      ),
+    );
+    await tester.pump();
+    repository.uid = 'teacher-2';
+    pending.complete(
+      EnrollmentHistoryPage(
+        items: [
+          EnrollmentStatusEvent(
+            operationId: 'private-change',
+            fromStatus: 'active',
+            toStatus: 'withdrawn',
+            changedAt: DateTime.utc(2026, 11, 8),
+            changedBy: 'teacher-1',
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 8),
+          ),
+        ],
+        nextCursor: null,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('La sesión cambió'), findsOneWidget);
+    expect(find.text('Retiro confirmado'), findsNothing);
+    expect(find.text('Ingreso confirmado'), findsNothing);
+  });
 }

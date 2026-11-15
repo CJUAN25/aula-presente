@@ -48,6 +48,11 @@ let testEnvironment;
 async function assertPermissionDenied(operation) {
   await assert.rejects(operation, (error) => {
     assert.equal(error?.code, "permission-denied");
+    assert.equal(
+      String(error?.message).includes("maximum of 1000 expressions"),
+      false,
+      "a Rules expression-limit failure is not a valid permission denial",
+    );
     return true;
   });
 }
@@ -112,13 +117,18 @@ async function seedProfile(uid, email, roles = ["student"], extraFields = {}) {
   });
 }
 
-async function seedCourse(uid, courseId, blocks = [courseBlock()]) {
+async function seedCourse(
+  uid,
+  courseId,
+  blocks = [courseBlock()],
+  courseExtraFields = {},
+) {
   await testEnvironment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     const batch = writeBatch(db);
     batch.set(
       doc(db, "courses", courseId),
-      courseData(uid, { blocks }),
+      courseData(uid, { blocks, extraFields: courseExtraFields }),
     );
     blocks.forEach((block, order) => {
       batch.set(
@@ -162,8 +172,279 @@ function enrollmentData(studentUid, ownerUid, email, profileData = profile(email
     period: "2027-1",
     status: "active",
     createdAt: serverTimestamp(),
+    rosterEntryId: email,
+    effectiveStartDate: Timestamp.fromDate(new Date("2027-01-04T00:00:00.000Z")),
     ...extra,
   };
+}
+
+function bogotaToday() {
+  const shifted = new Date(Date.now() - 5 * 60 * 60 * 1000);
+  return Timestamp.fromDate(new Date(Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate(),
+  )));
+}
+
+function courseRangeAroundBogotaToday() {
+  const today = bogotaToday();
+  return {
+    startDate: Timestamp.fromMillis(today.toMillis() - 14 * 86400000),
+    endDate: Timestamp.fromMillis(today.toMillis() + 60 * 86400000),
+  };
+}
+
+function pendingEnrollmentData(
+  courseId,
+  ownerUid,
+  email,
+  course = courseData(ownerUid),
+  extra = {},
+) {
+  return {
+    courseId,
+    ownerUid,
+    subject: course.subject,
+    group: course.group,
+    period: course.period,
+    email,
+    studentCode: "STU-001",
+    name: "Usuario de prueba",
+    status: "pending",
+    effectiveStartDate: course.startDate,
+    rosterEntryId: email,
+    studentUid: null,
+    authorizedAt: serverTimestamp(),
+    linkedAt: null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    lastEventId: null,
+    lastStatusChangedAt: null,
+    ...extra,
+  };
+}
+
+async function createPendingEnrollment(db, courseId, email, extra = {}) {
+  const courseRef = doc(db, "courses", courseId);
+  const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
+  const courseSnapshot = await getDoc(courseRef);
+  if (!courseSnapshot.exists()) throw new Error("missing-course");
+  await setDoc(pendingRef, pendingEnrollmentData(
+    courseId,
+    courseSnapshot.data().ownerUid,
+    email,
+    courseSnapshot.data(),
+    extra,
+  ));
+  return pendingRef;
+}
+
+async function changePendingEnrollmentAtomically(
+  db,
+  courseId,
+  email,
+  operationId,
+  nextStatus,
+  effectiveDate,
+) {
+  const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
+  const eventRef = doc(
+    db,
+    "courses",
+    courseId,
+    "pending_enrollments",
+    email,
+    "status_events",
+    operationId,
+  );
+  return runTransaction(db, async (transaction) => {
+    const pendingSnapshot = await transaction.get(pendingRef);
+    if (!pendingSnapshot.exists()) throw new Error("missing-pending-enrollment");
+    const before = pendingSnapshot.data();
+    if (before.status === "linked") return "already-linked";
+    transaction.update(pendingRef, {
+      status: nextStatus,
+      ...(nextStatus === "pending" ? { effectiveStartDate: effectiveDate } : {}),
+      ...(nextStatus === "linked" ? { studentUid: "student", linkedAt: serverTimestamp() } : {}),
+      updatedAt: serverTimestamp(),
+      lastEventId: operationId,
+      lastStatusChangedAt: serverTimestamp(),
+    });
+    transaction.set(eventRef, {
+      fromStatus: before.status,
+      toStatus: nextStatus,
+      effectiveDate,
+      changedAt: serverTimestamp(),
+      changedBy: before.ownerUid,
+    });
+    return nextStatus;
+  });
+}
+
+async function linkPendingEnrollmentAtomically(
+  db,
+  courseId,
+  email,
+  studentUid,
+  { operationId = "link", resolveMatchingJoinRequest = true } = {},
+) {
+  const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const profileRef = doc(db, "users", studentUid);
+  const requestRef = doc(db, "courses", courseId, "join_requests", studentUid);
+  const eventRef = doc(
+    db,
+    "courses",
+    courseId,
+    "pending_enrollments",
+    email,
+    "status_events",
+    operationId,
+  );
+  return runTransaction(db, async (transaction) => {
+    const [pendingSnapshot, enrollmentSnapshot, profileSnapshot, requestSnapshot] = await Promise.all([
+      transaction.get(pendingRef),
+      transaction.get(enrollmentRef),
+      transaction.get(profileRef),
+      transaction.get(requestRef),
+    ]);
+    if (!pendingSnapshot.exists() || !profileSnapshot.exists()) {
+      throw new Error("missing-link-source");
+    }
+    const pending = pendingSnapshot.data();
+    if (pending.status === "linked") return "already-linked";
+    const profileData = profileSnapshot.data();
+    if (!enrollmentSnapshot.exists()) {
+      transaction.set(enrollmentRef, {
+        studentUid,
+      ownerUid: pending.ownerUid,
+        name: pending.name,
+        email: profileData.email,
+        studentCode: profileData.studentCode,
+        subject: pending.subject,
+        group: pending.group,
+        period: pending.period,
+        status: "active",
+        createdAt: serverTimestamp(),
+        rosterEntryId: pending.rosterEntryId,
+        effectiveStartDate: pending.effectiveStartDate,
+      });
+    }
+    transaction.update(pendingRef, {
+      status: "linked",
+      studentUid,
+      linkedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      lastEventId: operationId,
+      lastStatusChangedAt: serverTimestamp(),
+    });
+    transaction.set(eventRef, {
+      fromStatus: pending.status,
+      toStatus: "linked",
+      effectiveDate: pending.effectiveStartDate,
+      changedAt: serverTimestamp(),
+      changedBy: studentUid,
+    });
+    if (
+      resolveMatchingJoinRequest
+      && requestSnapshot.exists()
+      && requestSnapshot.data().status === "pending"
+      && requestSnapshot.data().email === pending.email
+      && requestSnapshot.data().studentCode === pending.studentCode
+      && requestSnapshot.data().subject === pending.subject
+      && requestSnapshot.data().group === pending.group
+      && requestSnapshot.data().period === pending.period
+    ) {
+      transaction.update(requestRef, {
+        status: "approved",
+        decidedBy: pending.ownerUid,
+        decidedAt: serverTimestamp(),
+        rejectionReason: null,
+      });
+    }
+    return "linked";
+  });
+}
+
+async function enrollManuallyAndReconcilePending(
+  db,
+  courseId,
+  studentUid,
+  email,
+  operationId,
+) {
+  const courseRef = doc(db, "courses", courseId);
+  const directoryRef = doc(db, "student_directory", email);
+  const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
+  const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
+  const requestRef = doc(db, "courses", courseId, "join_requests", studentUid);
+  const eventRef = doc(
+    db,
+    "courses",
+    courseId,
+    "pending_enrollments",
+    email,
+    "status_events",
+    operationId,
+  );
+  return runTransaction(db, async (transaction) => {
+    const [courseSnapshot, directorySnapshot, pendingSnapshot, enrollmentSnapshot, requestSnapshot] = await Promise.all([
+      transaction.get(courseRef),
+      transaction.get(directoryRef),
+      transaction.get(pendingRef),
+      transaction.get(enrollmentRef),
+      transaction.get(requestRef),
+    ]);
+    if (!courseSnapshot.exists() || !directorySnapshot.exists() || !pendingSnapshot.exists()) {
+      throw new Error("missing-reconcile-source");
+    }
+    if (enrollmentSnapshot.exists()) return "already-enrolled";
+    const course = courseSnapshot.data();
+    const pending = pendingSnapshot.data();
+    const directory = directorySnapshot.data();
+    const studentRequest = requestSnapshot.data();
+    transaction.set(enrollmentRef, enrollmentData(
+      studentUid,
+      course.ownerUid,
+      email,
+      {
+        name: pending.name,
+        email: pending.email,
+        studentCode: pending.studentCode,
+      },
+      {
+        subject: pending.subject,
+        group: pending.group,
+        period: pending.period,
+        effectiveStartDate: pending.effectiveStartDate,
+      },
+    ));
+    transaction.update(pendingRef, {
+      status: "linked",
+      studentUid,
+      linkedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      lastEventId: operationId,
+      lastStatusChangedAt: serverTimestamp(),
+    });
+    transaction.set(eventRef, {
+      fromStatus: pending.status,
+      toStatus: "linked",
+      effectiveDate: pending.effectiveStartDate,
+      changedAt: serverTimestamp(),
+      changedBy: course.ownerUid,
+    });
+    if (requestSnapshot.exists() && studentRequest.status === "pending") {
+      transaction.update(requestRef, {
+        status: "approved",
+        decidedBy: course.ownerUid,
+        decidedAt: serverTimestamp(),
+        rejectionReason: null,
+      });
+    }
+    return directory.uid;
+  });
 }
 
 function courseInviteData(courseId, course = courseData(), extra = {}) {
@@ -310,6 +591,8 @@ async function decideJoinRequestAtomically(
         period: course.data().period,
         status: "active",
         createdAt: serverTimestamp(),
+        rosterEntryId: request.data().email,
+        effectiveStartDate: course.data().startDate,
       });
     }
     transaction.update(requestRef, {
@@ -423,7 +706,11 @@ async function changeEnrollmentStatusAtomically(
   return runTransaction(db, async (transaction) => {
     const enrollmentSnapshot = await transaction.get(enrollmentRef);
     if (!enrollmentSnapshot.exists()) throw new Error("missing-enrollment");
-    const currentStatus = enrollmentSnapshot.data().status;
+    const currentEnrollment = enrollmentSnapshot.data();
+    const currentStatus = currentEnrollment.status;
+    const effectiveDate = eventPatch.effectiveDate
+      ?? currentEnrollment.effectiveStartDate
+      ?? bogotaToday();
     transaction.update(enrollmentRef, {
       status: nextStatus,
       lastStatusEventId: operationId,
@@ -433,6 +720,7 @@ async function changeEnrollmentStatusAtomically(
     transaction.set(eventRef, {
       fromStatus: currentStatus,
       toStatus: nextStatus,
+      effectiveDate,
       changedAt: serverTimestamp(),
       changedBy,
       ...eventPatch,
@@ -2887,14 +3175,16 @@ test("conjunto 4 ampliado: otro docente admin y estudiante no gestionan invitaci
 test("conjunto 5: retiro y reincorporación guardan historial atómico y revocan acceso", async () => {
   await seedProfile("teacher", "teacher@example.test", ["teacher"]);
   await seedProfile("student", "student@example.test");
-  await seedCourse("teacher", "course");
+  await seedCourse("teacher", "course", [courseBlock()], courseRangeAroundBogotaToday());
   const teacher = userContext("teacher", "teacher@example.test", true);
   const student = await publishStudent("student", "student@example.test");
   const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
   const blockId = courseBlock().id;
   await assertSucceeds(setDoc(
     enrollmentRef,
-    enrollmentData("student", "teacher", "student@example.test"),
+    enrollmentData("student", "teacher", "student@example.test", profile("student@example.test"), {
+      effectiveStartDate: bogotaToday(),
+    }),
   ));
   const createdAt = (await getDoc(enrollmentRef)).data().createdAt;
 
@@ -3047,7 +3337,7 @@ test("conjunto 5: solo el docente verificado dueño puede cambiar el estado", as
   await seedProfile("other-teacher", "other-teacher@example.test", ["teacher"]);
   await seedProfile("admin", "admin@example.test", ["admin"]);
   await seedProfile("student", "student@example.test");
-  await seedCourse("teacher", "course");
+  await seedCourse("teacher", "course", [courseBlock()], courseRangeAroundBogotaToday());
   const teacher = userContext("teacher", "teacher@example.test", true);
   const otherTeacher = userContext("other-teacher", "other-teacher@example.test", true);
   const admin = userContext("admin", "admin@example.test", true);
@@ -3056,7 +3346,13 @@ test("conjunto 5: solo el docente verificado dueño puede cambiar el estado", as
   const anonymous = testEnvironment.unauthenticatedContext().firestore();
   const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
   await publishStudent("student", "student@example.test");
-  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData(
+    "student",
+    "teacher",
+    "student@example.test",
+    profile("student@example.test"),
+    { effectiveStartDate: bogotaToday() },
+  )));
 
   for (const [db, actor] of [
     [otherTeacher, "other-teacher"],
@@ -3086,6 +3382,7 @@ test("conjunto 5: solo el docente verificado dueño puede cambiar el estado", as
   ), {
     fromStatus: "active",
     toStatus: "withdrawn",
+    effectiveDate: bogotaToday(),
     changedAt: serverTimestamp(),
     changedBy: "teacher",
   }));
@@ -3103,11 +3400,17 @@ test("conjunto 5: solo el docente verificado dueño puede cambiar el estado", as
 test("conjunto 5: cambios rechazan eventos falsos, snapshots alterados y transiciones inválidas", async () => {
   await seedProfile("teacher", "teacher@example.test", ["teacher"]);
   await seedProfile("student", "student@example.test");
-  await seedCourse("teacher", "course");
+  await seedCourse("teacher", "course", [courseBlock()], courseRangeAroundBogotaToday());
   const teacher = userContext("teacher", "teacher@example.test", true);
   const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
   await publishStudent("student", "student@example.test");
-  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData(
+    "student",
+    "teacher",
+    "student@example.test",
+    profile("student@example.test"),
+    { effectiveStartDate: bogotaToday() },
+  )));
 
   const invalidChanges = [
     { nextStatus: "active", operationId: "same-status" },
@@ -3159,12 +3462,18 @@ test("conjunto 5: cambios rechazan eventos falsos, snapshots alterados y transic
 test("conjunto 5: código y aprobación no reactivan un enrollment retirado", async () => {
   await seedProfile("teacher", "teacher@example.test", ["teacher"]);
   await seedProfile("student", "student@example.test");
-  await seedCourse("teacher", "course");
+  await seedCourse("teacher", "course", [courseBlock()], courseRangeAroundBogotaToday());
   const teacher = userContext("teacher", "teacher@example.test", true);
   const student = await publishStudent("student", "student@example.test");
   await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
   const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "student");
-  await assertSucceeds(setDoc(enrollmentRef, enrollmentData("student", "teacher", "student@example.test")));
+  await assertSucceeds(setDoc(enrollmentRef, enrollmentData(
+    "student",
+    "teacher",
+    "student@example.test",
+    profile("student@example.test"),
+    { effectiveStartDate: bogotaToday() },
+  )));
   await assertSucceeds(changeEnrollmentStatusAtomically(
     teacher, "course", "student", "withdraw-before-code", "withdrawn",
   ));
@@ -3205,4 +3514,636 @@ test("conjunto 5: código y aprobación no reactivan un enrollment retirado", as
     enrollmentRef,
     enrollmentData("student", "teacher", "student@example.test"),
   ));
+});
+
+test("conjunto 7: docente autoriza pendientes y collectionGroup exige identidad y filtros completos", async () => {
+  const owner = userContext("teacher", "teacher@example.test", true);
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student-a", "student-a@example.test");
+  await seedProfile("student-b", "student-b@example.test", ["student"], {
+    studentCode: "STU-002",
+  });
+  await seedProfile("outsider", "outsider@example.test", ["student"], {
+    studentCode: "STU-003",
+  });
+  await seedCourse("teacher", "course-a");
+  const studentA = userContext("student-a", "student-a@example.test", true);
+  const studentB = userContext("student-b", "student-b@example.test", true);
+  const outsider = userContext("outsider", "outsider@example.test", true);
+  const unverified = userContext("student-a", "student-a@example.test", false);
+
+  await assertSucceeds(createPendingEnrollment(owner, "course-a", "student-a@example.test"));
+  await assertSucceeds(createPendingEnrollment(owner, "course-a", "student-b@example.test", {
+    studentCode: "STU-002",
+    name: "Otra estudiante",
+  }));
+  await assertPermissionDenied(createPendingEnrollment(owner, "course-a", "mismatch@example.test", {
+    email: "other@example.test",
+  }));
+
+  const ownCourseQueue = query(
+    collection(owner, "courses", "course-a", "pending_enrollments"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  assert.equal((await assertSucceeds(getDocs(ownCourseQueue))).size, 2);
+
+  const ownStudentQueue = query(
+    collectionGroup(studentA, "pending_enrollments"),
+    where("email", "==", "student-a@example.test"),
+    where("studentCode", "==", "STU-001"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const visible = await assertSucceeds(getDocs(ownStudentQueue));
+  assert.equal(visible.size, 1);
+  assert.equal(visible.docs[0].id, "student-a@example.test");
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(
+      studentA,
+      "courses",
+      "course-a",
+      "pending_enrollments",
+      "student-a@example.test",
+    )))).data().status,
+    "pending",
+  );
+  await assertPermissionDenied(getDoc(doc(
+    studentA,
+    "courses",
+    "course-a",
+    "pending_enrollments",
+    "student-b@example.test",
+  )));
+
+  const studentWithoutEmail = query(
+    collectionGroup(studentA, "pending_enrollments"),
+    where("studentCode", "==", "STU-001"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const studentWithoutCode = query(
+    collectionGroup(studentA, "pending_enrollments"),
+    where("email", "==", "student-a@example.test"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const studentWithoutStatus = query(
+    collectionGroup(studentA, "pending_enrollments"),
+    where("email", "==", "student-a@example.test"),
+    where("studentCode", "==", "STU-001"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  await assertPermissionDenied(getDocs(studentWithoutEmail));
+  await assertPermissionDenied(getDocs(studentWithoutCode));
+  await assertPermissionDenied(getDocs(studentWithoutStatus));
+  await assertPermissionDenied(getDocs(query(
+    collectionGroup(studentB, "pending_enrollments"),
+    where("email", "==", "student-a@example.test"),
+    where("studentCode", "==", "STU-001"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  )));
+  await assertPermissionDenied(getDocs(query(
+    collectionGroup(unverified, "pending_enrollments"),
+    where("email", "==", "student-a@example.test"),
+    where("studentCode", "==", "STU-001"),
+    where("status", "==", "pending"),
+    orderBy("createdAt", "desc"),
+    orderBy(documentId(), "desc"),
+  )));
+  await assertPermissionDenied(getDocs(collection(
+    outsider,
+    "courses",
+    "course-a",
+    "pending_enrollments",
+  )));
+});
+
+test("conjunto 7: cambios pending requieren evento atómico y permiten cancelar tramo futuro hoy", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("future-student", "future-student@example.test");
+  await seedProfile("old-student", "old-student@example.test", ["student"], {
+    studentCode: "STU-004",
+  });
+  await seedCourse("teacher", "future-course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const futureStudent = userContext("future-student", "future-student@example.test", true);
+  const today = bogotaToday();
+  const tomorrow = Timestamp.fromMillis(today.toMillis() + 86400000);
+  const courseStart = Timestamp.fromDate(new Date("2027-01-04T00:00:00.000Z"));
+  const futureRef = doc(
+    teacher,
+    "courses",
+    "future-course",
+    "pending_enrollments",
+    "future-student@example.test",
+  );
+  await assertSucceeds(createPendingEnrollment(teacher, "future-course", "future-student@example.test"));
+
+  await assertPermissionDenied(setDoc(doc(
+    teacher,
+    "courses",
+    "future-course",
+    "pending_enrollments",
+    "future-student@example.test",
+    "status_events",
+    "orphan-event",
+  ), {
+    fromStatus: "pending",
+    toStatus: "withdrawn",
+    effectiveDate: today,
+    changedAt: serverTimestamp(),
+    changedBy: "teacher",
+  }));
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "past-before-authorization",
+    "withdrawn",
+    Timestamp.fromMillis(today.toMillis() - 86400000),
+  ));
+  await assertPermissionDenied(updateDoc(futureRef, {
+    status: "withdrawn",
+  }));
+  await assertSucceeds(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "cancel-future-pending-today",
+    "withdrawn",
+    today,
+  ));
+  await assertPermissionDenied(linkPendingEnrollmentAtomically(
+    futureStudent,
+    "future-course",
+    "future-student@example.test",
+    "future-student",
+    { operationId: "link" },
+  ));
+  assert.equal((await assertSucceeds(getDoc(doc(
+    futureStudent,
+    "courses",
+    "future-course",
+    "enrollments",
+    "future-student",
+  )))).exists(), false);
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "reopen-after-future-start",
+    "pending",
+    Timestamp.fromMillis(courseStart.toMillis() + 86400000),
+  ));
+  await assertSucceeds(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "reopen-on-start",
+    "pending",
+    courseStart,
+  ));
+  // This transaction writes pending + event but deliberately omits the
+  // canonical enrollment; the reciprocal link rule must reject it.
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "link",
+    "linked",
+    courseStart,
+  ));
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "future-withdrawal-date",
+    "withdrawn",
+    tomorrow,
+  ));
+  await assertSucceeds(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "cancel-reopened-future-pending-today",
+    "withdrawn",
+    today,
+  ));
+  const pending = (await assertSucceeds(getDoc(futureRef))).data();
+  assert.equal(pending.status, "withdrawn");
+  assert.equal(pending.effectiveStartDate.toMillis(), courseStart.toMillis());
+  const events = await assertSucceeds(getDocs(collection(
+    teacher,
+    "courses",
+    "future-course",
+    "pending_enrollments",
+    "future-student@example.test",
+    "status_events",
+  )));
+  assert.equal(events.size, 3);
+  await assertPermissionDenied(updateDoc(doc(
+    teacher,
+    "courses",
+    "future-course",
+    "pending_enrollments",
+    "future-student@example.test",
+    "status_events",
+    "cancel-future-pending-today",
+  ), { toStatus: "pending" }));
+
+  await assertSucceeds(createPendingEnrollment(teacher, "future-course", "old-student@example.test", {
+    studentCode: "STU-004",
+  }));
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "old-student@example.test",
+    "no-future-date",
+    "withdrawn",
+    tomorrow,
+  ));
+  assert.equal(
+    (await assertSucceeds(getDoc(doc(
+      teacher,
+      "courses",
+      "future-course",
+      "pending_enrollments",
+      "old-student@example.test",
+    )))).data().status,
+    "pending",
+  );
+});
+
+test("conjunto 7: altas, retiros y reincorporaciones conservan fecha efectiva sin retiros futuros", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedCourse("teacher", "course", [courseBlock()], {
+    startDate: Timestamp.fromDate(new Date("2027-01-04T00:00:00.000Z")),
+    endDate: Timestamp.fromDate(new Date("2027-01-31T00:00:00.000Z")),
+  });
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const courseStart = Timestamp.fromDate(new Date("2027-01-04T00:00:00.000Z"));
+  const today = bogotaToday();
+  const tomorrow = Timestamp.fromMillis(today.toMillis() + 86400000);
+  const enrollmentRef = doc(teacher, "courses", "course", "enrollments", "future-student");
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", "course", "enrollments", "future-student"),
+      enrollmentData(
+        "future-student",
+        "teacher",
+        "future-student@example.test",
+        profile("future-student@example.test"),
+        { effectiveStartDate: courseStart },
+      ),
+    );
+  });
+
+  await assertPermissionDenied(changeEnrollmentStatusAtomically(
+    teacher,
+    "course",
+    "future-student",
+    "withdraw-before-created",
+    "withdrawn",
+    { eventPatch: { effectiveDate: Timestamp.fromMillis(today.toMillis() - 86400000) } },
+  ));
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher,
+    "course",
+    "future-student",
+    "withdraw-future-enrollment-today",
+    "withdrawn",
+    { eventPatch: { effectiveDate: today } },
+  ));
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher,
+    "course",
+    "future-student",
+    "restore-on-course-start",
+    "active",
+    { eventPatch: { effectiveDate: courseStart } },
+  ));
+  await assertPermissionDenied(changeEnrollmentStatusAtomically(
+    teacher,
+    "course",
+    "future-student",
+    "future-retirement-date",
+    "withdrawn",
+    { eventPatch: { effectiveDate: tomorrow } },
+  ));
+  await assertSucceeds(changeEnrollmentStatusAtomically(
+    teacher,
+    "course",
+    "future-student",
+    "withdraw-again-today",
+    "withdrawn",
+    { eventPatch: { effectiveDate: today } },
+  ));
+  assert.equal((await assertSucceeds(getDoc(enrollmentRef))).data().status, "withdrawn");
+});
+
+test("conjunto 7: link estudiantil concilia pending y solo resuelve solicitud C4 coincidente", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedProfile("mismatch", "mismatch@example.test", ["student"], {
+    studentCode: "STU-005",
+  });
+  await seedCourse("teacher", "course", [courseBlock()], courseRangeAroundBogotaToday());
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const mismatch = userContext("mismatch", "mismatch@example.test", true);
+  const courseRef = doc(teacher, "courses", "course");
+  const course = (await assertSucceeds(getDoc(courseRef))).data();
+
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "student@example.test"));
+  assert.equal(await assertSucceeds(submitJoinRequestAtomically(
+    student,
+    "course",
+    "student",
+    inviteCodeA,
+  )), "created");
+  await assertPermissionDenied(updateDoc(doc(
+    student,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "student@example.test",
+  ), {
+    status: "linked",
+    studentUid: "student",
+    linkedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    lastEventId: "link",
+    lastStatusChangedAt: serverTimestamp(),
+  }));
+  assert.equal(await assertSucceeds(linkPendingEnrollmentAtomically(
+    student,
+    "course",
+    "student@example.test",
+    "student",
+    { operationId: "link" },
+  )), "linked");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    student,
+    "courses",
+    "course",
+    "join_requests",
+    "student",
+  )))).data().status, "approved");
+  const linkedEnrollment = (await assertSucceeds(getDoc(doc(
+    student,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+  )))).data();
+  assert.equal(linkedEnrollment.status, "active");
+  assert.equal(linkedEnrollment.name, "Usuario de prueba");
+  assert.equal(linkedEnrollment.rosterEntryId, "student@example.test");
+  assert.equal(linkedEnrollment.effectiveStartDate.toMillis(), course.startDate.toMillis());
+  assert.deepEqual(
+    (await assertSucceeds(getDoc(doc(student, "users", "student")))).data().roles,
+    ["student"],
+  );
+
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "mismatch@example.test", {
+    studentCode: "STU-005",
+  }));
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", "course", "join_requests", "mismatch"),
+      joinRequestData("mismatch", "mismatch@example.test", inviteCodeA, {
+        name: "Nombre distinto",
+        studentCode: "STU-005",
+      }),
+    );
+  });
+  assert.equal(await assertSucceeds(linkPendingEnrollmentAtomically(
+    mismatch,
+    "course",
+    "mismatch@example.test",
+    "mismatch",
+    { operationId: "link" },
+  )), "linked");
+  const mismatchRequestRef = doc(
+    mismatch,
+    "courses",
+    "course",
+    "join_requests",
+    "mismatch",
+  );
+  const mismatchRequest = (await assertSucceeds(getDoc(mismatchRequestRef))).data();
+  assert.equal(mismatchRequest.status, "approved");
+  assert.equal(mismatchRequest.name, "Nombre distinto");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "mismatch@example.test",
+  )))).data().name, "Usuario de prueba");
+
+  await seedProfile("wrong-code", "wrong-code@example.test", ["student"], {
+    studentCode: "STU-006",
+  });
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "wrong-code@example.test", {
+    studentCode: "STU-006",
+  }));
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", "course", "join_requests", "wrong-code"),
+      joinRequestData("wrong-code", "wrong-code@example.test", inviteCodeA, {
+        studentCode: "STU-999",
+      }),
+    );
+  });
+  const wrongCodeStudent = userContext("wrong-code", "wrong-code@example.test", true);
+  assert.equal(await assertSucceeds(linkPendingEnrollmentAtomically(
+    wrongCodeStudent,
+    "course",
+    "wrong-code@example.test",
+    "wrong-code",
+    { operationId: "link" },
+  )), "linked");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    wrongCodeStudent,
+    "courses",
+    "course",
+    "join_requests",
+    "wrong-code",
+  )))).data().status, "pending");
+  await assertPermissionDenied(decideJoinRequestAtomically(
+    teacher,
+    "course",
+    "wrong-code",
+    "teacher",
+    { status: "approved" },
+  ));
+
+  await seedProfile("legacy-student", "legacy-student@example.test", ["student"], {
+    studentCode: "STU-006",
+  });
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "legacy-student@example.test", {
+    studentCode: "STU-006",
+    name: "Roster Legacy",
+  }));
+  const legacyCreatedAt = Timestamp.fromDate(new Date("2026-01-10T12:00:00.000Z"));
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      "courses",
+      "course",
+      "enrollments",
+      "legacy-student",
+    ), {
+      studentUid: "legacy-student",
+      ownerUid: "teacher",
+      name: "Nombre histórico conservado",
+      email: "legacy-student@example.test",
+      studentCode: "STU-006",
+      subject: course.subject,
+      group: course.group,
+      period: course.period,
+      status: "active",
+      createdAt: legacyCreatedAt,
+    });
+  });
+  const legacyStudent = userContext("legacy-student", "legacy-student@example.test", true);
+  assert.equal(await assertSucceeds(linkPendingEnrollmentAtomically(
+    legacyStudent,
+    "course",
+    "legacy-student@example.test",
+    "legacy-student",
+    { operationId: "link" },
+  )), "linked");
+  const legacyAfterLink = (await assertSucceeds(getDoc(doc(
+    legacyStudent,
+    "courses",
+    "course",
+    "enrollments",
+    "legacy-student",
+  )))).data();
+  assert.equal(legacyAfterLink.createdAt.toMillis(), legacyCreatedAt.toMillis());
+  assert.equal(legacyAfterLink.name, "Nombre histórico conservado");
+  assert.equal("rosterEntryId" in legacyAfterLink, false);
+  assert.equal("effectiveStartDate" in legacyAfterLink, false);
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "legacy-student@example.test",
+  )))).data().name, "Roster Legacy");
+
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "unverified@example.test"));
+  await seedProfile("unverified", "unverified@example.test");
+  const unverified = userContext("unverified", "unverified@example.test", false);
+  await assertPermissionDenied(linkPendingEnrollmentAtomically(
+    unverified,
+    "course",
+    "unverified@example.test",
+    "unverified",
+    { operationId: "link" },
+  ));
+});
+
+test("conjunto 7: matrícula manual enlaza pending y decisión C4 en la misma transacción", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "student@example.test"));
+  await assertSucceeds(submitJoinRequestAtomically(student, "course", "student", inviteCodeA));
+  await assertSucceeds(publishStudent("student", "student@example.test"));
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(
+      context.firestore(),
+      "courses",
+      "course",
+      "join_requests",
+      "student",
+    ), { name: "Nombre orientativo distinto" });
+  });
+
+  const pending = (await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "student@example.test",
+  )))).data();
+  await assertPermissionDenied(setDoc(
+    doc(teacher, "courses", "course", "enrollments", "student"),
+    enrollmentData("student", "teacher", "student@example.test", {
+      name: pending.name,
+      email: pending.email,
+      studentCode: pending.studentCode,
+    }, {
+      subject: pending.subject,
+      group: pending.group,
+      period: pending.period,
+      effectiveStartDate: pending.effectiveStartDate,
+    }),
+  ));
+
+  assert.equal(await assertSucceeds(enrollManuallyAndReconcilePending(
+    teacher,
+    "course",
+    "student",
+    "student@example.test",
+    "link",
+  )), "student");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "student@example.test",
+  )))).data().status, "linked");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "join_requests",
+    "student",
+  )))).data().status, "approved");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "join_requests",
+    "student",
+  )))).data().name, "Nombre orientativo distinto");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+  )))).data().status, "active");
+  assert.equal((await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "enrollments",
+    "student",
+  )))).data().name, "Usuario de prueba");
+  assert.equal((await assertSucceeds(getDocs(collection(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "student@example.test",
+    "status_events",
+  )))).size, 1);
 });

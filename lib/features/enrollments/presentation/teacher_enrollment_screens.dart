@@ -6,6 +6,7 @@ import '../../course_entry/presentation/course_invitation_screens.dart';
 import '../../course_entry/presentation/teacher_join_request_screens.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_presentation_components.dart';
+import '../../excel_import/presentation/excel_roster_update_screen.dart';
 import '../../excel_import/presentation/excel_import_screen.dart';
 import '../application/enrollment_validator.dart';
 import '../domain/enrollment.dart';
@@ -14,7 +15,10 @@ import '../domain/enrollment_page.dart';
 import '../domain/enrollment_repository.dart';
 import '../domain/enrollment_status_change.dart';
 import '../domain/student_candidate.dart';
+import 'course_enrollment_history_screen.dart';
 import 'enrollment_components.dart';
+import 'enrollment_history_screen.dart';
+import 'pending_enrollments_screen.dart';
 
 class TeacherEnrollmentHubScreen extends StatefulWidget {
   const TeacherEnrollmentHubScreen({
@@ -34,7 +38,9 @@ class TeacherEnrollmentHubScreen extends StatefulWidget {
 class _TeacherEnrollmentHubScreenState
     extends State<TeacherEnrollmentHubScreen> {
   int? _count;
+  int? _pendingCount;
   Object? _error;
+  Object? _pendingError;
   bool _loading = false;
   int _countEpoch = 0;
 
@@ -49,7 +55,9 @@ class _TeacherEnrollmentHubScreenState
     setState(() {
       _loading = true;
       _error = null;
+      _pendingError = null;
       _count = null;
+      _pendingCount = null;
     });
     try {
       final count = await widget.repository.countCourseStudents(
@@ -63,6 +71,21 @@ class _TeacherEnrollmentHubScreenState
       }
     } catch (error) {
       if (mounted && epoch == _countEpoch) setState(() => _error = error);
+    }
+    try {
+      final count = await widget.repository.countCoursePendingEnrollments(
+        widget.course.id,
+      );
+      if (mounted && epoch == _countEpoch) {
+        setState(() {
+          _pendingCount = count;
+          _pendingError = null;
+        });
+      }
+    } catch (error) {
+      if (mounted && epoch == _countEpoch) {
+        setState(() => _pendingError = error);
+      }
     } finally {
       if (mounted && epoch == _countEpoch) setState(() => _loading = false);
     }
@@ -87,6 +110,18 @@ class _TeacherEnrollmentHubScreenState
           course: widget.course,
           repository: widget.repository,
           status: 'withdrawn',
+        ),
+      ),
+    );
+    if (mounted) _refresh();
+  }
+
+  Future<void> _openEnrollmentHistory() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CourseEnrollmentHistoryScreen(
+          course: widget.course,
+          repository: widget.repository,
         ),
       ),
     );
@@ -120,6 +155,31 @@ class _TeacherEnrollmentHubScreenState
     } else {
       _refresh();
     }
+  }
+
+  Future<void> _openExcelRosterUpdate() async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => ExcelRosterUpdateScreen(
+          course: widget.course,
+          repository: widget.repository,
+        ),
+      ),
+    );
+    if (mounted) _refresh();
+  }
+
+  Future<void> _openPendingEnrollments({String status = 'pending'}) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CoursePendingEnrollmentsScreen(
+          course: widget.course,
+          repository: widget.repository,
+          status: status,
+        ),
+      ),
+    );
+    if (mounted) _refresh();
   }
 
   Future<void> _openInvitation() => Navigator.of(context).push<void>(
@@ -193,8 +253,14 @@ class _TeacherEnrollmentHubScreenState
               ],
               const SizedBox(height: 16),
               EnrollmentTile(
-                title: 'Importar Excel',
-                subtitle: 'Revisar coincidencias y confirmar altas',
+                title: 'Actualizar lista con Excel',
+                subtitle: 'Comparar la lista completa y elegir cambios',
+                iconAsset: 'bcab7.svg',
+                onTap: _openExcelRosterUpdate,
+              ),
+              EnrollmentTile(
+                title: 'Solo agregar estudiantes',
+                subtitle: 'Importar una lista parcial sin retirar a nadie',
                 iconAsset: 'bcab7.svg',
                 onTap: _openExcelImport,
               ),
@@ -217,16 +283,38 @@ class _TeacherEnrollmentHubScreenState
                 onTap: _openJoinRequests,
               ),
               EnrollmentTile(
+                title: 'Pendientes de vincular',
+                subtitle: _pendingCount == null
+                    ? 'Altas autorizadas que esperan una cuenta verificada'
+                    : '$_pendingCount esperan una cuenta verificada',
+                iconAsset: '19383.svg',
+                onTap: () => _openPendingEnrollments(),
+              ),
+              if (_pendingError != null)
+                EnrollmentFailureCard(error: _pendingError, onRetry: _refresh),
+              EnrollmentTile(
                 title: 'Lista de estudiantes',
                 subtitle: 'Inscritos actuales del curso',
                 iconAsset: '19383.svg',
                 onTap: _openStudents,
               ),
               EnrollmentTile(
-                title: 'Retirados e histórico',
-                subtitle: 'Consulta retiros y reincorporaciones',
+                title: 'Historial de matrícula',
+                subtitle: 'Ingresos y estados actuales de este curso',
+                iconAsset: '19383.svg',
+                onTap: _openEnrollmentHistory,
+              ),
+              EnrollmentTile(
+                title: 'Retirados',
+                subtitle: 'Inscripciones retiradas actualmente',
                 iconAsset: '19383.svg',
                 onTap: _openWithdrawnStudents,
+              ),
+              EnrollmentTile(
+                title: 'Historial de pendientes',
+                subtitle: 'Autorizaciones retiradas antes de vincularse',
+                iconAsset: '19383.svg',
+                onTap: () => _openPendingEnrollments(status: 'withdrawn'),
               ),
             ],
           ),
@@ -342,13 +430,13 @@ class _CourseStudentsScreenState extends State<CourseStudentsScreen> {
       widget.repository.currentUid != widget.course.ownerUid
       ? CoursePage(
           title: widget.showingWithdrawn
-              ? 'Retirados e histórico'
+              ? 'Retirados'
               : 'Estudiantes del curso',
           child: Center(child: Text('La sesión cambió. Vuelve a entrar.')),
         )
       : CoursePage(
           title: widget.showingWithdrawn
-              ? 'Retirados e histórico'
+              ? 'Retirados'
               : 'Estudiantes del curso',
           leading: IconButton(
             tooltip: 'Volver',
@@ -366,10 +454,10 @@ class _CourseStudentsScreenState extends State<CourseStudentsScreen> {
             children: [
               CoursePageHeading(
                 title: widget.showingWithdrawn
-                    ? 'Retiros e historial.'
+                    ? 'Estudiantes retirados.'
                     : 'Tu lista de estudiantes.',
                 description: widget.showingWithdrawn
-                    ? 'Las decisiones anteriores se conservan en la matrícula.'
+                    ? 'Esta lista contiene solo inscripciones cuyo estado actual es retirado. El historial completo está en Historial de matrícula.'
                     : null,
               ),
               const SizedBox(height: 12),
@@ -394,9 +482,13 @@ class _CourseStudentsScreenState extends State<CourseStudentsScreen> {
                   onRetry: () => _load(reset: _items.isEmpty),
                 ),
               if (!_loading && _error == null && _items.isEmpty)
-                const CourseStateCard(
-                  title: 'Aún no hay estudiantes en esta lista',
-                  message: 'Los retiros conservan la inscripción y su historial. Puedes volver a esta lista después de una reincorporación.',
+                CourseStateCard(
+                  title: widget.showingWithdrawn
+                      ? 'No hay estudiantes retirados actualmente'
+                      : 'Aún no hay estudiantes en esta lista',
+                  message: widget.showingWithdrawn
+                      ? 'La reincorporación cambia su estado a Activo. Sus movimientos anteriores siguen en Historial de matrícula.'
+                      : 'Las matrículas confirmadas aparecerán aquí. El historial completo del curso está en Historial de matrícula.',
                   icon: Icons.group_outlined,
                 ),
               if (_search.text.trim().isNotEmpty &&
@@ -443,7 +535,7 @@ class _CourseStudentsScreenState extends State<CourseStudentsScreen> {
                 ),
                 const SizedBox(height: 12),
                 CourseSecondaryButton(
-                  label: 'Retirados e histórico',
+                  label: 'Retirados',
                   icon: Icons.history,
                   onPressed: () => Navigator.of(context).push<void>(
                     MaterialPageRoute<void>(
@@ -542,10 +634,16 @@ class StudentEnrollmentDetailScreen extends StatelessWidget {
                     style: const TextStyle(color: AppColors.muted),
                   ),
                 ],
-                if (enrollment.createdAt != null) ...[
+                if (enrollment.effectiveStartDate != null) ...[
                   const SizedBox(height: 14),
                   Text(
-                    'Inscrito el ${_enrollmentDate(enrollment.createdAt!)}',
+                    'Ingreso efectivo · ${enrollment.effectiveStartDate!.isoDate}',
+                    style: const TextStyle(color: AppColors.muted),
+                  ),
+                ] else if (enrollment.createdAt != null) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    'Ingreso registrado · ${_enrollmentDate(enrollment.createdAt!)}',
                     style: const TextStyle(color: AppColors.muted),
                   ),
                 ],
@@ -569,7 +667,7 @@ class StudentEnrollmentDetailScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           CourseSecondaryButton(
-            label: 'Ver historial de inscripción',
+            label: 'Ver historial de matrícula',
             icon: Icons.history,
             onPressed: () => Navigator.of(context).push<void>(
               MaterialPageRoute<void>(
@@ -599,6 +697,14 @@ class StudentEnrollmentDetailScreen extends StatelessWidget {
     );
   }
 }
+
+String _enrollmentDate(DateTime value) {
+  final local = _academicLocal(value);
+  return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year}';
+}
+
+DateTime _academicLocal(DateTime value) =>
+    value.toUtc().subtract(const Duration(hours: 5));
 
 class EnrollmentStatusChangeScreen extends StatefulWidget {
   const EnrollmentStatusChangeScreen({
@@ -720,8 +826,8 @@ class _EnrollmentStatusChangeScreenState
                   ? 'Cambio ya confirmado'
                   : 'Historial actualizado',
               message: withdrawal
-                  ? 'El acceso del estudiante a esta materia fue retirado. La inscripción y el horario del curso se conservaron.'
-                  : 'El acceso a esta materia está activo otra vez. Se conservó la fecha de inscripción original y el historial del retiro.',
+                  ? 'El acceso a esta materia fue retirado y se conservó la matrícula. Encontrarás al estudiante en Retirados mientras su estado siga así; sus movimientos están en Historial de matrícula.'
+                  : 'El acceso a esta materia está activo otra vez. Se conservó la fecha efectiva de ingreso y el historial completo; ya no aparece en Retirados.',
               icon: Icons.check_circle_outline,
             ),
             const SizedBox(height: 20),
@@ -873,154 +979,6 @@ class _EnrollmentStatusChangeScreenState
     );
   }
 }
-
-class EnrollmentHistoryScreen extends StatefulWidget {
-  const EnrollmentHistoryScreen({
-    super.key,
-    required this.course,
-    required this.enrollment,
-    required this.repository,
-  });
-
-  final Course course;
-  final Enrollment enrollment;
-  final EnrollmentRepository repository;
-
-  @override
-  State<EnrollmentHistoryScreen> createState() =>
-      _EnrollmentHistoryScreenState();
-}
-
-class _EnrollmentHistoryScreenState extends State<EnrollmentHistoryScreen> {
-  final List<EnrollmentStatusEvent> _events = [];
-  EnrollmentHistoryCursor? _cursor;
-  bool _hasMore = true;
-  bool _loading = false;
-  Object? _error;
-  int _epoch = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _load(reset: true);
-  }
-
-  Future<void> _load({bool reset = false}) async {
-    if (_loading && !reset) return;
-    final epoch = ++_epoch;
-    if (reset) {
-      _events.clear();
-      _cursor = null;
-      _hasMore = true;
-    }
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final page = await widget.repository.listEnrollmentHistory(
-        courseId: widget.course.id,
-        studentUid: widget.enrollment.studentUid,
-        cursor: _cursor,
-      );
-      if (!mounted || epoch != _epoch) return;
-      setState(() {
-        _events.addAll(page.items);
-        _cursor = page.nextCursor;
-        _hasMore = page.hasMore;
-      });
-    } catch (error) {
-      if (mounted && epoch == _epoch) setState(() => _error = error);
-    } finally {
-      if (mounted && epoch == _epoch) setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => CoursePage(
-    title: 'Historial de inscripción',
-    leading: IconButton(
-      tooltip: 'Volver a la ficha',
-      onPressed: () => Navigator.of(context).maybePop(),
-      icon: const Icon(Icons.arrow_back),
-    ),
-    actions: [
-      IconButton(
-        tooltip: 'Actualizar historial',
-        onPressed: _loading ? null : () => _load(reset: true),
-        icon: const Icon(Icons.refresh),
-      ),
-    ],
-    child: CourseContent(
-      children: [
-        CoursePageHeading(
-          title: 'Cambios de ${widget.enrollment.name}.',
-          description:
-              '${widget.course.subject} · ${widget.course.group} · ${widget.course.period}',
-        ),
-        const SizedBox(height: 16),
-        CourseStateCard(
-          title: 'Historial de solo consulta',
-          message: 'Cada evento refleja una transición confirmada por el servidor. Ninguna entrada de esta lista se puede editar o eliminar.',
-          icon: Icons.history,
-        ),
-        const SizedBox(height: 12),
-        if (_loading && _events.isEmpty)
-          const CourseLoading(message: 'Cargando historial…'),
-        if (_error != null)
-          EnrollmentFailureCard(
-            error: _error,
-            onRetry: () => _load(reset: _events.isEmpty),
-          ),
-        if (!_loading && _error == null && _events.isEmpty)
-          const CourseStateCard(
-            title: 'Todavía no hay cambios de estado',
-            message:
-                'La inscripción no ha registrado retiros ni reincorporaciones.',
-            icon: Icons.event_note_outlined,
-          ),
-        for (final event in _events)
-          EnrollmentTile(
-            title: event.toStatus == 'withdrawn'
-                ? 'Retiro confirmado'
-                : 'Reincorporación confirmada',
-            subtitle:
-                '${_enrollmentDateTime(event.changedAt)} · ${event.fromStatus == 'active' ? 'Activo' : 'Retirado'} → ${event.toStatus == 'active' ? 'Activo' : 'Retirado'}',
-            iconAsset: event.toStatus == 'withdrawn'
-                ? 'df818.svg'
-                : '51a24.svg',
-          ),
-        if (!_hasMore && widget.enrollment.createdAt != null)
-          EnrollmentTile(
-            title: 'Ingreso registrado',
-            subtitle:
-                '${_enrollmentDateTime(widget.enrollment.createdAt!)} · Inicio de la inscripción',
-            iconAsset: '51a24.svg',
-          ),
-        if (_hasMore && _events.isNotEmpty)
-          CourseSecondaryButton(
-            label: _loading ? 'Cargando…' : 'Cargar más historial',
-            onPressed: _loading ? null : () => _load(),
-          ),
-      ],
-    ),
-  );
-}
-
-String _enrollmentDate(DateTime value) {
-  final local = _academicLocal(value);
-  return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year}';
-}
-
-String _enrollmentDateTime(DateTime value) {
-  final local = _academicLocal(value);
-  return '${_enrollmentDate(value)} · ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-}
-
-/// Academic timestamps are displayed in Colombia's UTC-5 timezone regardless
-/// of the device timezone. Colombia does not observe daylight saving time.
-DateTime _academicLocal(DateTime value) =>
-    value.toUtc().subtract(const Duration(hours: 5));
 
 enum _AddStep { form, review, conflict, confirmed, sessionChanged }
 

@@ -1,5 +1,7 @@
-/// Canonical course/student enrollment. The snapshots and creation time are
-/// immutable; only [status] and the last transition markers can change.
+// Canonical course/student enrollment. Snapshots and creation time are
+// immutable; only status and the last transition markers can change.
+import '../../schedule/domain/academic_date.dart';
+
 class Enrollment {
   const Enrollment({
     required this.courseId,
@@ -13,6 +15,8 @@ class Enrollment {
     required this.period,
     required this.status,
     required this.createdAt,
+    this.rosterEntryId,
+    this.effectiveStartDate,
     this.lastStatusEventId,
     this.lastStatusChangedAt,
   });
@@ -30,6 +34,14 @@ class Enrollment {
 
   /// Null only for the immediate result of a confirmed server write.
   final DateTime? createdAt;
+
+  /// Stable academic row identity for newly created memberships. Existing
+  /// documents without this field remain readable through the UID fallback.
+  final String? rosterEntryId;
+
+  /// Civil date from which this enrollment is effective. Legacy records derive
+  /// it from [createdAt] when read.
+  final AcademicDate? effectiveStartDate;
 
   /// Missing on legacy enrollments that have never changed status.
   final String? lastStatusEventId;

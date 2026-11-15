@@ -13,6 +13,7 @@ import '../domain/enrollment.dart';
 import '../domain/enrollment_failure.dart';
 import '../domain/enrollment_page.dart';
 import '../domain/enrollment_repository.dart';
+import '../domain/pending_enrollment_result.dart';
 import 'enrollment_components.dart';
 
 class StudentCoursesScreen extends StatefulWidget {
@@ -32,8 +33,11 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
   bool _hasMore = true;
   bool _loading = false;
   bool _publishing = false;
+  bool _refreshing = false;
   Object? _error;
   Object? _directoryError;
+  Object? _linkError;
+  PendingEnrollmentLinkSummary? _linkSummary;
   int _epoch = 0;
 
   @override
@@ -51,39 +55,61 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
   }
 
   Future<void> _refresh() async {
-    _publishDirectory();
-    await _load(reset: true);
-  }
-
-  Future<void> _publishDirectory() async {
-    if (_publishing) return;
+    if (_refreshing) return;
+    if (_sessionUid == null || widget.repository.currentUid != _sessionUid) {
+      await _load(reset: true);
+      return;
+    }
     setState(() {
+      _refreshing = true;
       _publishing = true;
       _directoryError = null;
+      _linkError = null;
+      _linkSummary = null;
     });
+    Object? directoryError;
+    Object? linkError;
+    PendingEnrollmentLinkSummary? summary;
     try {
       await widget.repository.ensureStudentDirectoryEntry();
+      if (!mounted || widget.repository.currentUid != _sessionUid) return;
     } catch (error) {
-      if (mounted) setState(() => _directoryError = error);
-    } finally {
-      if (mounted) setState(() => _publishing = false);
+      linkError = error;
+      directoryError = error;
+    }
+    if (directoryError == null &&
+        mounted &&
+        widget.repository.currentUid == _sessionUid) {
+      try {
+        summary = await widget.repository.linkOwnPendingEnrollments();
+      } catch (error) {
+        linkError = error;
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _refreshing = false;
+        _publishing = false;
+        _directoryError = directoryError;
+        _linkError = linkError;
+        _linkSummary = summary;
+      });
+    }
+    if (mounted && widget.repository.currentUid == _sessionUid) {
+      await _load(reset: true);
     }
   }
 
   Future<void> _load({bool reset = false}) async {
     if (_loading && !reset) return;
     final epoch = ++_epoch;
-    if (reset) {
-      _items.clear();
-      _cursor = null;
-      _hasMore = true;
-    }
+    final requestCursor = reset ? null : _cursor;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final page = await widget.repository.listMyCourses(cursor: _cursor);
+      final page = await widget.repository.listMyCourses(cursor: requestCursor);
       if (!mounted || epoch != _epoch) return;
       if (widget.repository.currentUid != _sessionUid) {
         setState(() {
@@ -93,6 +119,7 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
         return;
       }
       setState(() {
+        if (reset) _items.clear();
         _items.addAll(page.items);
         _cursor = page.nextCursor;
         _hasMore = page.hasMore;
@@ -112,6 +139,73 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
     } finally {
       if (mounted && epoch == _epoch) setState(() => _loading = false);
     }
+  }
+
+  Widget? _pendingLinkCard() {
+    if (_linkError != null) {
+      final directoryFailed = _directoryError != null;
+      return CourseStateCard(
+        title: directoryFailed
+            ? 'No se pudo actualizar tu entrada para el curso'
+            : 'No se comprobaron las inscripciones pendientes',
+        message: directoryFailed
+            ? '${enrollmentErrorMessage(_directoryError)} Las materias que ya tenías siguen disponibles.'
+            : '${enrollmentErrorMessage(_linkError)} Tus materias actuales siguen disponibles.',
+        color: AppColors.danger,
+        action: OutlinedButton(
+          onPressed: _refreshing ? null : _refresh,
+          child: const Text('Reintentar comprobación'),
+        ),
+      );
+    }
+    final summary = _linkSummary;
+    if (summary == null) return null;
+    if (summary.studentCodeMissing) {
+      return const CourseStateCard(
+        title: 'Falta el código estudiantil del perfil',
+        message: 'No se puede comprobar automáticamente una inscripción pendiente. Confirma el código con el docente y vuelve a actualizar.',
+        color: AppColors.information,
+        icon: Icons.info_outline,
+      );
+    }
+
+    final messages = <String>[];
+    if (summary.linked > 0) {
+      messages.add(
+        'Se vinculó ${summary.linked} ${summary.linked == 1 ? 'materia' : 'materias'}. Ya puedes verla en Mis materias.',
+      );
+    }
+    if (summary.needsReview > 0) {
+      messages.add(
+        '${summary.needsReview} inscripción${summary.needsReview == 1 ? '' : 'es'} necesita${summary.needsReview == 1 ? '' : 'n'} revisión del docente.',
+      );
+    }
+    if (summary.failed > 0) {
+      messages.add(
+        'No se pudo confirmar ${summary.failed} inscripción${summary.failed == 1 ? '' : 'es'}. Actualiza para volver a intentarlo.',
+      );
+    }
+    if (summary.hasJoinRequestForTeacherReview) {
+      messages.add(
+        'Una solicitud previa de ingreso quedó pendiente de revisión del docente.',
+      );
+    }
+    if (messages.isEmpty) return null;
+    final hasProblem = summary.needsReview > 0 || summary.failed > 0;
+    return CourseStateCard(
+      title: hasProblem
+          ? 'Hay inscripciones que requieren atención'
+          : 'Inscripción confirmada',
+      message: messages.join(' '),
+      color: hasProblem ? AppColors.information : AppColors.primary,
+      icon: hasProblem ? Icons.info_outline : Icons.check_circle_outline,
+      action: hasProblem
+          ? TextButton(
+              onPressed: _refreshing ? null : _refresh,
+              child: const Text('Reintentar'),
+            )
+          : null,
+    );
   }
 
   void _openCourse(Enrollment enrollment) => Navigator.of(context).push<void>(
@@ -141,6 +235,7 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
                     .contains(query),
               )
               .toList();
+    final pendingLinkCard = _pendingLinkCard();
     return CoursePage(
       title: 'Mis materias',
       leading: IconButton(
@@ -151,14 +246,30 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
       actions: [
         IconButton(
           tooltip: 'Actualizar materias',
-          onPressed: _loading ? null : _refresh,
-          icon: const Icon(Icons.refresh),
+          onPressed: _loading || _refreshing ? null : _refresh,
+          icon: _refreshing
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh),
         ),
       ],
       child: CourseContent(
         children: [
           const CoursePageHeading(title: 'Tu semestre,\nen un solo lugar.'),
           const SizedBox(height: 16),
+          if (_publishing)
+            const CourseStateCard(
+              title: 'Comprobando tu inscripción',
+              message: 'Actualizando la entrada del perfil y buscando altas confirmadas por el docente.',
+              color: AppColors.information,
+              icon: Icons.sync,
+            ),
+          if (pendingLinkCard != null) ...[
+            pendingLinkCard,
+            const SizedBox(height: 16),
+          ],
           TextField(
             controller: _search,
             decoration: enrollmentInputDecoration(
@@ -167,26 +278,10 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
             ).copyWith(prefixIcon: const Icon(Icons.search)),
           ),
           const SizedBox(height: 16),
-          if (_directoryError != null) ...[
-            CourseStateCard(
-              title: 'No apareces aún para agregados manuales',
-              message:
-                  '${enrollmentErrorMessage(_directoryError)} Actualiza después de comprobar las reglas.',
-              color: AppColors.danger,
-              action: OutlinedButton(
-                onPressed: _publishDirectory,
-                child: const Text('Reintentar publicación'),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
           if (_loading && _items.isEmpty)
             const CourseLoading(message: 'Cargando tus materias…'),
           if (_error != null) ...[
-            EnrollmentFailureCard(
-              error: _error,
-              onRetry: () => _load(reset: _items.isEmpty),
-            ),
+            EnrollmentFailureCard(error: _error, onRetry: _refresh),
             const SizedBox(height: 16),
           ],
           if (!_loading && _error == null && _items.isEmpty)

@@ -346,7 +346,8 @@ service cloud.firestore {
         && enrollment.keys().hasOnly([
           'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
           'subject', 'group', 'period', 'status', 'createdAt',
-          'lastStatusEventId', 'lastStatusChangedAt'
+          'lastStatusEventId', 'lastStatusChangedAt',
+          'rosterEntryId', 'effectiveStartDate'
         ])
         && enrollment.studentUid is string
         && enrollment.ownerUid is string
@@ -362,6 +363,19 @@ service cloud.firestore {
         && nonBlankCourseText(enrollment.period, 32)
         && enrollment.status in ['active', 'withdrawn']
         && enrollment.createdAt is timestamp
+        && (
+          (
+            !('rosterEntryId' in enrollment)
+            && !('effectiveStartDate' in enrollment)
+          )
+          || (
+            enrollment.rosterEntryId is string
+            && enrollment.rosterEntryId == enrollment.email
+            && enrollment.effectiveStartDate is timestamp
+            && enrollment.effectiveStartDate.date()
+              == enrollment.effectiveStartDate
+          )
+        )
         && (
           (
             !('lastStatusEventId' in enrollment)
@@ -380,9 +394,19 @@ service cloud.firestore {
       return event.keys().hasAll([
           'fromStatus', 'toStatus', 'changedAt', 'changedBy'
         ])
-        && event.keys().hasOnly([
-          'fromStatus', 'toStatus', 'changedAt', 'changedBy'
-        ])
+        && (
+          event.keys().hasOnly([
+            'fromStatus', 'toStatus', 'changedAt', 'changedBy'
+          ])
+          || (
+            event.keys().hasOnly([
+              'fromStatus', 'toStatus', 'effectiveDate',
+              'changedAt', 'changedBy'
+            ])
+            && event.effectiveDate is timestamp
+            && event.effectiveDate.date() == event.effectiveDate
+          )
+        )
         && event.fromStatus in ['active', 'withdrawn']
         && event.toStatus in ['active', 'withdrawn']
         && event.fromStatus != event.toStatus
@@ -390,12 +414,564 @@ service cloud.firestore {
         && event.changedBy is string;
     }
 
+    function bogotaToday() {
+      // America/Bogota is UTC-5 and does not observe daylight saving time.
+      return (request.time - duration.value(5, 'h')).date();
+    }
+
+    function validEffectiveDateForCourse(effectiveDate, course, allowFutureStart) {
+      return effectiveDate is timestamp
+        && effectiveDate.date() == effectiveDate
+        && effectiveDate >= course.startDate
+        && effectiveDate <= course.endDate
+        && (
+          effectiveDate <= bogotaToday()
+          || (
+            allowFutureStart
+            && course.startDate > bogotaToday()
+            && effectiveDate == course.startDate
+          )
+        );
+    }
+
+    function validPendingWithdrawalDate(effectiveDate, pending, course) {
+      return effectiveDate is timestamp
+        && effectiveDate.date() == effectiveDate
+        && effectiveDate <= bogotaToday()
+        && effectiveDate <= course.endDate
+        && effectiveDate >= (pending.authorizedAt - duration.value(5, 'h')).date()
+        && (
+          pending.effectiveStartDate > bogotaToday()
+          || effectiveDate >= previousPendingEffectiveDate(
+            pending.courseId,
+            pending.email,
+            pending
+          )
+        );
+    }
+
+    function previousEnrollmentEffectiveDate(courseId, studentUid, enrollment) {
+      return ('lastStatusEventId' in enrollment)
+        ? previousEnrollmentEventEffectiveDate(
+            courseId,
+            studentUid,
+            enrollment.lastStatusEventId
+          )
+        : (
+            ('effectiveStartDate' in enrollment)
+              ? enrollment.effectiveStartDate
+              : (enrollment.createdAt - duration.value(5, 'h')).date()
+          );
+    }
+
+    function previousEnrollmentEventEffectiveDate(courseId, studentUid, eventId) {
+      let eventPath = /databases/$(database)/documents/courses/$(courseId)/enrollments/$(studentUid)/status_events/$(eventId);
+      let event = get(eventPath).data;
+      return ('effectiveDate' in event)
+        ? event.effectiveDate
+        : (event.changedAt - duration.value(5, 'h')).date();
+    }
+
+    function validEnrollmentStatusDate(
+      courseId,
+      studentUid,
+      effectiveDate,
+      nextStatus,
+      enrollment,
+      course
+    ) {
+      return nextStatus == 'withdrawn'
+          && ('effectiveStartDate' in enrollment)
+          && enrollment.effectiveStartDate > bogotaToday()
+        ? (
+            effectiveDate is timestamp
+            && effectiveDate.date() == effectiveDate
+            && effectiveDate <= bogotaToday()
+            && effectiveDate <= course.endDate
+            && effectiveDate
+              >= (enrollment.createdAt - duration.value(5, 'h')).date()
+          )
+        : (
+            validEffectiveDateForCourse(
+              effectiveDate,
+              course,
+              nextStatus == 'active'
+            )
+            && effectiveDate >= previousEnrollmentEffectiveDate(
+              courseId,
+              studentUid,
+              enrollment
+            )
+          );
+    }
+
+    function validPendingEnrollmentShape(courseId, emailExact, pending) {
+      return pending.keys().hasAll([
+          'courseId', 'ownerUid', 'subject', 'group', 'period',
+          'email', 'studentCode', 'name', 'status', 'effectiveStartDate',
+          'rosterEntryId', 'studentUid', 'authorizedAt', 'linkedAt',
+          'createdAt', 'updatedAt', 'lastEventId', 'lastStatusChangedAt'
+        ])
+        && pending.keys().hasOnly([
+          'courseId', 'ownerUid', 'subject', 'group', 'period',
+          'email', 'studentCode', 'name', 'status', 'effectiveStartDate',
+          'rosterEntryId', 'studentUid', 'authorizedAt', 'linkedAt',
+          'createdAt', 'updatedAt', 'lastEventId', 'lastStatusChangedAt'
+        ])
+        && pending.courseId == courseId
+        && pending.ownerUid is string
+        && nonBlankCourseText(pending.subject, 120)
+        && nonBlankCourseText(pending.group, 40)
+        && nonBlankCourseText(pending.period, 32)
+        && pending.email is string
+        && pending.email.size() >= 3
+        && pending.email.size() <= 254
+        && pending.email == emailExact
+        && pending.studentCode is string
+        && pending.studentCode.size() >= 1
+        && pending.studentCode.size() <= 40
+        && pending.name is string
+        && pending.name.size() >= 1
+        && pending.name.size() <= 100
+        && pending.status in ['pending', 'linked', 'withdrawn']
+        && pending.effectiveStartDate is timestamp
+        && pending.effectiveStartDate.date() == pending.effectiveStartDate
+        && pending.rosterEntryId is string
+        && pending.rosterEntryId == emailExact
+        && (
+          (
+            pending.status in ['pending', 'withdrawn']
+            && pending.studentUid == null
+            && pending.linkedAt == null
+          )
+          || (
+            pending.status == 'linked'
+            && pending.studentUid is string
+            && pending.studentUid.size() >= 1
+            && pending.linkedAt is timestamp
+          )
+        )
+        && pending.authorizedAt is timestamp
+        && pending.createdAt is timestamp
+        && pending.updatedAt is timestamp
+        && (
+          (
+            pending.lastEventId == null
+            && pending.lastStatusChangedAt == null
+          )
+          || (
+            pending.lastEventId is string
+            && pending.lastEventId.size() >= 1
+            && pending.lastEventId.size() <= 128
+            && pending.lastStatusChangedAt is timestamp
+          )
+        );
+    }
+
+    function validPendingEnrollmentState(pending) {
+      return pending.status in ['pending', 'linked', 'withdrawn']
+        && pending.effectiveStartDate is timestamp
+        && pending.effectiveStartDate.date() == pending.effectiveStartDate
+        && (
+          (
+            pending.status in ['pending', 'withdrawn']
+            && pending.studentUid == null
+            && pending.linkedAt == null
+          )
+          || (
+            pending.status == 'linked'
+            && pending.studentUid is string
+            && pending.studentUid.size() >= 1
+            && pending.linkedAt is timestamp
+          )
+        )
+        && pending.lastEventId is string
+        && pending.lastEventId.size() >= 1
+        && pending.lastEventId.size() <= 128
+        && pending.lastStatusChangedAt is timestamp;
+    }
+
+    function validPendingStatusEvent(event) {
+      return event.keys().hasAll([
+          'fromStatus', 'toStatus', 'effectiveDate', 'changedAt', 'changedBy'
+        ])
+        && event.keys().hasOnly([
+          'fromStatus', 'toStatus', 'effectiveDate', 'changedAt', 'changedBy'
+        ])
+        && event.fromStatus in ['pending', 'linked', 'withdrawn']
+        && event.toStatus in ['pending', 'linked', 'withdrawn']
+        && event.fromStatus != event.toStatus
+        && event.effectiveDate is timestamp
+        && event.effectiveDate.date() == event.effectiveDate
+        && event.changedAt is timestamp
+        && event.changedBy is string;
+    }
+
+    function pendingEnrollmentPath(courseId, emailExact) {
+      return /databases/$(database)/documents/courses/$(courseId)/pending_enrollments/$(emailExact);
+    }
+
+    function pendingStatusEventPath(courseId, emailExact, eventId) {
+      return /databases/$(database)/documents/courses/$(courseId)/pending_enrollments/$(emailExact)/status_events/$(eventId);
+    }
+
+    function pendingStudentMatchesAuth(pending) {
+      let profilePath = /databases/$(database)/documents/users/$(request.auth.uid);
+      let profile = get(profilePath).data;
+      return verifiedStudent()
+        && profile.studentCode is string
+        && pending.email == request.auth.token.email
+        && pending.studentCode == profile.studentCode
+        && pending.status == 'pending';
+    }
+
+    function previousPendingEffectiveDate(courseId, emailExact, pending) {
+      return (pending.lastEventId is string)
+        ? previousPendingEventEffectiveDate(
+            courseId,
+            emailExact,
+            pending.lastEventId
+          )
+        : pending.effectiveStartDate;
+    }
+
+    function previousPendingEventEffectiveDate(courseId, emailExact, eventId) {
+      let eventPath = pendingStatusEventPath(courseId, emailExact, eventId);
+      return get(eventPath).data.effectiveDate;
+    }
+
+    function pendingMatchesEnrollment(pending, enrollment, studentUid) {
+      return enrollment.studentUid == studentUid
+        && enrollment.ownerUid == pending.ownerUid
+        && enrollment.email == pending.email
+        && enrollment.studentCode == pending.studentCode
+        && enrollment.subject == pending.subject
+        && enrollment.group == pending.group
+        && enrollment.period == pending.period
+        && enrollment.status == 'active'
+        && (
+          (
+            'rosterEntryId' in enrollment
+            && 'effectiveStartDate' in enrollment
+            && enrollment.rosterEntryId == pending.rosterEntryId
+            && enrollment.effectiveStartDate == pending.effectiveStartDate
+          )
+          || (
+            !('rosterEntryId' in enrollment)
+            && !('effectiveStartDate' in enrollment)
+          )
+        );
+    }
+
+    // New enrollment documents reconciled from a pending roster snapshot are
+    // derived from that already-validated snapshot. Keep the exact key set
+    // check here; the identity and value checks below bind every copied field
+    // to the immutable pending authorization.
+    function validEnrollmentFromPendingShape(enrollment) {
+      return enrollment.keys().hasAll([
+          'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
+          'subject', 'group', 'period', 'status', 'createdAt',
+          'rosterEntryId', 'effectiveStartDate'
+        ])
+        && enrollment.keys().hasOnly([
+          'studentUid', 'ownerUid', 'name', 'email', 'studentCode',
+          'subject', 'group', 'period', 'status', 'createdAt',
+          'rosterEntryId', 'effectiveStartDate'
+        ])
+        && enrollment.name is string
+        && enrollment.name.size() >= 1
+        && enrollment.name.size() <= 100;
+    }
+
+    function pendingEnrollmentLinkMatches(courseId, enrollment) {
+      let pendingPath = pendingEnrollmentPath(courseId, enrollment.email);
+      let pendingBefore = get(pendingPath).data;
+      let pendingAfter = getAfter(pendingPath).data;
+      return pendingBefore.status == 'pending'
+        && pendingBefore.courseId == courseId
+        && pendingBefore.ownerUid == request.auth.uid
+        && pendingMatchesEnrollment(
+          pendingBefore,
+          enrollment,
+          enrollment.studentUid
+        )
+        && existsAfter(pendingPath)
+        && pendingAfter.status == 'linked'
+        && pendingAfter.studentUid == enrollment.studentUid
+        && pendingAfter.linkedAt == request.time
+        && pendingAfter.rosterEntryId == enrollment.rosterEntryId
+        && pendingAfter.effectiveStartDate == enrollment.effectiveStartDate;
+    }
+
+    function canCreateEnrollmentFromOwnPending(courseId, studentUid) {
+      let enrollment = request.resource.data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      let pendingPath = pendingEnrollmentPath(courseId, enrollment.email);
+      let pending = get(pendingPath).data;
+      let pendingAfter = getAfter(pendingPath).data;
+      let profilePath = /databases/$(database)/documents/users/$(studentUid);
+      let profile = get(profilePath).data;
+      return verifiedStudent()
+        && request.auth.uid == studentUid
+        && profile.studentCode is string
+        && validEnrollmentFromPendingShape(enrollment)
+        && enrollment.status == 'active'
+        && enrollment.studentUid == studentUid
+        && enrollment.email == request.auth.token.email
+        && enrollment.studentCode == profile.studentCode
+        && enrollment.createdAt == request.time
+        && 'rosterEntryId' in enrollment
+        && 'effectiveStartDate' in enrollment
+        && enrollment.rosterEntryId == enrollment.email
+        && exists(coursePath)
+        && enrollment.ownerUid == course.ownerUid
+        && enrollment.subject == course.subject
+        && enrollment.group == course.group
+        && enrollment.period == course.period
+        && exists(pendingPath)
+        && pending.courseId == courseId
+        && pending.email == enrollment.email
+        && pending.rosterEntryId == enrollment.rosterEntryId
+        && pending.status == 'pending'
+        && pending.studentUid == null
+        && pending.ownerUid == enrollment.ownerUid
+        && pending.email == enrollment.email
+        && pending.studentCode == profile.studentCode
+        && pending.subject == enrollment.subject
+        && pending.group == enrollment.group
+        && pending.period == enrollment.period
+        && pending.rosterEntryId == enrollment.rosterEntryId
+        && pending.effectiveStartDate == enrollment.effectiveStartDate
+        && validEffectiveDateForCourse(
+          enrollment.effectiveStartDate,
+          course,
+          true
+        )
+        && existsAfter(pendingPath)
+        && pendingAfter.status == 'linked'
+        && pendingAfter.studentUid == studentUid
+        && pendingAfter.linkedAt == request.time
+        && pendingAfter.lastEventId == 'link';
+    }
+
+    function canCreatePendingEnrollment(courseId, emailExact) {
+      let pending = request.resource.data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      let entryPath = directoryPath(emailExact);
+      return ownsExistingCourse(courseId)
+        && exists(coursePath)
+        && validPendingEnrollmentShape(courseId, emailExact, pending)
+        && pending.status == 'pending'
+        && pending.ownerUid == request.auth.uid
+        && pending.subject == course.subject
+        && pending.group == course.group
+        && pending.period == course.period
+        && pending.authorizedAt == request.time
+        && pending.createdAt == request.time
+        && pending.updatedAt == request.time
+        && pending.studentUid == null
+        && pending.linkedAt == null
+        && pending.lastEventId == null
+        && pending.lastStatusChangedAt == null
+        && validEffectiveDateForCourse(
+          pending.effectiveStartDate,
+          course,
+          true
+        )
+        && !exists(entryPath);
+    }
+
+    function canLinkPendingEnrollmentAsStudent(
+      courseId,
+      emailExact,
+      before,
+      after,
+      course
+    ) {
+      let enrollmentPathValue = enrollmentPath(courseId, request.auth.uid);
+      return pendingStudentMatchesAuth(before)
+        && before.status == 'pending'
+        && before.courseId == courseId
+        && before.email == emailExact
+        && before.rosterEntryId == emailExact
+        && after.status == 'linked'
+        && after.studentUid == request.auth.uid
+        && after.linkedAt == request.time
+        && after.effectiveStartDate == before.effectiveStartDate
+        && after.lastEventId == 'link'
+        && before.ownerUid == course.ownerUid
+        && before.subject == course.subject
+        && before.group == course.group
+        && before.period == course.period
+        && existsAfter(enrollmentPathValue)
+        && pendingLinkHasCanonicalEnrollmentForUid(
+          courseId,
+          after,
+          request.auth.uid
+        );
+    }
+
+    function pendingLinkHasCanonicalEnrollmentForUid(
+      courseId,
+      pendingAfter,
+      studentUid
+    ) {
+      let enrollmentPathValue = enrollmentPath(courseId, studentUid);
+      return existsAfter(enrollmentPathValue)
+        && (!exists(enrollmentPathValue)
+          || pendingMatchesEnrollment(
+            pendingAfter,
+            getAfter(enrollmentPathValue).data,
+            studentUid
+          ));
+    }
+
+    function pendingLinkHasCanonicalEnrollment(courseId, pendingAfter) {
+      return pendingAfter.studentUid is string
+        && pendingAfter.linkedAt == request.time
+        && pendingLinkHasCanonicalEnrollmentForUid(
+          courseId,
+          pendingAfter,
+          pendingAfter.studentUid
+        );
+    }
+
+    function teacherCanChangePendingEnrollment(
+      courseId,
+      emailExact,
+      before,
+      after,
+      event,
+      course
+    ) {
+      return request.auth.uid == before.ownerUid
+        && course.ownerUid == before.ownerUid
+        && (
+          (
+            before.status == 'pending'
+            && after.status == 'withdrawn'
+            && after.studentUid == null
+            && after.linkedAt == null
+            && after.effectiveStartDate == before.effectiveStartDate
+            && validPendingWithdrawalDate(event.effectiveDate, before, course)
+            && verifiedTeacher()
+          )
+          || (
+            before.status == 'withdrawn'
+            && after.status == 'pending'
+            && after.studentUid == null
+            && after.linkedAt == null
+            && after.effectiveStartDate == event.effectiveDate
+            && event.effectiveDate >= previousPendingEffectiveDate(
+              courseId,
+              emailExact,
+              before
+            )
+            && validEffectiveDateForCourse(event.effectiveDate, course, true)
+            && verifiedTeacher()
+          )
+          || (
+            before.status == 'pending'
+            && after.status == 'linked'
+            && after.effectiveStartDate == before.effectiveStartDate
+            && after.lastEventId == 'link'
+            && pendingLinkHasCanonicalEnrollment(courseId, after)
+            && event.effectiveDate == before.effectiveStartDate
+            && event.effectiveDate >= previousPendingEffectiveDate(
+              courseId,
+              emailExact,
+              before
+            )
+            && validEffectiveDateForCourse(event.effectiveDate, course, true)
+            && verifiedTeacher()
+          )
+        );
+    }
+
+    function canChangePendingEnrollment(courseId, emailExact) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let eventPath = pendingStatusEventPath(
+        courseId,
+        emailExact,
+        after.lastEventId
+      );
+      let event = getAfter(eventPath).data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      return after.lastEventId is string
+        && !exists(eventPath)
+        && existsAfter(eventPath)
+        && before.courseId == courseId
+        && before.email == emailExact
+        && before.rosterEntryId == emailExact
+        && after.lastEventId.size() >= 1
+        && after.lastEventId.size() <= 128
+        && before.status != after.status
+        && after.diff(before).affectedKeys().hasOnly([
+          'status', 'effectiveStartDate', 'studentUid', 'linkedAt',
+          'updatedAt', 'lastEventId', 'lastStatusChangedAt'
+        ])
+        && validPendingStatusEvent(event)
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid
+        && event.fromStatus == before.status
+        && event.toStatus == after.status
+        && after.lastStatusChangedAt == request.time
+        && after.updatedAt == request.time
+        && exists(coursePath)
+        && (request.auth.uid == before.ownerUid
+          ? teacherCanChangePendingEnrollment(
+              courseId,
+              emailExact,
+              before,
+              after,
+              event,
+              course
+            )
+          : canLinkPendingEnrollmentAsStudent(
+              courseId,
+              emailExact,
+              before,
+              after,
+              course
+            ));
+    }
+
+    function canCreatePendingStatusEvent(courseId, emailExact, eventId) {
+      let pendingPath = pendingEnrollmentPath(courseId, emailExact);
+      let pendingBefore = get(pendingPath).data;
+      let pendingAfter = getAfter(pendingPath).data;
+      let eventPath = pendingStatusEventPath(courseId, emailExact, eventId);
+      let event = request.resource.data;
+      // The paired pending update owns the authorization and transition checks.
+      // This side cheaply requires its exact marker/timestamps, so an event
+      // cannot be created alone or attached to a different state change.
+      return exists(pendingPath)
+        && existsAfter(pendingPath)
+        && pendingAfter.lastEventId == eventId
+        && pendingAfter.status == event.toStatus
+        && pendingAfter.lastStatusChangedAt == request.time
+        && pendingAfter.updatedAt == request.time
+        && !exists(eventPath)
+        && validPendingStatusEvent(event)
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid
+        && event.fromStatus == pendingBefore.status
+        && event.toStatus == pendingAfter.status;
+    }
+
     function canChangeEnrollmentStatus(courseId, studentUid) {
       let eventId = request.resource.data.lastStatusEventId;
       let eventPath = /databases/$(database)/documents/courses/$(courseId)/enrollments/$(studentUid)/status_events/$(eventId);
       let eventAfter = getAfter(eventPath).data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
       let next = request.resource.data;
       return ownsExistingCourse(courseId)
+        && exists(coursePath)
         && validEnrollmentShape(next)
         && resource.data.studentUid == studentUid
         && resource.data.ownerUid == request.auth.uid
@@ -421,6 +997,15 @@ service cloud.firestore {
         && validEnrollmentStatusEvent(eventAfter)
         && eventAfter.fromStatus == resource.data.status
         && eventAfter.toStatus == next.status
+        && eventAfter.keys().hasAll(['effectiveDate'])
+        && validEnrollmentStatusDate(
+          courseId,
+          studentUid,
+          eventAfter.effectiveDate,
+          next.status,
+          resource.data,
+          course
+        )
         && eventAfter.changedAt == request.time
         && eventAfter.changedBy == request.auth.uid;
     }
@@ -429,11 +1014,23 @@ service cloud.firestore {
       let enrollmentPathValue = enrollmentPath(courseId, studentUid);
       let enrollmentBefore = get(enrollmentPathValue).data;
       let enrollmentAfter = getAfter(enrollmentPathValue).data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
       let event = request.resource.data;
       return ownsExistingCourse(courseId)
+        && exists(coursePath)
         && validEnrollmentStatusEvent(event)
+        && event.keys().hasAll(['effectiveDate'])
         && event.changedBy == request.auth.uid
         && event.changedAt == request.time
+        && validEnrollmentStatusDate(
+          courseId,
+          studentUid,
+          event.effectiveDate,
+          event.toStatus,
+          enrollmentBefore,
+          course
+        )
         && event.fromStatus == enrollmentBefore.status
         && event.toStatus == enrollmentAfter.status
         && event.fromStatus in ['active', 'withdrawn']
@@ -713,19 +1310,22 @@ service cloud.firestore {
         && requestData.period == invite.period;
     }
 
-    function canCreateEnrollmentFromJoinRequest(courseId, studentUid, course, enrollment) {
+    function canCreateEnrollmentFromJoinRequest(
+      courseId,
+      studentUid,
+      course,
+      enrollment,
+      requestBefore
+    ) {
       let requestPath = joinRequestPath(courseId, studentUid);
-      let requestBefore = get(requestPath).data;
       let requestAfter = getAfter(requestPath).data;
-      return exists(requestPath)
-        && requestBefore.studentUid == studentUid
+      return requestBefore.studentUid == studentUid
         && requestBefore.status == 'pending'
         && requestAfter.status == 'approved'
         && requestAfter.decidedBy == request.auth.uid
         && requestAfter.decidedAt == request.time
         && enrollment.studentUid == studentUid
         && enrollment.ownerUid == request.auth.uid
-        && enrollment.name == requestBefore.name
         && enrollment.email == requestBefore.email
         && enrollment.studentCode == requestBefore.studentCode
         && requestBefore.subject == course.subject
@@ -735,72 +1335,214 @@ service cloud.firestore {
         && enrollment.group == course.group
         && enrollment.period == course.period
         && enrollment.status == 'active'
-        && enrollment.createdAt == request.time;
+        && enrollment.createdAt == request.time
+        && enrollment.rosterEntryId == enrollment.email
+        && validEffectiveDateForCourse(
+          enrollment.effectiveStartDate,
+          course,
+          true
+        );
     }
 
-    function pendingRequestResolvedByManualEnrollment(courseId, studentUid) {
+    function canCreateEnrollmentForJoinRequest(
+      courseId,
+      studentUid,
+      course,
+      enrollment
+    ) {
       let requestPath = joinRequestPath(courseId, studentUid);
-      return !exists(requestPath)
-        || get(requestPath).data.status != 'pending'
-        || (
-          get(requestPath).data.status == 'pending'
-          && getAfter(requestPath).data.status == 'approved'
-          && getAfter(requestPath).data.studentUid == studentUid
-          && getAfter(requestPath).data.decidedBy == request.auth.uid
-          && getAfter(requestPath).data.decidedAt == request.time
+      let requestBefore = get(requestPath).data;
+      return requestBefore.status == 'pending'
+        && canCreateEnrollmentFromJoinRequest(
+          courseId,
+          studentUid,
+          course,
+          enrollment,
+          requestBefore
         );
+    }
+
+    function canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment) {
+      let entryPath = directoryPath(enrollment.email);
+      let entry = get(entryPath).data;
+      return exists(entryPath)
+        && directoryMatchesCurrentProfile(entry)
+        && entry.uid == studentUid
+        && entry.name == enrollment.name
+        && entry.email == enrollment.email
+        && entry.studentCode == enrollment.studentCode;
+    }
+
+    function canCreateEnrollmentFromAvailableSource(
+      courseId,
+      studentUid,
+      course,
+      enrollment
+    ) {
+      let requestPath = joinRequestPath(courseId, studentUid);
+      return exists(requestPath)
+        ? canCreateEnrollmentFromRequestOrDirectory(
+            courseId,
+            studentUid,
+            course,
+            enrollment
+          )
+        : canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment);
+    }
+
+    function canCreateEnrollmentFromRequestOrDirectory(
+      courseId,
+      studentUid,
+      course,
+      enrollment
+    ) {
+      let requestPath = joinRequestPath(courseId, studentUid);
+      let requestBefore = get(requestPath).data;
+      return requestBefore.status == 'pending'
+        ? canCreateEnrollmentFromJoinRequest(
+            courseId,
+            studentUid,
+            course,
+            enrollment,
+            requestBefore
+          )
+        : canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment);
     }
 
     function enrollmentSnapshotMatchesRequestCourse(course, studentUid, enrollment) {
       return enrollment.studentUid == studentUid
         && enrollment.status == 'active'
         && enrollment.ownerUid == course.ownerUid
+        && enrollment.email == request.resource.data.email
+        && enrollment.studentCode == request.resource.data.studentCode
         && enrollment.subject == course.subject
         && enrollment.group == course.group
         && enrollment.period == course.period;
     }
 
+    function teacherCanApproveMatchingPendingJoinRequest(
+      courseId,
+      studentUid,
+      course,
+      requestBefore,
+      requestAfter
+    ) {
+      let pendingPath = pendingEnrollmentPath(courseId, requestBefore.email);
+      let pendingBefore = get(pendingPath).data;
+      let pendingAfter = getAfter(pendingPath).data;
+      return exists(pendingPath)
+        && pendingBefore.courseId == courseId
+        && pendingBefore.ownerUid == course.ownerUid
+        && request.auth.uid == pendingBefore.ownerUid
+        && pendingBefore.status == 'pending'
+        && pendingBefore.studentUid == null
+        && pendingBefore.email == requestBefore.email
+        && pendingBefore.studentCode == requestBefore.studentCode
+        && pendingBefore.subject == requestBefore.subject
+        && pendingBefore.group == requestBefore.group
+        && pendingBefore.period == requestBefore.period
+        && pendingAfter.status == 'linked'
+        && pendingAfter.studentUid == studentUid
+        && requestAfter.status == 'approved'
+        && requestAfter.rejectionReason == null
+        && requestAfter.decidedBy == request.auth.uid
+        && requestAfter.decidedAt == request.time
+        && existsAfter(enrollmentPath(courseId, studentUid));
+    }
+
+    function studentCanResolveMatchingAuthorizedJoinRequest(
+      courseId,
+      studentUid,
+      course,
+      requestBefore,
+      requestAfter
+    ) {
+      let pendingPath = pendingEnrollmentPath(courseId, requestBefore.email);
+      let pendingBefore = get(pendingPath).data;
+      let pendingAfter = getAfter(pendingPath).data;
+      return exists(pendingPath)
+        && request.auth.uid == studentUid
+        && requestBefore.status == 'pending'
+        && requestAfter.status == 'approved'
+        && requestAfter.decidedBy == pendingBefore.ownerUid
+        && requestAfter.decidedAt == request.time
+        && requestAfter.rejectionReason == null
+        && pendingBefore.ownerUid == course.ownerUid
+        && pendingBefore.status == 'pending'
+        && pendingBefore.studentUid == null
+        && pendingBefore.email == requestBefore.email
+        && pendingBefore.studentCode == requestBefore.studentCode
+        && pendingBefore.subject == requestBefore.subject
+        && pendingBefore.group == requestBefore.group
+        && pendingBefore.period == requestBefore.period
+        && pendingAfter.status == 'linked'
+        && pendingAfter.studentUid == studentUid
+        // The pending update and canonical enrollment writes in this same
+        // transaction have their own reciprocal rules; this branch binds the
+        // immutable join-request snapshot to the owner's authorization.
+        && existsAfter(enrollmentPath(courseId, studentUid));
+    }
+
     function canDecideJoinRequest(courseId, studentUid) {
       let enrollmentPathValue = enrollmentPath(courseId, studentUid);
-      let enrollmentAfter = getAfter(enrollmentPathValue).data;
       let coursePath = /databases/$(database)/documents/courses/$(courseId);
       let course = get(coursePath).data;
+      let before = resource.data;
       let next = request.resource.data;
-      return verifiedTeacher()
-        && exists(coursePath)
-        && course.ownerUid == request.auth.uid
-        && resource.data.studentUid == studentUid
-        && resource.data.status == 'pending'
-        && next.studentUid == resource.data.studentUid
-        && next.name == resource.data.name
-        && next.email == resource.data.email
-        && next.studentCode == resource.data.studentCode
-        && next.subject == resource.data.subject
-        && next.group == resource.data.group
-        && next.period == resource.data.period
-        && next.invitationCode == resource.data.invitationCode
-        && next.createdAt == resource.data.createdAt
-        && next.decidedBy == request.auth.uid
-        && next.decidedAt == request.time
-        && next.diff(resource.data).affectedKeys()
+      let identityUnchanged = next.diff(before).affectedKeys()
           .hasOnly(['status', 'decidedBy', 'decidedAt', 'rejectionReason'])
+        && before.studentUid == studentUid
+        && before.status == 'pending';
+      return exists(coursePath)
+        && identityUnchanged
         && (
           (
             next.status == 'approved'
             && next.rejectionReason == null
-            && existsAfter(enrollmentPathValue)
-            && enrollmentSnapshotMatchesRequestCourse(
-              course,
+            && teacherCanApproveMatchingPendingJoinRequest(
+              courseId,
               studentUid,
-              enrollmentAfter
+              course,
+              before,
+              next
             )
           )
           || (
-            next.status == 'rejected'
-            && next.rejectionReason is string
-            && next.rejectionReason.size() >= 1
-            && next.rejectionReason.size() <= 500
-            && !existsAfter(enrollmentPathValue)
+            verifiedTeacher()
+              ? (
+              course.ownerUid == request.auth.uid
+              && next.decidedBy == request.auth.uid
+              && next.decidedAt == request.time
+              && (
+                (
+                  next.status == 'approved'
+                  && next.rejectionReason == null
+                  && existsAfter(enrollmentPathValue)
+                  && enrollmentSnapshotMatchesRequestCourse(
+                    course,
+                    studentUid,
+                    getAfter(enrollmentPathValue).data
+                  )
+                )
+                || (
+                  next.status == 'rejected'
+                  && next.rejectionReason is string
+                  && next.rejectionReason.size() >= 1
+                  && next.rejectionReason.size() <= 500
+                  && !existsAfter(enrollmentPathValue)
+                )
+              )
+              )
+              : (
+                next.status == 'approved'
+                && studentCanResolveMatchingAuthorizedJoinRequest(
+                  courseId,
+                  studentUid,
+                  course,
+                  before,
+                  next
+                )
+              )
           )
         );
     }
@@ -809,71 +1551,56 @@ service cloud.firestore {
       let enrollment = request.resource.data;
       // Use conditional branches for cheap gates. Invalid identities and maps
       // should stop before profile, course, directory, and request lookups.
-      return verifiedTeacher()
-        ? (
-            enrollment.studentUid == studentUid
-              ? (
-                  enrollment.ownerUid == request.auth.uid
-                    ? (
-                        validEnrollmentShape(enrollment)
-                          ? (
-                              enrollment.status == 'active'
-                                && !('lastStatusEventId' in enrollment)
-                                && !('lastStatusChangedAt' in enrollment)
-                                && enrollment.createdAt == request.time
-                                ? (
-                                    pendingRequestResolvedByManualEnrollment(
-                                      courseId,
-                                      studentUid
-                                    )
-                                      ? canCreateEnrollmentForOwnedCourse(
-                                          courseId,
-                                          studentUid,
-                                          enrollment
-                                        )
-                                      : false
-                                  )
-                                : false
-                            )
-                          : false
-                      )
-                    : false
-                )
-              : false
-          )
-        : false;
+      return enrollment.studentUid == studentUid
+        && (
+          enrollment.ownerUid == request.auth.uid
+            ? verifiedTeacher()
+              && enrollment.status == 'active'
+              && !('lastStatusEventId' in enrollment)
+              && !('lastStatusChangedAt' in enrollment)
+              && 'rosterEntryId' in enrollment
+              && 'effectiveStartDate' in enrollment
+              && enrollment.createdAt == request.time
+              && canCreateEnrollmentForOwnedCourse(
+                courseId,
+                studentUid,
+                enrollment
+              )
+            : canCreateEnrollmentFromOwnPending(courseId, studentUid)
+        );
     }
 
     function canCreateEnrollmentForOwnedCourse(courseId, studentUid, enrollment) {
       let coursePath = /databases/$(database)/documents/courses/$(courseId);
       let course = get(coursePath).data;
-      let entryPath = directoryPath(enrollment.email);
-      let entry = get(entryPath).data;
-      let requestPath = joinRequestPath(courseId, studentUid);
+      let pendingPath = pendingEnrollmentPath(courseId, enrollment.email);
       return exists(coursePath)
         && course.ownerUid == request.auth.uid
-        && enrollment.ownerUid == course.ownerUid
-        && enrollment.subject == course.subject
-        && enrollment.group == course.group
-        && enrollment.period == course.period
         && (
-          (
-            exists(entryPath)
-            && directoryMatchesCurrentProfile(entry)
-            && entry.uid == studentUid
-            && entry.name == enrollment.name
-            && entry.email == enrollment.email
-            && entry.studentCode == enrollment.studentCode
-          )
-          || (
-            exists(requestPath)
-            && canCreateEnrollmentFromJoinRequest(
-              courseId,
-              studentUid,
-              course,
-              enrollment
-            )
-          )
+          exists(pendingPath)
+            ? (
+                validEnrollmentFromPendingShape(enrollment)
+                  && pendingEnrollmentLinkMatches(courseId, enrollment)
+              )
+            : (
+                validEnrollmentShape(enrollment)
+                  && enrollment.ownerUid == course.ownerUid
+                  && enrollment.subject == course.subject
+                  && enrollment.group == course.group
+                  && enrollment.period == course.period
+                  && enrollment.rosterEntryId == enrollment.email
+                  && validEffectiveDateForCourse(
+                    enrollment.effectiveStartDate,
+                    course,
+                    true
+                  )
+                  && canCreateEnrollmentFromAvailableSource(
+                    courseId,
+                    studentUid,
+                    course,
+                    enrollment
+                  )
+              )
         );
     }
 
@@ -1223,6 +1950,35 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /pending_enrollments/{emailExact} {
+        allow get: if ownsExistingCourse(courseId)
+          || (
+            validPendingEnrollmentShape(courseId, emailExact, resource.data)
+            && pendingStudentMatchesAuth(resource.data)
+          );
+        allow list: if ownsExistingCourse(courseId)
+          || pendingStudentMatchesAuth(resource.data);
+        allow create: if canCreatePendingEnrollment(courseId, emailExact);
+        allow update: if request.resource.data.lastEventId is string
+          && existsAfter(pendingStatusEventPath(
+            courseId,
+            emailExact,
+            request.resource.data.lastEventId
+          ))
+          && canChangePendingEnrollment(courseId, emailExact);
+        allow delete: if false;
+
+        match /status_events/{eventId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if canCreatePendingStatusEvent(
+            courseId,
+            emailExact,
+            eventId
+          );
+          allow update, delete: if false;
+        }
+      }
+
       match /join_requests/{studentUid} {
         allow get: if (verifiedStudent() && request.auth.uid == studentUid)
           || ownsExistingCourse(courseId);
@@ -1277,6 +2033,12 @@ service cloud.firestore {
     match /{path=**}/join_requests/{requestId} {
       allow list: if verifiedStudent()
         && resource.data.studentUid == request.auth.uid;
+    }
+
+    // A collection-group query for the authenticated student's own approved
+    // records must constrain the exact Auth email, profile code and pending state.
+    match /{path=**}/pending_enrollments/{emailExact} {
+      allow list: if pendingStudentMatchesAuth(resource.data);
     }
   }
 }

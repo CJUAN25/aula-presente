@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../enrollments/application/enrollment_validator.dart';
 import '../../enrollments/domain/enrollment.dart';
+import '../../schedule/domain/academic_date.dart';
 import '../application/course_entry_validator.dart';
 import '../domain/course_entry_failure.dart';
 import '../domain/course_entry_repository.dart';
@@ -61,6 +63,7 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     'lastStatusEventId',
     'lastStatusChangedAt',
   };
+  static const _enrollmentRosterKeys = {'rosterEntryId', 'effectiveStartDate'};
   static const _profileKeys = {'name', 'email', 'studentCode', 'roles'};
 
   CollectionReference<Map<String, dynamic>> get _courses =>
@@ -84,6 +87,21 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     String courseId,
     String studentUid,
   ) => _course(courseId).collection('enrollments').doc(studentUid);
+
+  DocumentReference<Map<String, dynamic>> _pendingEnrollment(
+    String courseId,
+    String email,
+  ) => _course(courseId).collection('pending_enrollments').doc(email);
+
+  DocumentReference<Map<String, dynamic>> _pendingLinkEvent(
+    String courseId,
+    String email,
+  ) => _pendingEnrollment(
+    courseId,
+    email,
+  ).collection('status_events').doc(_pendingLinkEventId(email));
+
+  String _pendingLinkEventId(String email) => 'link';
 
   @override
   String? get currentUid => _auth.currentUser?.uid;
@@ -741,8 +759,110 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
         }
 
         Enrollment? enrollment;
+        Map<String, dynamic>? pendingData;
+        DocumentSnapshot<Map<String, dynamic>>? pendingSnapshot;
+        DocumentSnapshot<Map<String, dynamic>>? pendingLinkEventSnapshot;
+        String? exactEmail;
+        AcademicDate? pendingEffectiveDate;
+        var linkPending = false;
+        if (decision == JoinRequestDecision.approve) {
+          exactEmail = EnrollmentValidator.exactEmail(request.email);
+          final pendingRef = _pendingEnrollment(courseId, exactEmail);
+          final linkEventRef = _pendingLinkEvent(courseId, exactEmail);
+          pendingSnapshot = await transaction.get(pendingRef);
+          pendingLinkEventSnapshot = await transaction.get(linkEventRef);
+          _requireSameUser(uid);
+          if (pendingSnapshot.exists) {
+            pendingData = pendingSnapshot.data();
+            if (pendingData == null ||
+                pendingData['courseId'] != courseId ||
+                pendingData['ownerUid'] != uid ||
+                pendingData['email'] != exactEmail ||
+                pendingData['rosterEntryId'] != exactEmail ||
+                pendingData['name'] is! String ||
+                pendingData['studentCode'] != request.studentCode ||
+                pendingData['subject'] != request.subject ||
+                pendingData['group'] != request.group ||
+                pendingData['period'] != request.period ||
+                pendingData['effectiveStartDate'] is! Timestamp) {
+              throw const CourseEntryFailure(
+                CourseEntryFailureKind.invalidData,
+              );
+            }
+            if (pendingData['status'] == 'withdrawn') {
+              throw const CourseEntryFailure(
+                CourseEntryFailureKind.enrollmentWithdrawn,
+              );
+            }
+            pendingEffectiveDate = _academicDateFromTimestamp(
+              pendingData['effectiveStartDate'],
+            );
+            if (pendingData['status'] == 'pending') {
+              if (pendingData['studentUid'] != null ||
+                  pendingData['linkedAt'] != null ||
+                  pendingData['lastEventId'] != null ||
+                  pendingData['lastStatusChangedAt'] != null ||
+                  pendingLinkEventSnapshot.exists) {
+                throw const CourseEntryFailure(
+                  CourseEntryFailureKind.invalidData,
+                );
+              }
+              linkPending = true;
+            } else if (pendingData['status'] == 'linked') {
+              final linkEvent = pendingLinkEventSnapshot.data();
+              final effectiveDate =
+                  pendingData['effectiveStartDate'] as Timestamp;
+              final linkedAt = pendingData['linkedAt'];
+              final lastChangedAt = pendingData['lastStatusChangedAt'];
+              final changedAt = linkEvent?['changedAt'];
+              if (pendingData['studentUid'] != studentUid ||
+                  pendingData['linkedAt'] is! Timestamp ||
+                  pendingData['lastEventId'] !=
+                      _pendingLinkEventId(exactEmail) ||
+                  pendingData['lastStatusChangedAt'] is! Timestamp ||
+                  !pendingLinkEventSnapshot.exists ||
+                  linkEvent == null ||
+                  linkEvent.keys.toSet().length != 5 ||
+                  !linkEvent.keys.toSet().containsAll({
+                    'fromStatus',
+                    'toStatus',
+                    'effectiveDate',
+                    'changedAt',
+                    'changedBy',
+                  }) ||
+                  linkEvent['fromStatus'] != 'pending' ||
+                  linkEvent['toStatus'] != 'linked' ||
+                  linkEvent['effectiveDate'] is! Timestamp ||
+                  !(linkEvent['effectiveDate'] as Timestamp)
+                      .toDate()
+                      .isAtSameMomentAs(effectiveDate.toDate()) ||
+                  changedAt is! Timestamp ||
+                  !changedAt.toDate().isAtSameMomentAs(
+                    (lastChangedAt as Timestamp).toDate(),
+                  ) ||
+                  !changedAt.toDate().isAtSameMomentAs(
+                    (linkedAt as Timestamp).toDate(),
+                  ) ||
+                  (linkEvent['changedBy'] != uid &&
+                      linkEvent['changedBy'] != studentUid) ||
+                  !enrollmentSnapshot.exists) {
+                throw const CourseEntryFailure(
+                  CourseEntryFailureKind.invalidData,
+                );
+              }
+            } else {
+              throw const CourseEntryFailure(
+                CourseEntryFailureKind.invalidData,
+              );
+            }
+          }
+        }
         if (decision == JoinRequestDecision.approve &&
             enrollmentSnapshot.exists) {
+          final enrollmentData = enrollmentSnapshot.data()!;
+          final hasRosterMetadata =
+              enrollmentData.containsKey('rosterEntryId') &&
+              enrollmentData.containsKey('effectiveStartDate');
           enrollment = _enrollmentFromSnapshot(enrollmentSnapshot, courseId);
           if (enrollment.studentUid != studentUid ||
               enrollment.ownerUid != uid) {
@@ -755,12 +875,34 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
               CourseEntryFailureKind.enrollmentWithdrawn,
             );
           }
+          if (pendingData != null &&
+              (enrollment.email != exactEmail ||
+                  enrollment.studentCode != request.studentCode ||
+                  enrollment.subject != request.subject ||
+                  enrollment.group != request.group ||
+                  enrollment.period != request.period ||
+                  (hasRosterMetadata &&
+                      (enrollment.rosterEntryId != exactEmail ||
+                          enrollment.effectiveStartDate !=
+                              pendingEffectiveDate)))) {
+            throw const CourseEntryFailure(CourseEntryFailureKind.invalidData);
+          }
         } else if (decision == JoinRequestDecision.approve) {
+          final courseDates = _courseDateRange(course);
+          final effectiveDate =
+              pendingEffectiveDate ??
+              _defaultEffectiveStartDate(courseDates.$1, courseDates.$2);
+          _validateEffectiveDateForCourse(
+            effectiveDate,
+            courseDates.$1,
+            courseDates.$2,
+            allowFutureCourseStart: true,
+          );
           enrollment = Enrollment(
             courseId: courseId,
             studentUid: request.studentUid,
             ownerUid: uid,
-            name: request.name,
+            name: pendingData?['name'] as String? ?? request.name,
             email: request.email,
             studentCode: request.studentCode,
             subject: request.subject,
@@ -768,9 +910,31 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
             period: request.period,
             status: 'active',
             createdAt: null,
+            rosterEntryId: exactEmail,
+            effectiveStartDate: effectiveDate,
           );
           _requireSameUser(uid);
           transaction.set(enrollmentRef, _enrollmentMap(enrollment));
+        }
+
+        if (linkPending) {
+          final currentPending = pendingData!;
+          final email = exactEmail!;
+          transaction.update(_pendingEnrollment(courseId, email), {
+            'status': 'linked',
+            'studentUid': studentUid,
+            'linkedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'lastEventId': _pendingLinkEventId(email),
+            'lastStatusChangedAt': FieldValue.serverTimestamp(),
+          });
+          transaction.set(_pendingLinkEvent(courseId, email), {
+            'fromStatus': 'pending',
+            'toStatus': 'linked',
+            'effectiveDate': currentPending['effectiveStartDate'],
+            'changedAt': FieldValue.serverTimestamp(),
+            'changedBy': uid,
+          });
         }
 
         final status = decision == JoinRequestDecision.approve
@@ -1010,14 +1174,19 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     final keys = data?.keys.toSet() ?? const <String>{};
     final hasEventId = data?.containsKey('lastStatusEventId') ?? false;
     final hasChangedAt = data?.containsKey('lastStatusChangedAt') ?? false;
+    final hasRosterEntryId = data?.containsKey('rosterEntryId') ?? false;
+    final hasEffectiveStartDate =
+        data?.containsKey('effectiveStartDate') ?? false;
     if (!snapshot.exists ||
         data == null ||
         !keys.containsAll(_enrollmentKeys) ||
         keys.difference({
           ..._enrollmentKeys,
           ..._enrollmentTransitionKeys,
+          ..._enrollmentRosterKeys,
         }).isNotEmpty ||
         hasEventId != hasChangedAt ||
+        hasRosterEntryId != hasEffectiveStartDate ||
         data['studentUid'] != snapshot.id ||
         data['ownerUid'] is! String ||
         data['name'] is! String ||
@@ -1036,6 +1205,14 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
             data['lastStatusChangedAt'] is! Timestamp)) {
       throw const FormatException('Invalid enrollment transition marker.');
     }
+    if (hasRosterEntryId &&
+        (data['rosterEntryId'] != data['email'] ||
+            data['rosterEntryId'] is! String ||
+            (data['rosterEntryId'] as String).isEmpty ||
+            data['effectiveStartDate'] is! Timestamp)) {
+      throw const FormatException('Invalid enrollment roster identity.');
+    }
+    final createdAt = (data['createdAt'] as Timestamp).toDate();
     return Enrollment(
       courseId: courseId,
       studentUid: data['studentUid'] as String,
@@ -1047,7 +1224,13 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
       group: data['group'] as String,
       period: data['period'] as String,
       status: data['status'] as String,
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: createdAt,
+      rosterEntryId: hasRosterEntryId
+          ? data['rosterEntryId'] as String
+          : 'legacy:${data['studentUid']}',
+      effectiveStartDate: hasEffectiveStartDate
+          ? _academicDateFromTimestamp(data['effectiveStartDate'])
+          : _bogotaDate(createdAt),
       lastStatusEventId: hasEventId
           ? data['lastStatusEventId'] as String
           : null,
@@ -1067,8 +1250,66 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
     'group': enrollment.group,
     'period': enrollment.period,
     'status': 'active',
+    'rosterEntryId': enrollment.rosterEntryId,
+    'effectiveStartDate': Timestamp.fromDate(
+      enrollment.effectiveStartDate!.toUtcTimestamp(),
+    ),
     'createdAt': FieldValue.serverTimestamp(),
   };
+
+  (AcademicDate, AcademicDate) _courseDateRange(Map<String, dynamic> course) {
+    final start = _academicDateFromTimestamp(course['startDate']);
+    final end = _academicDateFromTimestamp(course['endDate']);
+    if (start.compareTo(end) > 0) {
+      throw const FormatException('Invalid course date range.');
+    }
+    return (start, end);
+  }
+
+  AcademicDate _academicDateFromTimestamp(Object? value) {
+    if (value is! Timestamp) {
+      throw const FormatException('Expected an academic date timestamp.');
+    }
+    try {
+      return AcademicDate.fromUtcTimestamp(value.toDate().toUtc());
+    } on ArgumentError {
+      throw const FormatException('Expected UTC midnight for academic date.');
+    }
+  }
+
+  AcademicDate _bogotaDate(DateTime instant) => AcademicDate.fromDateTime(
+    instant.toUtc().subtract(const Duration(hours: 5)),
+  );
+
+  AcademicDate _defaultEffectiveStartDate(
+    AcademicDate start,
+    AcademicDate end,
+  ) {
+    final today = _bogotaDate(DateTime.now());
+    if (today.compareTo(start) < 0) return start;
+    if (today.compareTo(end) > 0) {
+      throw const CourseEntryFailure(CourseEntryFailureKind.invalidInput);
+    }
+    return today;
+  }
+
+  void _validateEffectiveDateForCourse(
+    AcademicDate date,
+    AcademicDate start,
+    AcademicDate end, {
+    required bool allowFutureCourseStart,
+  }) {
+    if (start.compareTo(end) > 0 ||
+        date.compareTo(start) < 0 ||
+        date.compareTo(end) > 0) {
+      throw const CourseEntryFailure(CourseEntryFailureKind.invalidInput);
+    }
+    final today = _bogotaDate(DateTime.now());
+    if (date.compareTo(today) > 0 &&
+        !(allowFutureCourseStart && date == start)) {
+      throw const CourseEntryFailure(CourseEntryFailureKind.invalidInput);
+    }
+  }
 
   String _courseIdFromRequestPath(String path) {
     final parts = path.split('/');

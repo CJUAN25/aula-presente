@@ -6,6 +6,9 @@ import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_failure.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment_page.dart';
+import 'package:aula_presente/features/enrollments/domain/pending_enrollment_result.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
 import 'package:aula_presente/features/excel_import/domain/excel_import_document.dart';
 import 'package:aula_presente/features/excel_import/presentation/excel_import_screen.dart';
@@ -24,7 +27,7 @@ Course _course() => Course(
   program: 'Programa',
   schedule: CourseSchedule(
     startDate: AcademicDate(year: 2026, month: 11, day: 2),
-    endDate: AcademicDate(year: 2026, month: 11, day: 9),
+    endDate: AcademicDate(year: 2026, month: 11, day: 30),
     weeklyBlocks: const [
       WeeklyBlock(
         id: 'block-1',
@@ -120,9 +123,53 @@ class _Repository implements EnrollmentRepository {
       throw const EnrollmentFailure(EnrollmentFailureKind.courseUnavailable);
 
   @override
+  Future<Enrollment?> findCourseEnrollmentByUid({
+    required String courseId,
+    required String studentUid,
+  }) async => null;
+
+  @override
+  Future<List<Enrollment>> findCourseEnrollmentsByEmail({
+    required String courseId,
+    required String email,
+  }) async => const [];
+
+  @override
+  Future<CourseRosterIdentityLookup> findCourseRosterByStudentCode({
+    required String courseId,
+    required String studentCode,
+  }) async => CourseRosterIdentityLookup(
+    enrollmentMatches: const [],
+    pendingMatches: const [],
+    hasMoreEnrollmentMatches: false,
+    hasMorePendingMatches: false,
+  );
+
+  @override
+  Future<PendingEnrollment?> getCoursePendingEnrollment({
+    required String courseId,
+    required String email,
+  }) async => null;
+
+  @override
+  Future<PendingEnrollmentWriteResult> authorizePendingEnrollment({
+    required Course course,
+    required String email,
+    required String studentCode,
+    required String name,
+    required AcademicDate effectiveStartDate,
+  }) async {
+    writes++;
+    return const PendingEnrollmentWriteResult(
+      PendingEnrollmentWriteKind.created,
+    );
+  }
+
+  @override
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    AcademicDate? effectiveStartDate,
     bool resolvePendingWhenAlreadyEnrolled = true,
   }) async {
     writes++;
@@ -182,6 +229,14 @@ Future<void> _pump(
   await tester.pumpAndSettle();
 }
 
+Future<void> _selectFirstEligibleRow(WidgetTester tester) async {
+  final checkbox = find.byType(Checkbox).first;
+  await tester.ensureVisible(checkbox);
+  await tester.pumpAndSettle();
+  await tester.tap(checkbox);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets(
     'seleccionar y revisar no escribe; solo confirma la fila elegida',
@@ -206,16 +261,14 @@ void main() {
 
       await tester.tap(find.text('Seleccionar estudiantes'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Seleccionar todas las elegibles'));
-      await tester.pumpAndSettle();
+      await _selectFirstEligibleRow(tester);
       await tester.tap(find.text('Desmarcar todas'));
       await tester.pumpAndSettle();
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton).last).onPressed,
         isNull,
       );
-      await tester.tap(find.text('Seleccionar todas las elegibles'));
-      await tester.pumpAndSettle();
+      await _selectFirstEligibleRow(tester);
       expect(find.text('Revisar selección'), findsOneWidget);
       await tester.tap(find.text('Revisar selección'));
       await tester.pumpAndSettle();
@@ -251,8 +304,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Seleccionar estudiantes'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Seleccionar todas las elegibles'));
-    await tester.pumpAndSettle();
+    await _selectFirstEligibleRow(tester);
     await tester.tap(find.text('Revisar selección'));
     await tester.pumpAndSettle();
     repository.pendingWrite = Completer<EnrollmentResult>();
@@ -319,38 +371,47 @@ void main() {
     },
   );
 
-  testWidgets('archivo ilegible y lista sin altas tienen mensajes útiles', (
-    tester,
-  ) async {
-    final repository = _Repository()..firstCandidateAvailable = false;
-    await _pump(
-      tester,
-      repository: repository,
-      readerError: const ExcelImportException('Archivo ilegible de prueba.'),
-    );
-    await tester.scrollUntilVisible(find.text('Seleccionar Excel'), 200);
-    await tester.tap(find.text('Seleccionar Excel'));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.text('Archivo ilegible de prueba.'),
-      200,
-    );
-    expect(find.text('Archivo ilegible de prueba.'), findsOneWidget);
-    expect(repository.writes, 0);
+  testWidgets(
+    'archivo ilegible y cuenta sin sesión ofrece autorización pendiente',
+    (tester) async {
+      final repository = _Repository()..firstCandidateAvailable = false;
+      await _pump(
+        tester,
+        repository: repository,
+        readerError: const ExcelImportException('Archivo ilegible de prueba.'),
+      );
+      await tester.scrollUntilVisible(find.text('Seleccionar Excel'), 200);
+      await tester.tap(find.text('Seleccionar Excel'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Archivo ilegible de prueba.'),
+        200,
+      );
+      expect(find.text('Archivo ilegible de prueba.'), findsOneWidget);
+      expect(repository.writes, 0);
 
-    await tester.pumpWidget(const SizedBox.shrink());
-    await _pump(tester, repository: repository, document: _document());
-    await tester.scrollUntilVisible(find.text('Seleccionar Excel'), 200);
-    await tester.tap(find.text('Seleccionar Excel'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Revisar coincidencias'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton).last).onPressed,
-      isNull,
-    );
-    expect(repository.writes, 0);
-  });
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _pump(tester, repository: repository, document: _document());
+      await tester.scrollUntilVisible(find.text('Seleccionar Excel'), 200);
+      await tester.tap(find.text('Seleccionar Excel'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Revisar coincidencias'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton).last).onPressed,
+        isNotNull,
+      );
+      await tester.scrollUntilVisible(
+        find.textContaining('puedes autorizarla como pendiente de vincular'),
+        200,
+      );
+      expect(
+        find.textContaining('puedes autorizarla como pendiente de vincular'),
+        findsOneWidget,
+      );
+      expect(repository.writes, 0);
+    },
+  );
 
   testWidgets('resultado parcial separa la alta confirmada de la fallida', (
     tester,

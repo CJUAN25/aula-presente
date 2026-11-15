@@ -425,6 +425,8 @@ void main() {
       'group',
       'period',
       'status',
+      'rosterEntryId',
+      'effectiveStartDate',
       'createdAt',
     });
     expect(enrollmentWrite.data['createdAt'], isA<FieldValue>());
@@ -437,6 +439,117 @@ void main() {
     expect(requestUpdate.data['decidedAt'], isA<FieldValue>());
     expect(requestUpdate.data['rejectionReason'], isNull);
   });
+
+  test('approval atomically links its matching pending roster row', () async {
+    const pendingPath =
+        'courses/course-1/pending_enrollments/student@example.invalid';
+    final store = _Store()
+      ..documents['users/teacher-one'] = _teacherProfile()
+      ..documents['courses/course-1'] = _course()
+      ..documents['courses/course-1/join_requests/student-one'] =
+          _pendingRequest()
+      ..documents['courses/course-1/enrollments/student-one'] = null
+      ..documents[pendingPath] = _pendingEnrollmentSnapshot()
+      ..documents['$pendingPath/status_events/link'] = null;
+    final repository = FirestoreCourseEntryRepository(
+      auth: _Auth(_User('teacher-one', 'teacher@example.invalid')),
+      firestore: store,
+    );
+
+    final result = await repository.decideJoinRequest(
+      courseId: 'course-1',
+      studentUid: 'student-one',
+      decision: JoinRequestDecision.approve,
+    );
+
+    expect(result.status, JoinDecisionResultStatus.approved);
+    expect(store.documents[pendingPath]?['status'], 'linked');
+    expect(store.documents[pendingPath]?['studentUid'], 'student-one');
+    final enrollment =
+        store.documents['courses/course-1/enrollments/student-one']!;
+    expect(enrollment['rosterEntryId'], 'student@example.invalid');
+    expect(enrollment['name'], 'Roster Student');
+    expect(store.transactionWrites, hasLength(4));
+    expect(
+      store.transactionWrites.map((write) => write.path),
+      containsAll([
+        'courses/course-1/enrollments/student-one',
+        pendingPath,
+        '$pendingPath/status_events/link',
+        'courses/course-1/join_requests/student-one',
+      ]),
+    );
+  });
+
+  test(
+    'approval reuses a student-linked pending enrollment without relinking',
+    () async {
+      const pendingPath =
+          'courses/course-1/pending_enrollments/student@example.invalid';
+      const enrollmentPath = 'courses/course-1/enrollments/student-one';
+      final startDate = Timestamp.fromDate(DateTime.utc(2026, 11, 14));
+      final store = _Store()
+        ..documents['users/teacher-one'] = _teacherProfile()
+        ..documents['courses/course-1'] = _course()
+        ..documents['courses/course-1/join_requests/student-one'] =
+            _pendingRequest()
+        ..documents[enrollmentPath] = {
+          'studentUid': 'student-one',
+          'ownerUid': 'teacher-one',
+          'name': 'Earlier profile name',
+          'email': 'student@example.invalid',
+          'studentCode': '0012',
+          'subject': 'Bases de Datos',
+          'group': 'G2',
+          'period': '2026-2',
+          'status': 'active',
+          'createdAt': _createdAt,
+        }
+        ..documents[pendingPath] = {
+          ..._pendingEnrollmentSnapshot(),
+          'status': 'linked',
+          'studentUid': 'student-one',
+          'linkedAt': _updatedAt,
+          'lastEventId': 'link',
+          'lastStatusChangedAt': _updatedAt,
+        }
+        ..documents['$pendingPath/status_events/link'] = {
+          'fromStatus': 'pending',
+          'toStatus': 'linked',
+          'effectiveDate': startDate,
+          'changedAt': _updatedAt,
+          'changedBy': 'student-one',
+        };
+      final repository = FirestoreCourseEntryRepository(
+        auth: _Auth(_User('teacher-one', 'teacher@example.invalid')),
+        firestore: store,
+      );
+
+      final result = await repository.decideJoinRequest(
+        courseId: 'course-1',
+        studentUid: 'student-one',
+        decision: JoinRequestDecision.approve,
+      );
+
+      expect(result.status, JoinDecisionResultStatus.approved);
+      expect(store.documents[enrollmentPath]!['status'], 'active');
+      expect(store.documents[enrollmentPath]!['createdAt'], _createdAt);
+      expect(
+        store.documents[enrollmentPath]!.containsKey('rosterEntryId'),
+        false,
+      );
+      expect(
+        store.documents[enrollmentPath]!.containsKey('effectiveStartDate'),
+        false,
+      );
+      expect(store.documents[pendingPath]!['status'], 'linked');
+      expect(store.transactionWrites, hasLength(1));
+      expect(
+        store.transactionWrites.single.path,
+        'courses/course-1/join_requests/student-one',
+      );
+    },
+  );
 
   test('approval does not reactivate a withdrawn enrollment', () async {
     final store = _Store()
@@ -575,6 +688,8 @@ Map<String, dynamic> _course() => {
   'subject': 'Bases de Datos',
   'group': 'G2',
   'period': '2026-2',
+  'startDate': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
+  'endDate': Timestamp.fromDate(DateTime.utc(2027, 11, 1)),
 };
 
 Map<String, dynamic> _teacherProfile() => {
@@ -620,6 +735,27 @@ Map<String, dynamic> _pendingRequest() => {
   'decidedBy': null,
   'decidedAt': null,
   'rejectionReason': null,
+};
+
+Map<String, dynamic> _pendingEnrollmentSnapshot() => {
+  'courseId': 'course-1',
+  'ownerUid': 'teacher-one',
+  'subject': 'Bases de Datos',
+  'group': 'G2',
+  'period': '2026-2',
+  'email': 'student@example.invalid',
+  'studentCode': '0012',
+  'name': 'Roster Student',
+  'status': 'pending',
+  'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 14)),
+  'rosterEntryId': 'student@example.invalid',
+  'studentUid': null,
+  'authorizedAt': _createdAt,
+  'linkedAt': null,
+  'createdAt': _createdAt,
+  'updatedAt': _updatedAt,
+  'lastEventId': null,
+  'lastStatusChangedAt': null,
 };
 
 Map<String, dynamic> _withdrawnEnrollment() => {

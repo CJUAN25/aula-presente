@@ -2,6 +2,9 @@ import 'package:aula_presente/features/enrollments/data/firestore_enrollment_rep
 import 'package:aula_presente/features/enrollments/domain/enrollment_failure.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
+import 'package:aula_presente/features/courses/domain/course.dart';
+import 'package:aula_presente/features/schedule/domain/academic_date.dart';
+import 'package:aula_presente/features/schedule/domain/course_schedule.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -262,6 +265,8 @@ void main() {
         'group',
         'period',
         'status',
+        'rosterEntryId',
+        'effectiveStartDate',
         'createdAt',
       });
       expect(store.transactionWrite!['createdAt'], isA<FieldValue>());
@@ -269,6 +274,8 @@ void main() {
         'courses/course-00',
         'courses/course-00/enrollments/student-one',
         'courses/course-00/join_requests/student-one',
+        'courses/course-00/pending_enrollments/student@example.invalid',
+        'courses/course-00/pending_enrollments/student@example.invalid/status_events/link',
         'student_directory/student@example.invalid',
       ]);
 
@@ -286,13 +293,14 @@ void main() {
         'courses/course-00',
         'courses/course-00/enrollments/student-one',
         'courses/course-00/join_requests/student-one',
+        'courses/course-00/pending_enrollments/student@example.invalid',
+        'courses/course-00/pending_enrollments/student@example.invalid/status_events/link',
       ]);
     },
   );
 
-  test('manual enrollment approves a pending request atomically', () async {
-    final store = _Store()
-      ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+  test('manual enrollment approves an exact request despite display-name differences', () async {
+    final store = _Store()..joinRequest = _matchingJoinRequest();
     final repository = FirestoreEnrollmentRepository(
       auth: _Auth()..user = _TeacherUser(),
       firestore: store,
@@ -327,6 +335,36 @@ void main() {
     expect(store.transactionWriteCount, 1);
   });
 
+  test(
+    'manual enrollment leaves an identity-mismatched request pending',
+    () async {
+      final store = _Store()
+        ..joinRequest = {
+          ..._matchingJoinRequest(),
+          'studentCode': 'different-code',
+        };
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Student One',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+      );
+
+      expect(result.alreadyEnrolled, isFalse);
+      expect(store.existingEnrollment, isNotNull);
+      expect(store.joinRequest!['status'], 'pending');
+      expect(store.transactionUpdatePath, isNull);
+    },
+  );
+
   test('manual enrollment preserves a prior rejected request', () async {
     final store = _Store()
       ..joinRequest = {
@@ -353,6 +391,562 @@ void main() {
     expect(store.joinRequest!['status'], 'rejected');
     expect(store.joinRequest!['rejectionReason'], 'Grupo completo');
   });
+
+  test('teacher authorizes an exact pending roster identity atomically', () async {
+    final store = _Store()..directoryAvailable = false;
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+
+    final result = await repository.authorizePendingEnrollment(
+      course: _courseModel(),
+      email: 'student@example.invalid',
+      studentCode: '0012',
+      name: 'Roster Student',
+      effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 14),
+    );
+
+    expect(result.created, isTrue);
+    final pending = store
+        .pendingDocuments['courses/course-00/pending_enrollments/student@example.invalid']!;
+    expect(pending.keys.toSet(), {
+      'courseId',
+      'ownerUid',
+      'subject',
+      'group',
+      'period',
+      'email',
+      'studentCode',
+      'name',
+      'status',
+      'effectiveStartDate',
+      'rosterEntryId',
+      'studentUid',
+      'authorizedAt',
+      'linkedAt',
+      'createdAt',
+      'updatedAt',
+      'lastEventId',
+      'lastStatusChangedAt',
+    });
+    expect(pending['email'], 'student@example.invalid');
+    expect(pending['rosterEntryId'], 'student@example.invalid');
+    expect(pending['studentUid'], isNull);
+    expect(pending['status'], 'pending');
+    expect(pending['authorizedAt'], isA<Timestamp>());
+    expect(store.transactionWriteCount, 1);
+    expect(store.transactionReads, [
+      'courses/course-00',
+      'student_directory/student@example.invalid',
+      'courses/course-00/pending_enrollments/student@example.invalid',
+    ]);
+  });
+
+  test(
+    'manual enrollment reconciles its exact pending row in one transaction',
+    () async {
+      const pendingPath =
+          'courses/course-00/pending_enrollments/student@example.invalid';
+      final store = _Store()
+        ..pendingDocuments[pendingPath] = _pendingEnrollmentDocument();
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Student One',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+      );
+
+      expect(result.alreadyEnrolled, isFalse);
+      expect(result.enrollment.name, 'Roster Student');
+      expect(store.pendingDocuments[pendingPath]!['status'], 'linked');
+      expect(store.pendingDocuments[pendingPath]!['studentUid'], 'student-one');
+      expect(
+        store.existingEnrollment?['rosterEntryId'],
+        'student@example.invalid',
+      );
+      expect(store.existingEnrollment?['effectiveStartDate'], isA<Timestamp>());
+      expect(store.existingEnrollment?['name'], 'Roster Student');
+      expect(
+        store.transactionWritePaths,
+        contains('$pendingPath/status_events/link'),
+      );
+      expect(store.transactionUpdatePaths, contains(pendingPath));
+      expect(
+        store.transactionWritePaths,
+        contains('courses/course-00/enrollments/student-one'),
+      );
+    },
+  );
+
+  test('verified student links exact pending and matching request despite name difference', () async {
+    final store = _Store()
+      ..pendingDocuments['courses/course-00/pending_enrollments/student@example.invalid'] =
+          _pendingEnrollmentDocument()
+      ..joinRequest = _matchingJoinRequest();
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth(),
+      firestore: store,
+    );
+
+    final summary = await repository.linkOwnPendingEnrollments();
+
+    expect(summary.linked, 1);
+    expect(summary.hasJoinRequestForTeacherReview, isFalse);
+    expect(store.pendingDocuments.values.single['status'], 'linked');
+    expect(store.pendingDocuments.values.single['studentUid'], 'student-one');
+    expect(
+      store.existingEnrollment?['rosterEntryId'],
+      'student@example.invalid',
+    );
+    expect(store.existingEnrollment?['effectiveStartDate'], isA<Timestamp>());
+    expect(store.existingEnrollment?['name'], 'Roster Student');
+    expect(store.joinRequest?['status'], 'approved');
+    expect(store.joinRequest?['decidedBy'], 'teacher-one');
+    expect(store.transactionReads, [
+      'courses/course-00/pending_enrollments/student@example.invalid',
+      'users/student-one',
+      'courses/course-00/enrollments/student-one',
+      'courses/course-00/join_requests/student-one',
+    ]);
+    expect(store.transactionReads, isNot(contains('courses/course-00')));
+    expect(
+      store.transactionWritePaths,
+      contains(
+        'courses/course-00/pending_enrollments/student@example.invalid/status_events/link',
+      ),
+    );
+    expect(
+      store.transactionUpdatePaths,
+      contains('courses/course-00/pending_enrollments/student@example.invalid'),
+    );
+    expect(
+      store.transactionWritePaths,
+      contains('courses/course-00/enrollments/student-one'),
+    );
+  });
+
+  test(
+    'verified student links a legacy enrollment without rewriting it',
+    () async {
+      const pendingPath =
+          'courses/course-00/pending_enrollments/student@example.invalid';
+      final legacyEnrollment = _activeEnrollment();
+      final legacyBefore = Map<String, dynamic>.from(legacyEnrollment);
+      final store = _Store()
+        ..existingEnrollment = legacyEnrollment
+        ..pendingDocuments[pendingPath] = _pendingEnrollmentDocument();
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth(),
+        firestore: store,
+      );
+
+      final summary = await repository.linkOwnPendingEnrollments();
+
+      expect(summary.linked, 1);
+      expect(store.pendingDocuments[pendingPath]!['status'], 'linked');
+      expect(store.existingEnrollment, legacyBefore);
+      expect(store.existingEnrollment!.containsKey('rosterEntryId'), isFalse);
+      expect(
+        store.existingEnrollment!.containsKey('effectiveStartDate'),
+        isFalse,
+      );
+      expect(
+        store.transactionWritePaths,
+        isNot(contains('courses/course-00/enrollments/student-one')),
+      );
+      expect(
+        store.transactionUpdatePaths,
+        isNot(contains('courses/course-00/enrollments/student-one')),
+      );
+    },
+  );
+
+  test(
+    'verified student does not link when modern roster metadata differs',
+    () async {
+      const pendingPath =
+          'courses/course-00/pending_enrollments/student@example.invalid';
+      final store = _Store()
+        ..existingEnrollment = {
+          ..._activeEnrollment(),
+          'rosterEntryId': 'student@example.invalid',
+          'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 15)),
+        }
+        ..pendingDocuments[pendingPath] = _pendingEnrollmentDocument();
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth(),
+        firestore: store,
+      );
+
+      final summary = await repository.linkOwnPendingEnrollments();
+
+      expect(summary.linked, 0);
+      expect(summary.needsReview, 1);
+      expect(store.pendingDocuments[pendingPath]!['status'], 'pending');
+      expect(store.transactionWritePaths, isEmpty);
+      expect(store.transactionUpdatePaths, isEmpty);
+    },
+  );
+
+  test(
+    'pending link event ID stays short for a maximum-length email',
+    () async {
+      final email = '${'a' * 64}@${'b' * 189}';
+      expect(email.length, 254);
+      final pendingPath = 'courses/course-00/pending_enrollments/$email';
+      final store = _Store()
+        ..profiles['users/student-one'] = {
+          'name': 'Student One',
+          'email': email,
+          'studentCode': '0012',
+          'roles': ['student'],
+        }
+        ..pendingDocuments[pendingPath] = _pendingEnrollmentDocument(
+          email: email,
+        );
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _LongEmailStudentUser(email),
+        firestore: store,
+      );
+
+      final summary = await repository.linkOwnPendingEnrollments();
+
+      expect(summary.linked, 1);
+      expect(store.pendingDocuments[pendingPath]!['lastEventId'], 'link');
+      expect(
+        store.pendingStatusEvents.containsKey(
+          '$pendingPath/status_events/link',
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('mismatched join request stays pending while authorized roster links', () async {
+    final store = _Store()
+      ..pendingDocuments['courses/course-00/pending_enrollments/student@example.invalid'] =
+          _pendingEnrollmentDocument()
+      ..joinRequest = {..._matchingJoinRequest(), 'studentCode': 'wrong-code'};
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth(),
+      firestore: store,
+    );
+
+    final summary = await repository.linkOwnPendingEnrollments();
+
+    expect(summary.linked, 1);
+    expect(summary.hasJoinRequestForTeacherReview, isTrue);
+    expect(store.pendingDocuments.values.single['status'], 'linked');
+    expect(store.existingEnrollment, isNotNull);
+    expect(store.joinRequest?['status'], 'pending');
+    expect(
+      store.transactionUpdatePaths,
+      isNot(contains('courses/course-00/join_requests/student-one')),
+    );
+  });
+
+  test('teacher can withdraw a future pending row today before its start date', () async {
+    const path =
+        'courses/course-00/pending_enrollments/student@example.invalid';
+    final futureStart = Timestamp.fromDate(DateTime.utc(2027, 1, 1));
+    final store = _Store()
+      ..courseStartDate = futureStart
+      ..courseEndDate = Timestamp.fromDate(DateTime.utc(2027, 11, 1))
+      ..pendingDocuments[path] = {
+        ..._pendingEnrollmentDocument(),
+        'effectiveStartDate': futureStart,
+      };
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+    final expected = await repository.getCoursePendingEnrollment(
+      courseId: 'course-00',
+      email: 'student@example.invalid',
+    );
+    final todayBogota = DateTime.now().toUtc().subtract(
+      const Duration(hours: 5),
+    );
+    final result = await repository.changePendingEnrollmentStatus(
+      expected: expected!,
+      nextStatus: 'withdrawn',
+      operationId: 'withdraw-pending-before-start',
+      effectiveDate: AcademicDate.fromDateTime(todayBogota),
+    );
+
+    expect(result.status, 'withdrawn');
+    expect(store.pendingDocuments[path]!['status'], 'withdrawn');
+    expect(store.pendingDocuments[path]!['effectiveStartDate'], futureStart);
+    expect(
+      store
+          .pendingStatusEvents['$path/status_events/withdraw-pending-before-start']?['effectiveDate'],
+      Timestamp.fromDate(
+        DateTime.utc(todayBogota.year, todayBogota.month, todayBogota.day),
+      ),
+    );
+
+    final writeCountAfterWithdrawal = store.transactionWriteCount;
+    final retry = await repository.changePendingEnrollmentStatus(
+      expected: expected,
+      nextStatus: 'withdrawn',
+      operationId: 'withdraw-pending-before-start',
+      effectiveDate: AcademicDate.fromDateTime(todayBogota),
+    );
+    expect(retry.alreadyApplied, isTrue);
+    expect(store.transactionWriteCount, writeCountAfterWithdrawal);
+
+    final withdrawn = await repository.getCoursePendingEnrollment(
+      courseId: 'course-00',
+      email: 'student@example.invalid',
+    );
+    final reopened = await repository.changePendingEnrollmentStatus(
+      expected: withdrawn!,
+      nextStatus: 'pending',
+      operationId: 'reopen-pending-before-start',
+      effectiveDate: AcademicDate(year: 2027, month: 1, day: 1),
+    );
+    expect(reopened.status, 'pending');
+    expect(store.pendingDocuments[path]!['status'], 'pending');
+    expect(store.pendingDocuments[path]!['effectiveStartDate'], futureStart);
+    expect(
+      store
+          .pendingStatusEvents['$path/status_events/reopen-pending-before-start']?['fromStatus'],
+      'withdrawn',
+    );
+  });
+
+  test(
+    'teacher can cancel a future-start canonical enrollment today',
+    () async {
+      final futureStart = Timestamp.fromDate(DateTime.utc(2027, 1, 1));
+      final store = _Store()
+        ..courseStartDate = futureStart
+        ..courseEndDate = Timestamp.fromDate(DateTime.utc(2027, 11, 1))
+        ..existingEnrollment = {
+          ..._activeEnrollment(),
+          'rosterEntryId': 'student@example.invalid',
+          'effectiveStartDate': futureStart,
+        };
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+      final expected = await repository.getCourseEnrollment(
+        courseId: 'course-00',
+        studentUid: 'student-one',
+      );
+      final todayBogota = DateTime.now().toUtc().subtract(
+        const Duration(hours: 5),
+      );
+      final result = await repository.changeEnrollmentStatus(
+        expected: expected,
+        nextStatus: 'withdrawn',
+        operationId: 'withdraw-future-enrollment',
+        effectiveDate: AcademicDate.fromDateTime(todayBogota),
+      );
+
+      expect(result.enrollment.status, 'withdrawn');
+      expect(result.enrollment.effectiveStartDate, expected.effectiveStartDate);
+      expect(store.existingEnrollment!['status'], 'withdrawn');
+      expect(
+        store.transactionWrite!['effectiveDate'],
+        Timestamp.fromDate(
+          DateTime.utc(todayBogota.year, todayBogota.month, todayBogota.day),
+        ),
+      );
+    },
+  );
+
+  test(
+    'pending withdrawal earlier than authorization is invalid input',
+    () async {
+      const path =
+          'courses/course-00/pending_enrollments/student@example.invalid';
+      final store = _Store()
+        ..pendingDocuments[path] = {
+          ..._pendingEnrollmentDocument(),
+          'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
+        };
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+      final expected = await repository.getCoursePendingEnrollment(
+        courseId: 'course-00',
+        email: 'student@example.invalid',
+      );
+
+      await expectLater(
+        repository.changePendingEnrollmentStatus(
+          expected: expected!,
+          nextStatus: 'withdrawn',
+          operationId: 'withdraw-before-authorization',
+          effectiveDate: AcademicDate(year: 2026, month: 11, day: 8),
+        ),
+        throwsA(
+          isA<EnrollmentFailure>().having(
+            (failure) => failure.kind,
+            'kind',
+            EnrollmentFailureKind.invalidInput,
+          ),
+        ),
+      );
+      expect(store.transactionWriteCount, 0);
+      expect(store.transactionUpdatePath, isNull);
+    },
+  );
+
+  test('reopening pending before the latest event is invalid input', () async {
+    const path =
+        'courses/course-00/pending_enrollments/student@example.invalid';
+    final todayBogota = AcademicDate.fromDateTime(
+      DateTime.now().toUtc().subtract(const Duration(hours: 5)),
+    );
+    const priorEventId = 'withdraw-pending-once';
+    final store = _Store()
+      ..pendingDocuments[path] = {
+        ..._pendingEnrollmentDocument(),
+        'status': 'withdrawn',
+        'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 5)),
+        'lastEventId': priorEventId,
+        'lastStatusChangedAt': _serverTimestamp,
+      }
+      ..pendingStatusEvents['$path/status_events/$priorEventId'] = {
+        'fromStatus': 'pending',
+        'toStatus': 'withdrawn',
+        'effectiveDate': Timestamp.fromDate(todayBogota.toUtcTimestamp()),
+        'changedAt': _serverTimestamp,
+        'changedBy': 'teacher-one',
+      };
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+    final expected = await repository.getCoursePendingEnrollment(
+      courseId: 'course-00',
+      email: 'student@example.invalid',
+    );
+
+    await expectLater(
+      repository.changePendingEnrollmentStatus(
+        expected: expected!,
+        nextStatus: 'pending',
+        operationId: 'reopen-before-withdrawal-event',
+        effectiveDate: todayBogota.addDays(-1),
+      ),
+      throwsA(
+        isA<EnrollmentFailure>().having(
+          (failure) => failure.kind,
+          'kind',
+          EnrollmentFailureKind.invalidInput,
+        ),
+      ),
+    );
+    expect(
+      store.transactionReads,
+      contains('$path/status_events/$priorEventId'),
+    );
+    expect(store.transactionWriteCount, 0);
+    expect(store.transactionUpdatePath, isNull);
+  });
+
+  test('withdrawal before the latest enrollment event is invalid input', () async {
+    final todayBogota = AcademicDate.fromDateTime(
+      DateTime.now().toUtc().subtract(const Duration(hours: 5)),
+    );
+    const priorEventId = 'previous-rejoin';
+    final store = _Store()
+      ..existingEnrollment = {
+        ..._activeEnrollment(),
+        'rosterEntryId': 'student@example.invalid',
+        'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
+        'lastStatusEventId': priorEventId,
+        'lastStatusChangedAt': _serverTimestamp,
+      }
+      ..statusEvents[priorEventId] = {
+        'fromStatus': 'withdrawn',
+        'toStatus': 'active',
+        'effectiveDate': Timestamp.fromDate(todayBogota.toUtcTimestamp()),
+        'changedAt': _serverTimestamp,
+        'changedBy': 'teacher-one',
+      };
+    final repository = FirestoreEnrollmentRepository(
+      auth: _Auth()..user = _TeacherUser(),
+      firestore: store,
+    );
+    final expected = await repository.getCourseEnrollment(
+      courseId: 'course-00',
+      studentUid: 'student-one',
+    );
+
+    await expectLater(
+      repository.changeEnrollmentStatus(
+        expected: expected,
+        nextStatus: 'withdrawn',
+        operationId: 'withdraw-before-rejoin-event',
+        effectiveDate: todayBogota.addDays(-1),
+      ),
+      throwsA(
+        isA<EnrollmentFailure>().having(
+          (failure) => failure.kind,
+          'kind',
+          EnrollmentFailureKind.invalidInput,
+        ),
+      ),
+    );
+    expect(
+      store.transactionReads,
+      contains(
+        'courses/course-00/enrollments/student-one/status_events/$priorEventId',
+      ),
+    );
+    expect(store.transactionWriteCount, 0);
+    expect(store.transactionUpdatePath, isNull);
+  });
+
+  test(
+    'a real enrollment status permission denial remains permissionDenied',
+    () async {
+      final store = _Store()..existingEnrollment = _activeEnrollment();
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+      final expected = await repository.getCourseEnrollment(
+        courseId: 'course-00',
+        studentUid: 'student-one',
+      );
+      store.onTransaction = () => throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      );
+
+      await expectLater(
+        repository.changeEnrollmentStatus(
+          expected: expected,
+          nextStatus: 'withdrawn',
+          operationId: 'actually-denied-withdrawal',
+          effectiveDate: AcademicDate(year: 2026, month: 11, day: 14),
+        ),
+        throwsA(
+          isA<EnrollmentFailure>().having(
+            (failure) => failure.kind,
+            'kind',
+            EnrollmentFailureKind.permissionDenied,
+          ),
+        ),
+      );
+    },
+  );
 
   test('manual enrollment never reopens a withdrawn enrollment', () async {
     final store = _Store()
@@ -402,7 +996,7 @@ void main() {
           'status': 'active',
           'createdAt': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
         }
-        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+        ..joinRequest = _matchingJoinRequest();
       final repository = FirestoreEnrollmentRepository(
         auth: _Auth()..user = _TeacherUser(),
         firestore: store,
@@ -430,11 +1024,42 @@ void main() {
   );
 
   test(
+    'existing enrollment leaves an identity-mismatched request pending',
+    () async {
+      final store = _Store()
+        ..existingEnrollment = _activeEnrollment()
+        ..joinRequest = {
+          ..._matchingJoinRequest(),
+          'email': 'other@example.invalid',
+        };
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth()..user = _TeacherUser(),
+        firestore: store,
+      );
+
+      final result = await repository.enrollStudent(
+        courseId: 'course-00',
+        candidate: const StudentCandidate(
+          uid: 'student-one',
+          name: 'Current name',
+          email: 'student@example.invalid',
+          studentCode: '0012',
+        ),
+      );
+
+      expect(result.alreadyEnrolled, isTrue);
+      expect(store.joinRequest!['status'], 'pending');
+      expect(store.transactionWriteCount, 0);
+      expect(store.transactionUpdatePath, isNull);
+    },
+  );
+
+  test(
     'Excel retry leaves a newly existing enrollment and request unchanged',
     () async {
       final store = _Store()
         ..existingEnrollment = _activeEnrollment()
-        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+        ..joinRequest = _matchingJoinRequest();
       final repository = FirestoreEnrollmentRepository(
         auth: _Auth()..user = _TeacherUser(),
         firestore: store,
@@ -462,8 +1087,7 @@ void main() {
   test(
     'Excel new enrollment still resolves its pending request atomically',
     () async {
-      final store = _Store()
-        ..joinRequest = {'studentUid': 'student-one', 'status': 'pending'};
+      final store = _Store()..joinRequest = _matchingJoinRequest();
       final repository = FirestoreEnrollmentRepository(
         auth: _Auth()..user = _TeacherUser(),
         firestore: store,
@@ -509,6 +1133,7 @@ void main() {
       expected: expected,
       nextStatus: 'withdrawn',
       operationId: operationId,
+      effectiveDate: AcademicDate(year: 2026, month: 11, day: 11),
     );
 
     expect(result.alreadyApplied, isFalse);
@@ -532,12 +1157,14 @@ void main() {
     expect(store.transactionWrite!.keys.toSet(), {
       'fromStatus',
       'toStatus',
+      'effectiveDate',
       'changedAt',
       'changedBy',
     });
     expect(store.transactionWrite, {
       'fromStatus': 'active',
       'toStatus': 'withdrawn',
+      'effectiveDate': Timestamp.fromDate(DateTime.utc(2026, 11, 11)),
       'changedAt': isA<FieldValue>(),
       'changedBy': 'teacher-one',
     });
@@ -582,6 +1209,7 @@ void main() {
         expected: expected,
         nextStatus: 'active',
         operationId: operationId,
+        effectiveDate: AcademicDate(year: 2026, month: 11, day: 11),
       );
 
       expect(result.alreadyApplied, isFalse);
@@ -594,6 +1222,7 @@ void main() {
       expect(store.transactionWrite, {
         'fromStatus': 'withdrawn',
         'toStatus': 'active',
+        'effectiveDate': Timestamp.fromDate(DateTime.utc(2026, 11, 11)),
         'changedAt': isA<FieldValue>(),
         'changedBy': 'teacher-one',
       });
@@ -624,6 +1253,7 @@ void main() {
         expected: expected,
         nextStatus: nextStatuses[index],
         operationId: operationIds[index],
+        effectiveDate: AcademicDate(year: 2026, month: 11, day: 11 + index),
       );
       expect(result.enrollment.status, nextStatuses[index]);
       expect(result.enrollment.createdAt, originalCreatedAt.toDate());
@@ -675,6 +1305,7 @@ void main() {
         expected: expected,
         nextStatus: 'withdrawn',
         operationId: operationId,
+        effectiveDate: AcademicDate(year: 2026, month: 11, day: 11),
       );
       store.clearTransactionCapture();
 
@@ -706,6 +1337,7 @@ void main() {
           expected: expected,
           nextStatus: 'withdrawn',
           operationId: operationId,
+          effectiveDate: AcademicDate(year: 2026, month: 11, day: 11),
         ),
         throwsA(
           isA<EnrollmentFailure>().having(
@@ -806,6 +1438,54 @@ void main() {
 
 final _serverTimestamp = Timestamp.fromDate(DateTime.utc(2026, 11, 10));
 
+Course _courseModel() => Course(
+  id: 'course-00',
+  ownerUid: 'teacher-one',
+  subject: 'Course 0',
+  group: 'G1',
+  period: '2026-2',
+  program: 'Systems',
+  schedule: CourseSchedule(
+    startDate: AcademicDate(year: 2026, month: 11, day: 1),
+    endDate: AcademicDate(year: 2027, month: 11, day: 1),
+    weeklyBlocks: const [],
+  ),
+);
+
+Map<String, dynamic> _pendingEnrollmentDocument({
+  String email = 'student@example.invalid',
+}) => {
+  'courseId': 'course-00',
+  'ownerUid': 'teacher-one',
+  'subject': 'Course 0',
+  'group': 'G1',
+  'period': '2026-2',
+  'email': email,
+  'studentCode': '0012',
+  'name': 'Roster Student',
+  'status': 'pending',
+  'effectiveStartDate': Timestamp.fromDate(DateTime.utc(2026, 11, 14)),
+  'rosterEntryId': email,
+  'studentUid': null,
+  'authorizedAt': _serverTimestamp,
+  'linkedAt': null,
+  'createdAt': _serverTimestamp,
+  'updatedAt': _serverTimestamp,
+  'lastEventId': null,
+  'lastStatusChangedAt': null,
+};
+
+Map<String, dynamic> _matchingJoinRequest() => {
+  'studentUid': 'student-one',
+  'email': 'student@example.invalid',
+  'studentCode': '0012',
+  'name': 'Different request display name',
+  'subject': 'Course 0',
+  'group': 'G1',
+  'period': '2026-2',
+  'status': 'pending',
+};
+
 Map<String, dynamic> _activeEnrollment() => {
   'studentUid': 'student-one',
   'ownerUid': 'teacher-one',
@@ -831,6 +1511,16 @@ Enrollment _enrollmentModel(Map<String, dynamic> value) => Enrollment(
   period: value['period'] as String,
   status: value['status'] as String,
   createdAt: (value['createdAt'] as Timestamp).toDate(),
+  rosterEntryId: value['rosterEntryId'] as String? ?? 'legacy:student-one',
+  effectiveStartDate: value['effectiveStartDate'] is Timestamp
+      ? AcademicDate.fromUtcTimestamp(
+          (value['effectiveStartDate'] as Timestamp).toDate().toUtc(),
+        )
+      : AcademicDate.fromDateTime(
+          (value['createdAt'] as Timestamp).toDate().toUtc().subtract(
+            const Duration(hours: 5),
+          ),
+        ),
   lastStatusEventId: value['lastStatusEventId'] as String?,
   lastStatusChangedAt: value['lastStatusChangedAt'] is Timestamp
       ? (value['lastStatusChangedAt'] as Timestamp).toDate()
@@ -853,7 +1543,18 @@ class _User implements User {
   @override
   bool get emailVerified => true;
   @override
+  Future<void> reload() async {}
+  @override
+  Future<String?> getIdToken([bool forceRefresh = false]) async => 'test-token';
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _LongEmailStudentUser extends _User {
+  _LongEmailStudentUser(this.email);
+
+  @override
+  final String email;
 }
 
 class _TeacherUser extends _User {
@@ -876,7 +1577,11 @@ class _Store implements FirebaseFirestore {
   final startAfters = <List<Object?>>[];
   final serverReads = <String>[];
   final statusEvents = <String, Map<String, dynamic>>{};
+  final pendingDocuments = <String, Map<String, dynamic>>{};
+  final pendingStatusEvents = <String, Map<String, dynamic>>{};
+  final _transactionOperations = <_TransactionOperation>[];
   void Function()? onQuery;
+  void Function()? onTransaction;
   String? writtenPath;
   Map<String, dynamic>? writtenFields;
   Map<String, dynamic>? transactionWrite;
@@ -892,6 +1597,8 @@ class _Store implements FirebaseFirestore {
   final profiles = <String, Map<String, dynamic>>{};
   Map<String, dynamic>? joinRequest;
   bool directoryAvailable = true;
+  Timestamp courseStartDate = Timestamp.fromDate(DateTime.utc(2026, 11, 1));
+  Timestamp courseEndDate = Timestamp.fromDate(DateTime.utc(2027, 11, 1));
 
   void clearTransactionCapture() {
     transactionReads.clear();
@@ -902,6 +1609,7 @@ class _Store implements FirebaseFirestore {
     transactionUpdate = null;
     transactionUpdatePath = null;
     transactionUpdatePaths.clear();
+    _transactionOperations.clear();
   }
 
   @override
@@ -916,28 +1624,39 @@ class _Store implements FirebaseFirestore {
     Duration timeout = const Duration(seconds: 30),
     int maxAttempts = 5,
   }) async {
+    onTransaction?.call();
     final result = await transactionHandler(_FakeTransaction(this));
-    if (transactionWrite != null) {
-      final resolved = _resolveMap(transactionWrite!);
-      if (transactionWritePath!.contains('/status_events/')) {
-        statusEvents[transactionWritePath!.split('/').last] = resolved;
-      } else {
-        existingEnrollment ??= {
-          ...resolved,
-          'createdAt': Timestamp.fromDate(DateTime.utc(2026, 11, 5)),
-        };
-      }
-    }
-    if (transactionUpdate != null) {
-      if (transactionUpdatePath!.contains('/join_requests/')) {
-        if (joinRequest != null) {
-          joinRequest = {...joinRequest!, ..._resolveMap(transactionUpdate!)};
+    for (final operation in _transactionOperations) {
+      final resolved = _resolveMap(operation.data);
+      if (operation.path.contains('/pending_enrollments/')) {
+        if (operation.path.contains('/status_events/')) {
+          pendingStatusEvents[operation.path] = resolved;
+        } else if (operation.update) {
+          pendingDocuments[operation.path] = {
+            ...?pendingDocuments[operation.path],
+            ...resolved,
+          };
+        } else {
+          pendingDocuments[operation.path] = resolved;
         }
-      } else if (transactionUpdatePath!.contains('/enrollments/')) {
-        if (existingEnrollment != null) {
+      } else if (operation.path.contains('/join_requests/')) {
+        if (joinRequest != null) {
+          joinRequest = {...joinRequest!, ...resolved};
+        }
+      } else if (operation.path.contains('/enrollments/') &&
+          operation.path.contains('/status_events/')) {
+        statusEvents[operation.path.split('/').last] = resolved;
+      } else if (operation.path.contains('/enrollments/')) {
+        if (operation.update) {
+          if (existingEnrollment != null) {
+            existingEnrollment = {...existingEnrollment!, ...resolved};
+          }
+        } else {
           existingEnrollment = {
-            ...existingEnrollment!,
-            ..._resolveMap(transactionUpdate!),
+            ...resolved,
+            'createdAt':
+                resolved['createdAt'] ??
+                Timestamp.fromDate(DateTime.utc(2026, 11, 5)),
           };
         }
       }
@@ -956,12 +1675,21 @@ class _Store implements FirebaseFirestore {
 
 // ignore: subtype_of_sealed_class
 class _Query implements Query<Map<String, dynamic>> {
-  _Query(this.store, this.path, {required this.page, this.maximum = 100});
+  _Query(
+    this.store,
+    this.path, {
+    required this.page,
+    this.maximum = 100,
+    Map<String, Object?>? filters,
+    this.cursorDocumentId,
+  }) : filters = filters ?? const {};
 
   final _Store store;
   final String path;
   final int page;
   final int maximum;
+  final Map<String, Object?> filters;
+  final String? cursorDocumentId;
 
   @override
   Query<Map<String, dynamic>> where(
@@ -978,7 +1706,16 @@ class _Query implements Query<Map<String, dynamic>> {
     Iterable<Object?>? whereNotIn,
     bool? isNull,
   }) {
-    if (field == 'studentUid') {
+    if (path.contains('pending_enrollments')) {
+      return _Query(
+        store,
+        path,
+        page: page,
+        maximum: maximum,
+        filters: {...filters, field.toString(): isEqualTo},
+        cursorDocumentId: cursorDocumentId,
+      );
+    } else if (field == 'studentUid') {
       store.uidFilters.add(isEqualTo);
     } else if (field == 'status') {
       store.statusFilters.add(isEqualTo);
@@ -995,20 +1732,80 @@ class _Query implements Query<Map<String, dynamic>> {
   }
 
   @override
-  Query<Map<String, dynamic>> limit(int limit) =>
-      _Query(store, path, page: page, maximum: limit);
+  Query<Map<String, dynamic>> limit(int limit) => _Query(
+    store,
+    path,
+    page: page,
+    maximum: limit,
+    filters: filters,
+    cursorDocumentId: cursorDocumentId,
+  );
 
   @override
   Query<Map<String, dynamic>> startAfter(Iterable<Object?> values) {
     store.startAfters.add(values.toList());
-    return _Query(store, path, page: 1, maximum: maximum);
+    return _Query(
+      store,
+      path,
+      page: 1,
+      maximum: maximum,
+      filters: filters,
+      cursorDocumentId: values.isEmpty ? null : values.last as String?,
+    );
   }
+
+  @override
+  Query<Map<String, dynamic>> startAfterDocument(
+    DocumentSnapshot<Object?> documentSnapshot,
+  ) => _Query(
+    store,
+    path,
+    page: 1,
+    maximum: maximum,
+    filters: filters,
+    cursorDocumentId: documentSnapshot.id,
+  );
 
   @override
   Future<QuerySnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
     expect(options?.source, Source.server);
     store.serverReads.add(path);
     store.onQuery?.call();
+    if (path == 'pending_enrollments' ||
+        path.endsWith('/pending_enrollments')) {
+      final prefix = path == 'pending_enrollments' ? null : '$path/';
+      final entries =
+          store.pendingDocuments.entries
+              .where((entry) => prefix == null || entry.key.startsWith(prefix))
+              .where(
+                (entry) => filters.entries.every(
+                  (filter) => entry.value[filter.key] == filter.value,
+                ),
+              )
+              .toList()
+            ..sort((left, right) {
+              final leftCreatedAt = left.value['createdAt'] as Timestamp;
+              final rightCreatedAt = right.value['createdAt'] as Timestamp;
+              final dateOrder = rightCreatedAt.compareTo(leftCreatedAt);
+              if (dateOrder != 0) return dateOrder;
+              return right.key
+                  .split('/')
+                  .last
+                  .compareTo(left.key.split('/').last);
+            });
+      final cursorIndex = cursorDocumentId == null
+          ? -1
+          : entries.indexWhere(
+              (entry) => entry.key.split('/').last == cursorDocumentId,
+            );
+      return _Snapshot(
+        entries
+            .skip(cursorIndex + 1)
+            .take(maximum)
+            .map((entry) => _Document(store, entry.key, entry.value))
+            .toList(growable: false),
+      );
+    }
     if (path.endsWith('/status_events')) {
       final sorted = store.statusEvents.entries.toList()
         ..sort((left, right) {
@@ -1119,6 +1916,13 @@ class _Reference implements DocumentReference<Map<String, dynamic>> {
           ? _MissingDocument(path)
           : _Document(store, path, profile);
     }
+    if (path.contains('/pending_enrollments/') &&
+        !path.contains('/status_events/')) {
+      final pending = store.pendingDocuments[path];
+      return pending == null
+          ? _MissingDocument(path)
+          : _Document(store, path, pending);
+    }
     final enrollment =
         store.enrollmentDocuments[path] ??
         (path == 'courses/course-00/enrollments/student-one'
@@ -1153,12 +1957,23 @@ class _FakeTransaction implements Transaction {
     final path = reference.path;
     store.transactionReads.add(path);
     Map<String, dynamic>? value;
-    if (path == 'courses/course-00') {
+    if (path == 'users/student-one') {
+      value =
+          store.profiles[path] ??
+          {
+            'name': 'Student One',
+            'email': 'student@example.invalid',
+            'studentCode': '0012',
+            'roles': ['student'],
+          };
+    } else if (path == 'courses/course-00') {
       value = {
         'ownerUid': 'teacher-one',
         'subject': 'Course 0',
         'group': 'G1',
         'period': '2026-2',
+        'startDate': store.courseStartDate,
+        'endDate': store.courseEndDate,
       };
     } else if (path == 'student_directory/student@example.invalid') {
       if (store.directoryAvailable) {
@@ -1174,6 +1989,11 @@ class _FakeTransaction implements Transaction {
       value = store.existingEnrollment;
     } else if (path == 'courses/course-00/join_requests/student-one') {
       value = store.joinRequest;
+    } else if (path.startsWith('courses/course-00/pending_enrollments/') &&
+        path.contains('/status_events/')) {
+      value = store.pendingStatusEvents[path];
+    } else if (path.startsWith('courses/course-00/pending_enrollments/')) {
+      value = store.pendingDocuments[path];
     } else if (path.startsWith(
       'courses/course-00/enrollments/student-one/status_events/',
     )) {
@@ -1197,6 +2017,9 @@ class _FakeTransaction implements Transaction {
     store.transactionWritePaths.add(reference.path);
     store.transactionWrite = data as Map<String, dynamic>;
     store.transactionWriteCount++;
+    store._transactionOperations.add(
+      _TransactionOperation(reference.path, data as Map<String, dynamic>),
+    );
     return this;
   }
 
@@ -1208,11 +2031,26 @@ class _FakeTransaction implements Transaction {
     store.transactionUpdatePath = reference.path;
     store.transactionUpdatePaths.add(reference.path);
     store.transactionUpdate = data.cast<String, dynamic>();
+    store._transactionOperations.add(
+      _TransactionOperation(
+        reference.path,
+        data.cast<String, dynamic>(),
+        update: true,
+      ),
+    );
     return this;
   }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _TransactionOperation {
+  const _TransactionOperation(this.path, this.data, {this.update = false});
+
+  final String path;
+  final Map<String, dynamic> data;
+  final bool update;
 }
 
 // ignore: subtype_of_sealed_class

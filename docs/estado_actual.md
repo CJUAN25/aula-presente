@@ -1,4 +1,22 @@
-# Estado actual — 14 de noviembre de 2026
+# Estado actual — 15 de noviembre de 2026
+
+## Conjunto funcional 7: actualización de lista desde Excel
+
+Implementación local en `feature/conjunto-7-actualizacion-lista-excel`, basada en `b6cb49ebf2923244a17b7a0d186f03c4c33b7990` (cierre del conjunto 6). Añade comparación de lista completa para docentes, selección explícita de altas y retiros, y autorizaciones pendientes que permiten vincular después a estudiantes existentes por correo y código exactos. Conserva la opción C6 **Solo agregar estudiantes**, la matrícula canónica y el historial; los retiros potenciales comienzan desmarcados y requieren lista completa válida, lectura completa y confirmación. El alumno vincula una autorización únicamente con correo verificado, perfil/código válidos y transacciones protegidas por Rules.
+
+### Ajuste final: historial de matrícula por curso
+
+El propietario reportó que un estudiante reincorporado ya no aparecía en **Retirados e histórico**, aunque su detalle conservaba ingreso, retiro y reincorporación. La causa comprobada en código es que esa lista consulta matrículas cuyo estado canónico actual es `withdrawn`; tras reincorporar, el mismo documento queda `active` y deja correctamente la lista operativa.
+
+Se añadió **Gestionar estudiantes → Historial de matrícula**. Reutiliza el snapshot completo del roster y las consultas existentes, resuelve una fila por identidad estable, prioriza la matrícula canónica sobre una autorización vinculada y abre el mismo detalle que la ficha. Los eventos se leen al entrar al detalle, sin escrituras ni cambios de esquema. **Retirados** sigue mostrando solo matrículas actualmente retiradas.
+
+**Prueba manual reportada por el propietario en TECNO con Firebase real:** en el recorrido principal comprobó las altas desde Excel, el vínculo posterior de un pendiente, la selección de retiros y la reincorporación; el historial individual se conservó. Después probó el ajuste final: el reincorporado aparece una sola vez como **Activo** en **Historial de matrícula**, conserva **Ingreso**, **Retiro confirmado** y **Reincorporación confirmada**, su ficha abre el mismo historial y ya no aparece en **Retirados**. **Historial de matrícula** permite encontrar a una persona sin importar su estado actual; **Retirados** queda para gestionar personas que siguen retiradas. Codex no ejecutó la app en el teléfono ni verificó Firebase real.
+
+**Verificaciones locales tras el ajuste final (antes de este cierre):** `flutter analyze` sin problemas; `flutter test --reporter compact` pasó **281/281**; Firestore Rules Emulator **80/80**; `git diff --check` aprobado con avisos habituales de LF/CRLF; APK debug compilada en `build/app/outputs/flutter-apk/app-debug.apk` (218.606.974 bytes). No contactaron Firebase real.
+
+**Comprobaciones de este cierre:** se revisaron el diff completo respecto al commit base, los fixtures Excel y el destino remoto; se validaron `firestore.indexes.json` y `git diff --check`. Como el cierre solo actualiza documentación, no se repitió la suite ni la compilación.
+
+No se modificaron `firestore.rules` ni `firestore.indexes.json` durante el ajuste final de historial ni durante este cierre. Ambos archivos sí contienen los cambios del conjunto 7 respecto a la base C6 y forman parte de la rama. No se ejecutó `firebase deploy`. Este cierre publica únicamente la rama feature; no hace merge ni modifica `main` o `v0.1.0-entrega-1`. Los detalles están en [seguimiento_conjunto_7.md](seguimiento_conjunto_7.md) y la guía reproducible en [activacion_conjunto_7.md](activacion_conjunto_7.md).
 
 ## Conjunto funcional 6: altas por Excel
 

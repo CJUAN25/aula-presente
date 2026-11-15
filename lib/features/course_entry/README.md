@@ -9,3 +9,5 @@ El docente genera o reemplaza con duración elegida, edita el vencimiento sin ca
 Las solicitudes estables usan `courses/{courseId}/join_requests/{studentUid}`. La aprobación y matrícula canónica siguen atómicas e inmutables. Gestionar invitaciones no modifica roles, solicitudes previas ni matrículas. El diagnóstico debug solo muestra paso y categoría/código del error, sin identificadores.
 
 Contrato, evidencia y pruebas: [seguimiento](../../../docs/seguimiento_conjunto_4.md). Despliegue manual y prueba en el TECNO: [activación](../../../docs/activacion_conjunto_4.md).
+
+Cuando existe una autorización C7 para el mismo curso, correo y código, aprobar la solicitud C4 reutiliza la matrícula canónica y enlaza el pendiente con su evento en la misma transacción. La identidad se coteja por curso, UID, correo y código; el nombre se conserva como dato descriptivo y no se reescribe al enlazar. Una solicitud que no coincida conserva su estado para revisión docente; el estudiante no obtiene permiso general para resolver solicitudes.

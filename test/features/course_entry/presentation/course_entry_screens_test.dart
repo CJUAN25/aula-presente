@@ -290,6 +290,7 @@ class _EnrollmentRepository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    AcademicDate? effectiveStartDate,
     bool resolvePendingWhenAlreadyEnrolled = true,
   }) async =>
       EnrollmentResult(enrollment: _enrollment(), alreadyEnrolled: false);
@@ -313,6 +314,7 @@ class _EnrollmentRepository implements EnrollmentRepository {
     required Enrollment expected,
     required String nextStatus,
     required String operationId,
+    AcademicDate? effectiveDate,
   }) async =>
       EnrollmentStatusChangeResult(enrollment: expected, alreadyApplied: false);
 
@@ -344,6 +346,9 @@ class _EnrollmentRepository implements EnrollmentRepository {
 
   @override
   Future<Course> getMyEnrolledCourse(String courseId) async => _course();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 Widget _app(Widget screen, {double scale = 1}) => MaterialApp(

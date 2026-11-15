@@ -26,6 +26,7 @@ import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_status_change.dart';
 import 'package:aula_presente/features/enrollments/domain/student_candidate.dart';
+import 'package:aula_presente/features/schedule/domain/academic_date.dart';
 
 class _FakeAuthRepository implements AuthRepository {
   AuthAccess restoreResult = const AuthAccess(
@@ -310,6 +311,7 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
   Future<EnrollmentResult> enrollStudent({
     required String courseId,
     required StudentCandidate candidate,
+    AcademicDate? effectiveStartDate,
     bool resolvePendingWhenAlreadyEnrolled = true,
   }) async => throw UnimplementedError();
 
@@ -332,6 +334,7 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
     required Enrollment expected,
     required String nextStatus,
     required String operationId,
+    AcademicDate? effectiveDate,
   }) async => throw UnimplementedError();
 
   @override
@@ -360,6 +363,9 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
   @override
   Future<Course> getMyEnrolledCourse(String courseId) async =>
       throw UnimplementedError();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _FakeCourseRepository implements CourseRepository {
