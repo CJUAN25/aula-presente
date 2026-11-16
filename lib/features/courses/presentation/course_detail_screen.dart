@@ -1,6 +1,12 @@
+import '../../attendance/application/attendance_occurrence_resolver.dart';
+import '../../attendance/domain/attendance_calendar_change.dart';
+import '../../attendance/domain/attendance_occurrence.dart';
+import '../../attendance/presentation/attendance_presentation_components.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../../app/theme/app_theme.dart';
+import '../../../app/attendance_repository_scope.dart';
 import '../../../app/enrollment_repository_scope.dart';
 import '../../../app/enrollment_route_observer.dart';
 import '../../enrollments/domain/enrollment_failure.dart';
@@ -10,6 +16,7 @@ import '../../enrollments/presentation/teacher_enrollment_screens.dart';
 import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/planned_meeting.dart';
 import '../../schedule/domain/planned_meeting_generator.dart';
+import '../../attendance/presentation/teacher_attendance_screens.dart';
 import '../domain/course.dart';
 import 'course_presentation_components.dart';
 
@@ -97,6 +104,28 @@ class CourseDetailScreen extends StatelessWidget {
             message: 'Agrega cuentas existentes y consulta estudiantes inscritos. Excel e invitaciones estarán disponibles después.',
             icon: Icons.group_add_outlined,
           ),
+          const SizedBox(height: 18),
+          CourseSectionHeading(
+            title: 'Asistencia',
+            trailing: TextButton.icon(
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => TeacherAttendanceScreen(
+                    course: course,
+                    repository: AttendanceRepositoryScope.read(context),
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.fact_check_outlined, size: 18),
+              label: const Text('Gestionar'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const CourseStateCard(
+            title: 'Registro manual por encuentro o por horas',
+            message: 'Prepara sesiones, toma lista, finaliza el registro y corrige resultados con historial. Los estudiantes consultan únicamente sus propios resultados publicados.',
+            icon: Icons.fact_check_outlined,
+          ),
           const SizedBox(height: 20),
           CourseSectionHeading(
             title: 'Horario semanal',
@@ -164,7 +193,7 @@ class CourseDetailScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    '${meetings.length} encuentros previstos. Aún no se crean sesiones ni se registra asistencia.',
+                    '${meetings.length} encuentros previstos desde el horario. La asistencia se gestiona por separado en el panel del curso.',
                     style: const TextStyle(
                       color: AppColors.muted,
                       height: 1.45,
@@ -198,6 +227,7 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
     with WidgetsBindingObserver, RouteAware {
   late final String? _sessionUid = widget.studentRepository?.currentUid;
   ModalRoute<void>? _subscribedRoute;
+  List<AttendanceCalendarChange> _calendarChanges = const [];
   Course? _authorizedCourse;
   Object? _accessError;
   bool _loadingAccess = false;
@@ -292,7 +322,23 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
         setState(() => _withdrawn = true);
         return;
       }
-      setState(() => _authorizedCourse = widget.course);
+      final scope = context
+          .getInheritedWidgetOfExactType<AttendanceRepositoryScope>();
+      if (scope == null) {
+        throw StateError('AttendanceRepositoryScope is missing.');
+      }
+      final changes = await scope.repository.listCalendarChanges(
+        courseId: widget.course.id,
+        forStudent: true,
+      );
+      if (!mounted || epoch != _accessEpoch) return;
+      if (repository.currentUid != sessionUid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.unauthenticated);
+      }
+      setState(() {
+        _authorizedCourse = widget.course;
+        _calendarChanges = changes;
+      });
     } catch (error) {
       if (mounted && epoch == _accessEpoch) {
         setState(() {
@@ -347,6 +393,11 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
       courseId: authorizedCourse.id,
       schedule: authorizedCourse.schedule,
     );
+    final occurrences = AttendanceOccurrenceResolver.resolve(
+      courseId: authorizedCourse.id,
+      plannedMeetings: meetings,
+      changes: _calendarChanges,
+    );
     return CoursePage(
       title: 'Calendario del curso',
       leading: IconButton(
@@ -354,7 +405,7 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
         onPressed: () => Navigator.of(context).maybePop(),
         icon: const Icon(Icons.arrow_back),
       ),
-      child: meetings.isEmpty
+      child: occurrences.isEmpty
           ? const Center(
               child: Padding(
                 padding: EdgeInsets.all(24),
@@ -368,7 +419,7 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
           : ListView.builder(
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-              itemCount: meetings.length + 1,
+              itemCount: occurrences.length + 1,
               itemBuilder: (context, index) {
                 if (index == 0) {
                   return Padding(
@@ -383,10 +434,31 @@ class _CourseCalendarScreenState extends State<CourseCalendarScreen>
                         ),
                         const SizedBox(height: 14),
                         CourseStatePill(
-                          label: '${meetings.length} previstos',
+                          label:
+                              '${occurrences.where((e) => e.kind != AttendanceOccurrenceKind.cancelled).length} previstos',
                           icon: Icons.event_note_outlined,
                         ),
                       ],
+                    ),
+                  );
+                }
+                final occurrence = occurrences[index - 1];
+                if (widget.studentRepository != null) {
+                  final status = switch (occurrence.kind) {
+                    AttendanceOccurrenceKind.cancelled => 'Cancelada',
+                    AttendanceOccurrenceKind.rescheduled => 'Reprogramada',
+                    AttendanceOccurrenceKind.additional => 'Adicional',
+                    AttendanceOccurrenceKind.planned => 'Prevista',
+                  };
+                  return Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.event_outlined),
+                      title: Text(
+                        '$status · ${attendanceDateLabel(occurrence.effectiveDate)}',
+                      ),
+                      subtitle: Text(
+                        '${attendanceTimeLabel(occurrence.startMinute)}–${attendanceTimeLabel(occurrence.endMinute)} · America/Bogota',
+                      ),
                     ),
                   );
                 }

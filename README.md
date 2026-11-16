@@ -1,93 +1,88 @@
 # Aula Presente
 
-**Autor:** Juan David Cerón
+**Desarrollado por Juan David Cerón, estudiante de la Universidad de la Amazonia.**
 
-Aula Presente busca facilitar el control de asistencia y la consulta de información académica para estudiantes, docentes y administradores. La aplicación continúa **en desarrollo**; el registro de asistencia todavía está pendiente.
+Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-## Alcance de esta entrega
+Esta entrega se comparte en la rama [`feature/conjunto-8-asistencia-manual`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual). El conjunto 8 está listo para revisión de código. La nueva corrección de reintento ya pasó las pruebas locales, pero todavía falta instalar esta APK y repetir los encuentros indicados en el seguimiento desde el TECNO. Para usar esa corrección con Firebase real también debe estar publicada la versión actual de las reglas de Firestore.
 
-El primer entregable permite evaluar:
+## Qué se puede hacer
 
-- Registro de una cuenta.
-- Verificación del correo.
-- Inicio de sesión.
-- Recuperación de contraseña mediante un enlace enviado por Firebase.
-- Cierre de sesión.
+### Docente
 
-También existen avances de permisos docentes, cursos con horarios y calendario previsto, y registros privados de prueba. No son requisitos de esta evaluación. La inscripción manual y consulta de materias están en `feature/conjunto-3-inscripciones`; el ingreso por código temporal y las decisiones docentes están en `feature/conjunto-4-ingreso-por-codigo`. El propietario informó que publicó las reglas e índices necesarios y comprobó en su TECNO el ingreso por código, la solicitud, la aprobación y la aparición de la materia y su horario. Codex no ejecutó esa prueba. Estas funciones no están en la APK de la release del primer entregable ni en el código publicado de `main`. Las sesiones de asistencia, QR, Bluetooth, justificaciones y reportes quedan para entregas posteriores.
+- Crear y organizar cursos con horario y modalidad de asistencia por encuentro o por horas.
+- Inscribir estudiantes manualmente, mediante solicitud de ingreso o con una lista de Excel.
+- Preparar la lista de una clase, marcar **Presente** o **Ausente** y finalizar el registro.
+- Continuar una asistencia incompleta, corregir una marca con historial y anular una sesión conservando el historial.
+- Reprogramar o cancelar clases antes de iniciar su asistencia.
 
-## Opción rápida: probar la APK
+### Estudiante
 
-Abre la [release del primer entregable](https://github.com/CJUAN25/aula-presente/releases/tag/v0.1.0-entrega-1).
+- Crear una cuenta, verificar el correo, ingresar, recuperar la contraseña y cerrar sesión.
+- Solicitar ingreso a un curso y consultar sus materias activas y su calendario previsto.
+- Consultar sus propios registros de asistencia publicados y el resumen de unidades.
 
-1. Inicia sesión en GitHub con una cuenta autorizada para este **repositorio privado**.
-2. Descarga **`Aula-Presente-Entrega-1.apk`** desde los archivos adjuntos de la release.
-3. Abre el emulador Android Pixel con Android **7.0 / API 24 o superior**.
-4. Arrastra la APK sobre la pantalla del emulador y espera la instalación.
-5. Abre Aula Presente desde la lista de aplicaciones; el nombre del lanzador es **`aula_presente`**.
+Cada cuenta nueva empieza con el rol de estudiante. La app no permite que una persona se asigne permisos docentes o administrativos desde el cliente.
 
-La APK es de **depuración para evaluación académica**, ocupa aproximadamente **159 MB** e incluye **ARM64 y x86_64**, además de ARM de 32 bits. No requiere compilar el proyecto ni mantener VS Code ejecutándolo. Sí necesita el emulador abierto e Internet. La instalación en la Mac del docente queda pendiente de su comprobación.
+## Cuentas para probar
 
-## Probar la autenticación
+Usa dos cuentas distintas cuyos correos puedas consultar. No hay cuentas de demostración ni contraseñas publicadas en este repositorio.
 
-Usa tu propio correo y asegúrate de poder consultar su buzón. Puedes abrir los mensajes en la Mac o en otro dispositivo y después volver a la app del emulador.
+- **Estudiante:** regístrate desde la app y verifica el correo. Para que el curso aparezca en **Mis materias**, el docente debe inscribir esta cuenta o aprobar su solicitud de ingreso.
+- **Docente:** regístrate, verifica el correo y envía la solicitud de acceso docente desde la app. Una cuenta administradora ya autorizada debe aprobarla. También puedes usar una cuenta docente verificada que ya tenga ese permiso.
 
-1. Pulsa **Entrar con mi cuenta** → **Crear mi cuenta**. Completa nombre, correo y contraseña de al menos ocho caracteres; confírmala y pulsa **Crear cuenta y verificar**. El código estudiantil es opcional.
-2. Abre el enlace de verificación recibido por correo. Revisa correo no deseado si no aparece.
-3. Vuelve a la app y pulsa **Ya verifiqué mi correo**. Si necesitas otro mensaje, usa **Reenviar enlace** cuando termine la espera indicada.
-4. Pulsa **Cerrar sesión** y vuelve a iniciar sesión mediante **Entrar**.
-5. Cierra sesión, selecciona **Olvidé mi contraseña**, escribe tu correo y pulsa **Enviar enlace**.
-6. Abre el enlace recibido y establece la contraseña nueva en la **página web de Firebase**. Regresa a la app, pulsa **Volver al inicio de sesión** e ingresa con la nueva contraseña mediante **Entrar**.
-7. Pulsa **Cerrar sesión** para terminar.
+Los roles no se asignan desde el formulario. La [guía de acceso docente](docs/activacion_acceso_docente.md) explica el otorgamiento confiable; las [guías de ingreso y matrícula](docs/activacion_conjunto_4.md) describen cómo vincular al estudiante.
 
-Una cuenta nueva obtiene el rol **estudiante** (`student`). No necesita aprobación docente ni acceso a Firebase Console para evaluar estos flujos. Aunque el campo dice «correo institucional», acepta cualquier correo válido. La confirmación de recuperación es genérica y no revela si una cuenta existe. No se incluyen credenciales de usuarios.
+## Probar el flujo principal
 
-## Revisar y ejecutar el código
+Para la prueba usa un curso de ensayo con un docente propietario y un estudiante con matrícula activa. Si la clase aún no llega a su fecha y hora efectiva, se puede preparar la lista, pero no iniciar el registro.
 
-El proyecto utiliza **Flutter y Dart**, **Firebase Authentication** para las cuentas y **Cloud Firestore** para los perfiles y datos. Solo **Android** tiene configuración lista en esta entrega; iOS, Web y macOS no son destinos preparados.
+1. Ingresa como docente y abre **Mis cursos → curso → Asistencia → Gestionar**.
+2. Elige una clase cuya hora efectiva ya haya comenzado. Pulsa **Registrar asistencia**; si la lista está incompleta, pulsa **Completar lista**.
+3. Marca al estudiante como **Presente** o **Ausente** y pulsa **Finalizar**. Confirma las pendientes si la app lo solicita.
+4. Cierra sesión e ingresa con la cuenta del estudiante.
+5. Abre **Mis materias → curso → Consultar asistencia**. El estudiante solo puede consultar su propio registro una vez publicado. Si todavía no aparece, vuelve a abrir o actualizar la consulta mientras termina la publicación por filas.
 
-Para compilar se necesita acceso autorizado al repositorio privado, Git, Flutter y las herramientas Android. El entorno comprobado usa Flutter **3.47.1** y Dart **3.13.1**. El proyecto exige Dart `^3.13.1` (desde 3.13.1 hasta antes de 4.0.0), sin un mínimo de Flutter declarado por separado. Con el Flutter de referencia utiliza SDK Android **36**, NDK **28.2.13676358** y dispositivo API **24 o superior**. El equipo de desarrollo usó el JBR **25.0.2** de Android Studio; el código Android configura compatibilidad Java 17. Más detalles en la [guía técnica de la entrega](docs/entrega_1.md).
+La [guía de activación C8](docs/activacion_conjunto_8.md) conserva recorridos por encuentro y por horas, y el [seguimiento C8](docs/seguimiento_conjunto_8.md) indica cómo retomar las tres sesiones incompletas del 15 y 16 de noviembre.
 
-Desde una terminal de la Mac:
+## Clonar y ejecutar en Android
+
+Se necesita Git, Flutter con Dart, Android Studio con el SDK y las herramientas de Android, y un emulador o dispositivo Android. La versión usada para las verificaciones de esta rama fue Flutter **3.47.1** y Dart **3.13.1**. Android es la plataforma configurada en este proyecto.
 
 ```bash
-git clone https://github.com/CJUAN25/aula-presente.git
+git clone --branch feature/conjunto-8-asistencia-manual https://github.com/CJUAN25/aula-presente.git
 cd aula-presente
 flutter doctor -v
 flutter pub get
 flutter devices
-flutter run -d ID_DEL_EMULADOR
+flutter run -d ID_DEL_DISPOSITIVO
 ```
 
-Sustituye `ID_DEL_EMULADOR` por el identificador Android que muestre `flutter devices`. Resuelve los avisos Android de `flutter doctor`; si solicita licencias, ejecuta `flutter doctor --android-licenses`. Las herramientas generan `android/local.properties` para cada equipo: no copies rutas del SDK de otra máquina. La compilación documentada se comprobó en Windows; no se ha compilado en la Mac del docente.
+Reemplaza `ID_DEL_DISPOSITIVO` por uno de los identificadores que muestre `flutter devices`. Si Android solicita aceptar licencias, ejecuta `flutter doctor --android-licenses`. El proyecto requiere Android SDK 36, NDK 28.2.13676358 y es compatible desde Android 7.0 (API 24). Android Studio genera `android/local.properties` para cada equipo; no copies rutas del SDK de otra computadora.
 
-La configuración cliente Firebase está incluida en [lib/firebase_options.dart](lib/firebase_options.dart) y [android/app/google-services.json](android/app/google-services.json). La app usa el proyecto existente **`aula-presente-movil-juan-2026`**. Para evaluar esta entrega no necesitas crear otro proyecto Firebase, entrar a su consola ni desplegar reglas. Necesitas Internet y acceso a tu correo.
+Para revisar o compilar localmente:
 
-## Estructura y documentación
+```bash
+flutter analyze
+flutter test
+flutter build apk --debug
+```
 
-- [lib/main.dart](lib/main.dart): entrada e inicialización de Firebase.
-- [lib/app/](lib/app/): configuración general y tema.
-- [lib/features/](lib/features/): autenticación y módulos del producto.
-- [assets/](assets/): iconos, fuente Manrope y licencia.
-- [android/](android/): proyecto Android y wrapper Gradle.
-- [test/](test/): pruebas Dart y Flutter.
-- [docs/](docs/): documentación y seguimiento.
+La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Compilar no equivale a probar la app en el teléfono ni a comprobar las reglas publicadas.
 
-Guías: [entrega y trazabilidad de la APK](docs/entrega_1.md), [arquitectura](docs/arquitectura.md), [estado actual](docs/estado_actual.md), [seguimiento conjunto 3](docs/seguimiento_conjunto_3.md), [seguimiento conjunto 4](docs/seguimiento_conjunto_4.md), [activación manual del conjunto 4](docs/activacion_conjunto_4.md), [autenticación](lib/features/auth/README.md) y [desarrollo](AGENTS.md).
+## Firebase
 
-El **emulador Android Pixel** ejecuta la app. El [emulador local de Firebase](tools/firestore_rules_tests/README.md) sirve para pruebas de permisos durante el desarrollo y no es necesario para evaluar la autenticación con el servicio existente. [GUIA_DOCUMENTACION.md](GUIA_DOCUMENTACION.md) corresponde a un ZIP histórico y no sustituye el proyecto ejecutable.
+La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-## Verificaciones
+La rama contiene cambios en `firestore.rules` para C8 y para recuperar nóminas incompletas. La versión actual de esas reglas todavía debe publicarse en el proyecto existente antes de probar la corrección con Firebase real. El índice compuesto de `attendance_records` está declarado en `firestore.indexes.json`; el propietario reportó que ya aparece **Habilitado**, así que no se solicita volver a desplegar índices. En esta entrega no se desplegó Firebase ni se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento; solo una persona autorizada debe publicar reglas.
 
-Desde un clon limpio del commit [`56c0491`](https://github.com/CJUAN25/aula-presente/commit/56c0491e59e3a52b1601d75300b711dbe454ce9f), sin copiar archivos del proyecto original:
+## Documentación
 
-| Comando | Resultado |
-| --- | --- |
-| `flutter pub get` | Dependencias resueltas. |
-| `flutter analyze` | Sin problemas. |
-| `flutter test` | 108 pruebas aprobadas. |
-| `flutter build apk --debug` | APK generada. |
+- [Arquitectura y esquema](docs/arquitectura.md)
+- [Estado actual del proyecto](docs/estado_actual.md)
+- [Seguimiento, diagnóstico y pruebas de C8](docs/seguimiento_conjunto_8.md)
+- [Activación y recorrido manual de C8](docs/activacion_conjunto_8.md)
+- [Guías de acceso docente](docs/activacion_acceso_docente.md), [cursos](docs/activacion_conjunto_2.md), [matrícula por código](docs/activacion_conjunto_4.md), [retiro y reincorporación](docs/activacion_conjunto_5.md) e [importación de Excel](docs/activacion_conjunto_6.md)
+- [Pruebas de reglas con el emulador](tools/firestore_rules_tests/README.md)
 
-La APK adjunta se reutilizó de ese clon y se inspeccionaron paquete, Android mínimo, arquitecturas y firma. La etiqueta `v0.1.0-entrega-1` apunta al código compilado; `main` puede contener documentación posterior.
-
-Las pruebas Dart/Flutter usan datos locales y dobles de repositorios o del SDK. La suite de permisos de Firebase usa JavaScript contra un emulador; no ejecuta el repositorio Dart contra Firebase real. La compilación y estas pruebas **no equivalen a una nueva prueba de autenticación real**, envío de correos o instalación en el Pixel del docente. Los reportes manuales del usuario se registran por separado en [el estado del proyecto](docs/estado_actual.md).
+En la rama C8, las verificaciones locales dirigidas pasaron: `flutter analyze`, **53/53** pruebas Flutter afectadas y **99/99** pruebas de reglas en el emulador. La APK debug también compiló. El seguimiento explica qué se verificó localmente, qué pruebas reales ya reportó el propietario y qué queda pendiente en el TECNO.

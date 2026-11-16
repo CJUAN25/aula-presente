@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:aula_presente/features/courses/domain/course.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/schedule/application/schedule_conflict_detector.dart';
 import 'package:aula_presente/features/schedule/application/schedule_conflict_diagnostic.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
@@ -102,6 +103,7 @@ CourseDraft _draft() => CourseDraft(
   group: 'private-group',
   period: 'private-period',
   program: 'private-program',
+  attendanceMode: AttendanceMode.meeting,
   schedule: _schedule(),
 );
 

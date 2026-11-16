@@ -21,6 +21,7 @@ import 'package:aula_presente/features/course_entry/domain/course_invitation.dar
 import 'package:aula_presente/features/course_entry/domain/course_preview.dart';
 import 'package:aula_presente/features/course_entry/domain/join_request.dart';
 import 'package:aula_presente/features/course_entry/domain/join_request_page.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_repository.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_page.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
@@ -225,7 +226,13 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
   courseRepository: _FakeCourseRepository(),
   enrollmentRepository: _FakeEnrollmentRepository(),
   courseEntryRepository: _FakeCourseEntryRepository(),
+  attendanceRepository: _FakeAttendanceRepository(),
 );
+
+class _FakeAttendanceRepository implements AttendanceRepository {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 class _FakeCourseEntryRepository implements CourseEntryRepository {
   @override

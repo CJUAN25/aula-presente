@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../../../app/enrollment_route_observer.dart';
+import '../../../app/attendance_repository_scope.dart';
 import '../../../app/course_entry_repository_scope.dart';
 import '../../../app/theme/app_theme.dart';
 import '../../course_entry/presentation/student_course_entry_screens.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_detail_screen.dart';
+import '../../attendance/presentation/student_attendance_screen.dart';
 import '../../courses/presentation/course_presentation_components.dart';
 import '../../schedule/domain/planned_meeting.dart';
 import '../../schedule/domain/planned_meeting_generator.dart';
@@ -554,6 +556,19 @@ class _StudentEnrolledCourseScreenState
                   builder: (_) => CourseCalendarScreen(
                     course: course,
                     studentRepository: widget.repository,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            CourseSecondaryButton(
+              label: 'Consultar asistencia',
+              icon: Icons.fact_check_outlined,
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => StudentAttendanceScreen(
+                    course: course,
+                    repository: AttendanceRepositoryScope.read(context),
                   ),
                 ),
               ),

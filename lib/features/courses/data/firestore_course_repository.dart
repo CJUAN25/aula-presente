@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/course_schedule.dart';
 import '../../schedule/domain/weekly_block.dart';
+import '../../attendance/domain/attendance_mode.dart';
 import '../domain/course.dart';
 import '../domain/course_creation_result.dart';
 import '../domain/course_cursor.dart';
@@ -206,8 +207,14 @@ class FirestoreCourseRepository implements CourseRepository {
     try {
       final normalizedDraft = draft.normalized();
       _validateDocumentId(normalizedDraft.id);
+      if (normalizedDraft.attendanceMode == null) {
+        throw const CourseFailure(CourseFailureKind.invalidCourse);
+      }
       final uid = await _requireTeacherUid();
       final reference = _courses.doc(normalizedDraft.id);
+      final attendanceConfigReference = reference
+          .collection('attendance_config')
+          .doc('current');
       final expectedFields = normalizedDraft.canonicalFields;
       final expectedBlockDocuments =
           normalizedDraft.canonicalWeeklyBlockDocuments;
@@ -220,6 +227,9 @@ class FirestoreCourseRepository implements CourseRepository {
       ) async {
         _requireSameUser(uid);
         final existing = await transaction.get(reference);
+        final existingAttendanceConfig = await transaction.get(
+          attendanceConfigReference,
+        );
         _requireSameUser(uid);
 
         if (existing.exists) {
@@ -253,6 +263,11 @@ class FirestoreCourseRepository implements CourseRepository {
               !_canonicalBlockDocumentsEqual(
                 existingBlockDocuments,
                 expectedBlockDocuments,
+              ) ||
+              !_attendanceConfigMatches(
+                existingAttendanceConfig.data(),
+                normalizedDraft.attendanceMode,
+                uid,
               )) {
             throw const CourseFailure(CourseFailureKind.idempotencyConflict);
           }
@@ -278,6 +293,9 @@ class FirestoreCourseRepository implements CourseRepository {
         if (existingBlockDocuments.any((document) => document.exists)) {
           throw const CourseFailure(CourseFailureKind.idempotencyConflict);
         }
+        if (existingAttendanceConfig.exists) {
+          throw const CourseFailure(CourseFailureKind.idempotencyConflict);
+        }
 
         _requireSameUser(uid);
         transaction.set(reference, {
@@ -293,6 +311,16 @@ class FirestoreCourseRepository implements CourseRepository {
             entry.value,
           );
         }
+        transaction.set(attendanceConfigReference, {
+          'schemaVersion': 1,
+          'mode': normalizedDraft.attendanceMode!.value,
+          'sessionCount': 0,
+          'lastSessionId': null,
+          'createdAt': FieldValue.serverTimestamp(),
+          'createdBy': uid,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'updatedBy': uid,
+        });
         return CourseCreationResult(
           course: _courseFromDraft(normalizedDraft, ownerUid: uid),
           wasAlreadyCreated: false,
@@ -308,6 +336,22 @@ class FirestoreCourseRepository implements CourseRepository {
       throw CourseFailure(CourseFailureKind.invalidCourse, cause: error);
     }
   }
+
+  bool _attendanceConfigMatches(
+    Map<String, dynamic>? data,
+    AttendanceMode? expectedMode,
+    String uid,
+  ) =>
+      data != null &&
+      data['schemaVersion'] == 1 &&
+      data['mode'] == expectedMode?.value &&
+      data['sessionCount'] is int &&
+      (data['sessionCount'] as int) >= 0 &&
+      data['lastSessionId'] == null &&
+      data['createdBy'] == uid &&
+      data['updatedBy'] == uid &&
+      data['createdAt'] is Timestamp &&
+      data['updatedAt'] is Timestamp;
 
   Future<String> _requireTeacherUid() async {
     final user = _auth.currentUser;

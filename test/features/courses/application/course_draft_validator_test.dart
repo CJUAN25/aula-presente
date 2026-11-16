@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aula_presente/features/courses/application/course_draft_validator.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
 import 'package:aula_presente/features/schedule/domain/course_schedule.dart';
 import 'package:aula_presente/features/schedule/domain/weekly_block.dart';
@@ -12,12 +13,14 @@ void main() {
     String group = ' 2 ',
     String period = '2026-2',
     String program = ' Ingeniería de Sistemas ',
+    AttendanceMode? attendanceMode = AttendanceMode.meeting,
   }) => CourseDraft(
     id: id,
     subject: subject,
     group: group,
     period: period,
     program: program,
+    attendanceMode: attendanceMode,
     schedule: CourseSchedule(
       startDate: AcademicDate(year: 2026, month: 10, day: 26),
       endDate: AcademicDate(year: 2026, month: 10, day: 26),
@@ -55,6 +58,17 @@ void main() {
     expect(
       issues.where((issue) => issue.field == 'program').map((e) => e.code),
       contains('text_too_long'),
+    );
+  });
+
+  test('requires an explicit attendance mode for a new course', () {
+    final issues = CourseDraftValidator.validate(draft(attendanceMode: null));
+
+    expect(
+      issues
+          .where((issue) => issue.field == 'attendanceMode')
+          .map((e) => e.code),
+      ['attendance_mode_required'],
     );
   });
 
@@ -118,6 +132,7 @@ void main() {
         group: '2',
         period: '2026-2',
         program: 'Ingeniería',
+        attendanceMode: AttendanceMode.meeting,
         schedule: CourseSchedule(
           startDate: startDate,
           endDate: endDate,

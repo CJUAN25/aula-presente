@@ -815,6 +815,8 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
               final linkedAt = pendingData['linkedAt'];
               final lastChangedAt = pendingData['lastStatusChangedAt'];
               final changedAt = linkEvent?['changedAt'];
+              final hasPriorStartDate =
+                  linkEvent?.containsKey('fromEffectiveStartDate') ?? false;
               if (pendingData['studentUid'] != studentUid ||
                   pendingData['linkedAt'] is! Timestamp ||
                   pendingData['lastEventId'] !=
@@ -822,7 +824,8 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
                   pendingData['lastStatusChangedAt'] is! Timestamp ||
                   !pendingLinkEventSnapshot.exists ||
                   linkEvent == null ||
-                  linkEvent.keys.toSet().length != 5 ||
+                  linkEvent.keys.toSet().length !=
+                      (hasPriorStartDate ? 6 : 5) ||
                   !linkEvent.keys.toSet().containsAll({
                     'fromStatus',
                     'toStatus',
@@ -830,12 +833,25 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
                     'changedAt',
                     'changedBy',
                   }) ||
+                  linkEvent.keys.toSet().difference({
+                    'fromStatus',
+                    'toStatus',
+                    'effectiveDate',
+                    'changedAt',
+                    'changedBy',
+                    'fromEffectiveStartDate',
+                  }).isNotEmpty ||
                   linkEvent['fromStatus'] != 'pending' ||
                   linkEvent['toStatus'] != 'linked' ||
                   linkEvent['effectiveDate'] is! Timestamp ||
                   !(linkEvent['effectiveDate'] as Timestamp)
                       .toDate()
                       .isAtSameMomentAs(effectiveDate.toDate()) ||
+                  (hasPriorStartDate &&
+                      (linkEvent['fromEffectiveStartDate'] is! Timestamp ||
+                          !(linkEvent['fromEffectiveStartDate'] as Timestamp)
+                              .toDate()
+                              .isAtSameMomentAs(effectiveDate.toDate()))) ||
                   changedAt is! Timestamp ||
                   !changedAt.toDate().isAtSameMomentAs(
                     (lastChangedAt as Timestamp).toDate(),
@@ -931,6 +947,7 @@ class FirestoreCourseEntryRepository implements CourseEntryRepository {
           transaction.set(_pendingLinkEvent(courseId, email), {
             'fromStatus': 'pending',
             'toStatus': 'linked',
+            'fromEffectiveStartDate': currentPending['effectiveStartDate'],
             'effectiveDate': currentPending['effectiveStartDate'],
             'changedAt': FieldValue.serverTimestamp(),
             'changedBy': uid,

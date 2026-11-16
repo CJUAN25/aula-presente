@@ -43,6 +43,15 @@ abstract final class CourseDraftValidator {
       120,
       'Escribe el programa.',
     );
+    if (draft.attendanceMode == null) {
+      issues.add(
+        const CourseValidationIssue(
+          code: 'attendance_mode_required',
+          field: 'attendanceMode',
+          message: 'Elige cómo se contarán las faltas de este curso.',
+        ),
+      );
+    }
 
     for (final issue in CourseScheduleValidator.validate(draft.schedule)) {
       issues.add(

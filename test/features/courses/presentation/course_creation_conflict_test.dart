@@ -240,6 +240,7 @@ Future<void> _openReview(
   await tester.enterText(fields.at(1), '01');
   await tester.enterText(fields.at(2), '2026-2');
   await tester.enterText(fields.at(3), 'Ingeniería');
+  await _tapVisible(tester, find.text('Por encuentro'));
   await tester.tap(find.text('Definir calendario'));
   await tester.pumpAndSettle();
 

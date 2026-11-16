@@ -1,3 +1,8 @@
+import 'package:aula_presente/features/attendance/domain/attendance_calendar_change.dart';
+
+import '../../../helpers/calendar_attendance_stub.dart';
+
+import 'package:aula_presente/app/attendance_repository_scope.dart';
 import 'package:aula_presente/app/enrollment_route_observer.dart';
 import 'package:aula_presente/app/theme/app_theme.dart';
 import 'package:aula_presente/features/courses/domain/course.dart';
@@ -70,9 +75,17 @@ class _EnrollmentAccess implements EnrollmentRepository {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-Future<void> _pump(WidgetTester tester, Widget home) async {
+Future<void> _pump(
+  WidgetTester tester,
+  Widget home, {
+  List<AttendanceCalendarChange> changes = const [],
+}) async {
   await tester.pumpWidget(
     MaterialApp(
+      builder: (context, child) => AttendanceRepositoryScope(
+        repository: CalendarAttendanceStub(changes),
+        child: child!,
+      ),
       theme: AppTheme.dark,
       navigatorObservers: [aulaPresenteRouteObserver],
       home: home,
@@ -82,6 +95,51 @@ Future<void> _pump(WidgetTester tester, Widget home) async {
 }
 
 void main() {
+  testWidgets(
+    'student calendar shows cancellation and effective reschedule once without reasons',
+    (tester) async {
+      final course = _course();
+      final meetings = generatePlannedMeetings(
+        courseId: course.id,
+        schedule: course.schedule,
+      );
+      await _pump(
+        tester,
+        CourseCalendarScreen(
+          course: course,
+          studentRepository: _EnrollmentAccess(),
+        ),
+        changes: [
+          AttendanceCalendarChange(
+            occurrenceId: meetings[0].id,
+            kind: AttendanceCalendarChangeKind.cancelled,
+            originalDate: meetings[0].date,
+            effectiveDate: meetings[0].date,
+            startMinute: 480,
+            endMinute: 540,
+            reason: '',
+            version: 1,
+          ),
+          AttendanceCalendarChange(
+            occurrenceId: meetings[1].id,
+            kind: AttendanceCalendarChangeKind.rescheduled,
+            originalDate: meetings[1].date,
+            effectiveDate: AcademicDate(year: 2026, month: 11, day: 10),
+            startMinute: 600,
+            endMinute: 660,
+            reason: '',
+            version: 1,
+          ),
+        ],
+      );
+      expect(find.text('Cancelada · 02/11/2026'), findsOneWidget);
+      expect(find.text('Reprogramada · 10/11/2026'), findsOneWidget);
+      expect(find.text('10:00–11:00 · America/Bogota'), findsOneWidget);
+      expect(find.textContaining('09/11/2026'), findsNothing);
+      expect(find.text('1 previstos'), findsOneWidget);
+    },
+  );
+
   testWidgets(
     'calendario estudiante oculta horario al reanudar sin matrícula activa',
     (tester) async {

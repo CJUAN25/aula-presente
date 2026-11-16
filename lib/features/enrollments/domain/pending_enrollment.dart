@@ -57,12 +57,17 @@ class PendingEnrollmentStatusEvent {
     required this.effectiveDate,
     required this.changedAt,
     required this.changedBy,
+    this.fromEffectiveStartDate,
   });
 
   final String operationId;
   final String fromStatus;
   final String toStatus;
   final AcademicDate effectiveDate;
+
+  /// Effective start date on the pending document before this transition.
+  /// Null for historical events written before this audit field was added.
+  final AcademicDate? fromEffectiveStartDate;
   final DateTime changedAt;
   final String changedBy;
 }

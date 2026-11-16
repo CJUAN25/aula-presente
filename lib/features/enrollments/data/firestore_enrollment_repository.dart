@@ -82,6 +82,7 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
     'changedAt',
     'changedBy',
   };
+  static const _optionalPendingEventKeys = {'fromEffectiveStartDate'};
   static const _directoryKeys = {
     'uid',
     'name',
@@ -645,6 +646,9 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
         transaction.set(eventRef, {
           'fromStatus': current.status,
           'toStatus': nextStatus,
+          'fromEffectiveStartDate': Timestamp.fromDate(
+            current.effectiveStartDate.toUtcTimestamp(),
+          ),
           'effectiveDate': Timestamp.fromDate(effectiveDate.toUtcTimestamp()),
           'changedAt': FieldValue.serverTimestamp(),
           'changedBy': uid,
@@ -1800,10 +1804,17 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
     DocumentSnapshot<Map<String, dynamic>> document,
   ) {
     final data = document.data();
+    final hasFromEffectiveStartDate =
+        data?.containsKey('fromEffectiveStartDate') ?? false;
     if (!document.exists ||
         data == null ||
-        data.keys.toSet().length != _pendingEventKeys.length ||
+        data.keys.toSet().length !=
+            _pendingEventKeys.length + (hasFromEffectiveStartDate ? 1 : 0) ||
         !data.keys.toSet().containsAll(_pendingEventKeys) ||
+        data.keys.toSet().difference({
+          ..._pendingEventKeys,
+          ..._optionalPendingEventKeys,
+        }).isNotEmpty ||
         data['fromStatus'] is! String ||
         data['toStatus'] is! String ||
         !_isAllowedPendingTransition(
@@ -1811,6 +1822,8 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
           data['toStatus'] as String,
         ) ||
         data['effectiveDate'] is! Timestamp ||
+        (hasFromEffectiveStartDate &&
+            data['fromEffectiveStartDate'] is! Timestamp) ||
         data['changedAt'] is! Timestamp ||
         data['changedBy'] is! String ||
         data['changedBy'].isEmpty) {
@@ -1821,6 +1834,9 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
       fromStatus: data['fromStatus'] as String,
       toStatus: data['toStatus'] as String,
       effectiveDate: _academicDateFromTimestamp(data['effectiveDate']),
+      fromEffectiveStartDate: hasFromEffectiveStartDate
+          ? _academicDateFromTimestamp(data['fromEffectiveStartDate'])
+          : null,
       changedAt: (data['changedAt'] as Timestamp).toDate(),
       changedBy: data['changedBy'] as String,
     );
@@ -2058,6 +2074,9 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
   ) => {
     'fromStatus': 'pending',
     'toStatus': 'linked',
+    'fromEffectiveStartDate': Timestamp.fromDate(
+      pending.effectiveStartDate.toUtcTimestamp(),
+    ),
     'effectiveDate': Timestamp.fromDate(
       pending.effectiveStartDate.toUtcTimestamp(),
     ),

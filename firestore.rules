@@ -568,41 +568,22 @@ service cloud.firestore {
         );
     }
 
-    function validPendingEnrollmentState(pending) {
-      return pending.status in ['pending', 'linked', 'withdrawn']
-        && pending.effectiveStartDate is timestamp
-        && pending.effectiveStartDate.date() == pending.effectiveStartDate
-        && (
-          (
-            pending.status in ['pending', 'withdrawn']
-            && pending.studentUid == null
-            && pending.linkedAt == null
-          )
-          || (
-            pending.status == 'linked'
-            && pending.studentUid is string
-            && pending.studentUid.size() >= 1
-            && pending.linkedAt is timestamp
-          )
-        )
-        && pending.lastEventId is string
-        && pending.lastEventId.size() >= 1
-        && pending.lastEventId.size() <= 128
-        && pending.lastStatusChangedAt is timestamp;
-    }
-
     function validPendingStatusEvent(event) {
       return event.keys().hasAll([
           'fromStatus', 'toStatus', 'effectiveDate', 'changedAt', 'changedBy'
         ])
         && event.keys().hasOnly([
-          'fromStatus', 'toStatus', 'effectiveDate', 'changedAt', 'changedBy'
+          'fromStatus', 'toStatus', 'effectiveDate', 'changedAt', 'changedBy',
+          'fromEffectiveStartDate'
         ])
         && event.fromStatus in ['pending', 'linked', 'withdrawn']
         && event.toStatus in ['pending', 'linked', 'withdrawn']
         && event.fromStatus != event.toStatus
         && event.effectiveDate is timestamp
         && event.effectiveDate.date() == event.effectiveDate
+        && (!event.keys().hasAny(['fromEffectiveStartDate'])
+          || (event.fromEffectiveStartDate is timestamp
+            && event.fromEffectiveStartDate.date() == event.fromEffectiveStartDate))
         && event.changedAt is timestamp
         && event.changedBy is string;
     }
@@ -915,6 +896,8 @@ service cloud.firestore {
           'updatedAt', 'lastEventId', 'lastStatusChangedAt'
         ])
         && validPendingStatusEvent(event)
+        && event.keys().hasAny(['fromEffectiveStartDate'])
+        && event.fromEffectiveStartDate == before.effectiveStartDate
         && event.changedAt == request.time
         && event.changedBy == request.auth.uid
         && event.fromStatus == before.status
@@ -957,6 +940,8 @@ service cloud.firestore {
         && pendingAfter.updatedAt == request.time
         && !exists(eventPath)
         && validPendingStatusEvent(event)
+        && event.keys().hasAny(['fromEffectiveStartDate'])
+        && event.fromEffectiveStartDate == pendingBefore.effectiveStartDate
         && event.changedAt == request.time
         && event.changedBy == request.auth.uid
         && event.fromStatus == pendingBefore.status
@@ -1344,25 +1329,7 @@ service cloud.firestore {
         );
     }
 
-    function canCreateEnrollmentForJoinRequest(
-      courseId,
-      studentUid,
-      course,
-      enrollment
-    ) {
-      let requestPath = joinRequestPath(courseId, studentUid);
-      let requestBefore = get(requestPath).data;
-      return requestBefore.status == 'pending'
-        && canCreateEnrollmentFromJoinRequest(
-          courseId,
-          studentUid,
-          course,
-          enrollment,
-          requestBefore
-        );
-    }
-
-    function canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment) {
+    function canCreateEnrollmentFromDirectory(studentUid, enrollment) {
       let entryPath = directoryPath(enrollment.email);
       let entry = get(entryPath).data;
       return exists(entryPath)
@@ -1387,7 +1354,7 @@ service cloud.firestore {
             course,
             enrollment
           )
-        : canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment);
+        : canCreateEnrollmentFromDirectory(studentUid, enrollment);
     }
 
     function canCreateEnrollmentFromRequestOrDirectory(
@@ -1406,7 +1373,7 @@ service cloud.firestore {
             enrollment,
             requestBefore
           )
-        : canCreateEnrollmentFromDirectory(courseId, studentUid, enrollment);
+        : canCreateEnrollmentFromDirectory(studentUid, enrollment);
     }
 
     function enrollmentSnapshotMatchesRequestCourse(course, studentUid, enrollment) {
@@ -1823,6 +1790,1385 @@ service cloud.firestore {
         || (exists(coursePath) && studentEnrolledInCourse(courseId));
     }
 
+    function attendanceConfigPath(courseId) {
+      return /databases/$(database)/documents/courses/$(courseId)/attendance_config/current;
+    }
+
+    function attendanceSessionPath(courseId, occurrenceId) {
+      return /databases/$(database)/documents/courses/$(courseId)/attendance_sessions/$(occurrenceId);
+    }
+
+    function attendanceRosterPath(courseId, occurrenceId, rosterEntryId) {
+      return /databases/$(database)/documents/courses/$(courseId)/attendance_sessions/$(occurrenceId)/roster/$(rosterEntryId);
+    }
+
+    function attendanceEventPath(courseId, occurrenceId, eventId) {
+      return /databases/$(database)/documents/courses/$(courseId)/attendance_sessions/$(occurrenceId)/events/$(eventId);
+    }
+
+    function attendanceRecordPath(courseId, recordId) {
+      return /databases/$(database)/documents/courses/$(courseId)/attendance_records/$(recordId);
+    }
+
+    function validAcademicTimestamp(value) {
+      return value is timestamp && value.date() == value;
+    }
+
+    function validAttendanceConfig(config) {
+      return config.keys().hasAll([
+          'schemaVersion', 'mode', 'sessionCount', 'createdAt', 'createdBy',
+          'updatedAt', 'updatedBy', 'lastSessionId'
+        ])
+        && config.keys().hasOnly([
+          'schemaVersion', 'mode', 'sessionCount', 'createdAt', 'createdBy',
+          'updatedAt', 'updatedBy', 'lastSessionId'
+        ])
+        && config.schemaVersion == 1
+        && config.mode in ['meeting', 'minutes']
+        && config.sessionCount is int
+        && config.sessionCount >= 0
+        && config.createdAt is timestamp
+        && config.createdBy is string
+        && config.updatedAt is timestamp
+        && config.updatedBy is string
+        && (config.lastSessionId == null || config.lastSessionId is string);
+    }
+
+    function canGetAttendanceConfig(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      return verifiedTeacher()
+        && (!exists(coursePath)
+          || get(coursePath).data.ownerUid == request.auth.uid);
+    }
+
+    function canCreateAttendanceConfig(courseId, configId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let courseAfter = getAfter(coursePath).data;
+      let config = request.resource.data;
+      return configId == 'current'
+        && verifiedTeacher()
+        && existsAfter(coursePath)
+        && courseAfter.ownerUid == request.auth.uid
+        && validAttendanceConfig(config)
+        && config.sessionCount == 0
+        && config.createdAt == request.time
+        && config.createdBy == request.auth.uid
+        && config.updatedAt == request.time
+        && config.updatedBy == request.auth.uid
+        && config.lastSessionId == null;
+    }
+
+    function canChangeAttendanceConfig(courseId, configId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return configId == 'current'
+        && ownsExistingCourse(courseId)
+        && validAttendanceConfig(after)
+        && before.sessionCount == 0
+        && after.sessionCount == 0
+        && after.lastSessionId == before.lastSessionId
+        && after.schemaVersion == before.schemaVersion
+        && after.sessionCount == before.sessionCount
+        && after.createdAt == before.createdAt
+        && after.createdBy == before.createdBy
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        && after.diff(before).affectedKeys().hasOnly([
+          'mode', 'updatedAt', 'updatedBy'
+        ]);
+    }
+
+    function canIncrementAttendanceSessionCount(courseId, configId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let sessionPath = attendanceSessionPath(courseId, after.lastSessionId);
+      let session = getAfter(sessionPath).data;
+      return configId == 'current'
+        && after.lastSessionId is string
+        && after.lastSessionId.size() > 0
+        && after.lastSessionId.size() <= 128
+        && after.sessionCount == before.sessionCount + 1
+        && existsAfter(sessionPath)
+        && !exists(sessionPath)
+        && ownsExistingCourse(courseId)
+        && validAttendanceConfig(after)
+        && after.mode == before.mode
+        && after.createdAt == before.createdAt
+        && after.createdBy == before.createdBy
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        // The paired create rule validates the complete session shape. Keep
+        // this reciprocal half deliberately small to avoid evaluating that
+        // large shape a second time in the same transaction.
+        && session.courseId == courseId
+        && session.occurrenceId == after.lastSessionId
+        && session.ownerUid == request.auth.uid
+        && session.mode == after.mode
+        && session.status == 'preparing'
+        && session.rosterState == 'building'
+        && session.version == 1
+        && after.diff(before).affectedKeys().hasOnly([
+          'sessionCount', 'lastSessionId', 'updatedAt', 'updatedBy'
+        ]);
+    }
+
+    function validAttendanceCalendarChange(occurrenceId, change) {
+      return change.keys().hasAll([
+          'occurrenceId', 'kind', 'originalDate', 'effectiveDate',
+          'startMinute', 'endMinute', 'reason', 'version', 'createdAt',
+          'createdBy', 'updatedAt', 'updatedBy'
+        ])
+        && change.keys().hasOnly([
+          'occurrenceId', 'kind', 'originalDate', 'effectiveDate',
+          'startMinute', 'endMinute', 'reason', 'version', 'createdAt',
+          'createdBy', 'updatedAt', 'updatedBy'
+        ])
+        && change.occurrenceId == occurrenceId
+        && change.kind in ['cancelled', 'rescheduled', 'additional']
+        && validAcademicTimestamp(change.originalDate)
+        && validAcademicTimestamp(change.effectiveDate)
+        && change.startMinute is int
+        && change.startMinute >= 0
+        && change.startMinute < 1440
+        && change.endMinute is int
+        && change.endMinute > change.startMinute
+        && change.endMinute <= 1440
+        && change.reason is string
+        && change.reason.size() >= 1
+        && change.reason.size() <= 500
+        && change.version is int
+        && change.version >= 1
+        && change.createdAt is timestamp
+        && change.createdBy is string
+        && change.updatedAt is timestamp
+        && change.updatedBy is string;
+    }
+
+    function validNewAttendanceSession(courseId, occurrenceId, session) {
+      // A new session can only enter the building state. Keeping this
+      // predicate focused avoids re-evaluating finalization/void metadata
+      // during the paired config-counter write.
+      return session.keys().hasOnly([
+          'schemaVersion', 'courseId', 'ownerUid', 'occurrenceId',
+          'occurrenceKind', 'mode', 'status', 'rosterState', 'scheduledDate',
+          'effectiveDate', 'startMinute', 'endMinute', 'timezone', 'segmentIds',
+          'rosterCount', 'markedCount', 'unmarkedCount', 'unmarkedConfirmed',
+          'version', 'lastMutationRosterEntryId', 'lastMutationKind',
+          'lastEventId', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
+          'lateRegistrationReason'
+        ])
+        && session.schemaVersion == 1
+        && session.courseId == courseId
+        && session.ownerUid == request.auth.uid
+        && session.occurrenceId == occurrenceId
+        && session.occurrenceKind in ['planned', 'cancelled', 'rescheduled', 'additional']
+        && session.mode in ['meeting', 'minutes']
+        && session.status == 'preparing'
+        && session.rosterState == 'building'
+        && validAcademicTimestamp(session.scheduledDate)
+        && validAcademicTimestamp(session.effectiveDate)
+        && session.startMinute is int
+        && session.startMinute >= 0
+        && session.startMinute < 1440
+        && session.endMinute is int
+        && session.endMinute > session.startMinute
+        && session.endMinute <= 1440
+        && session.timezone == 'America/Bogota'
+        && session.segmentIds is list
+        && session.segmentIds.size() <= 24
+        && session.segmentIds.toSet().size() == session.segmentIds.size()
+        && session.rosterCount is int
+        && session.rosterCount >= 0
+        && session.markedCount == 0
+        && session.unmarkedCount == session.rosterCount
+        && session.unmarkedConfirmed == false
+        && session.version == 1
+        && session.lastMutationRosterEntryId == null
+        && session.lastMutationKind == null
+        && session.lastEventId == null
+        && session.createdAt == request.time
+        && session.createdBy == request.auth.uid
+        && session.updatedAt == request.time
+        && session.updatedBy == request.auth.uid
+        && (session.get('lateRegistrationReason', null) == null
+          || (session.get('lateRegistrationReason', null) is string
+            && session.get('lateRegistrationReason', null).size() > 0
+            && session.get('lateRegistrationReason', null).size() <= 500))
+        && (session.mode == 'meeting'
+          ? session.segmentIds.size() == 0
+          : session.segmentIds.size() >= 1);
+    }
+
+    function studentAttendanceRosterId(courseId) {
+      let enrollment = get(enrollmentPath(courseId, request.auth.uid)).data;
+      return enrollment.keys().hasAny(['rosterEntryId'])
+        && enrollment.rosterEntryId is string
+        ? enrollment.rosterEntryId
+        : 'legacy:' + request.auth.uid;
+    }
+
+    function studentAttendanceSessionAllowsRecord(courseId, record) {
+      let path = attendanceSessionPath(courseId, record.sessionId);
+      let session = get(path).data;
+      return exists(path)
+        && session.courseId == courseId
+        && session.occurrenceId == record.sessionId
+        && ((session.status == 'finalized' && record.result != 'voided')
+          || (session.status == 'voided' && record.result == 'voided'));
+    }
+
+    function studentCanReadAttendanceRecord(courseId, recordId) {
+      let enrollmentDocPath = enrollmentPath(courseId, request.auth.uid);
+      let record = resource.data;
+      return verifiedStudent()
+        && exists(enrollmentDocPath)
+        && get(enrollmentDocPath).data.studentUid == request.auth.uid
+        && get(enrollmentDocPath).data.status == 'active'
+        && validAttendanceRecord(courseId, recordId, record)
+        && record.sessionId is string
+        && record.visibility == 'published'
+        && record.rosterEntryId == studentAttendanceRosterId(courseId)
+        && studentAttendanceSessionAllowsRecord(courseId, record);
+    }
+
+    function studentCanListAttendanceRecords(courseId) {
+      let enrollmentDocPath = enrollmentPath(courseId, request.auth.uid);
+      let enrollment = get(enrollmentDocPath).data;
+      return verifiedStudent()
+        && exists(enrollmentDocPath)
+        && enrollment.studentUid == request.auth.uid
+        && enrollment.status == 'active'
+        && resource.data.visibility == 'published'
+        && resource.data.rosterEntryId == studentAttendanceRosterId(courseId);
+    }
+
+    function validAttendanceRecord(courseId, recordId, record) {
+      return record.keys().hasAll([
+          'schemaVersion', 'courseId', 'sessionId', 'rosterEntryId',
+          'visibility', 'mode', 'scheduledDate', 'effectiveDate',
+          'startMinute', 'endMinute', 'unitCount', 'absentUnits',
+          'inReviewUnits', 'justifiedUnits', 'result', 'publishedAt', 'updatedAt'
+        ])
+        && record.keys().hasOnly([
+          'schemaVersion', 'courseId', 'sessionId', 'rosterEntryId',
+          'visibility', 'mode', 'scheduledDate', 'effectiveDate',
+          'startMinute', 'endMinute', 'unitCount', 'absentUnits',
+          'inReviewUnits', 'justifiedUnits', 'result', 'segments',
+          'publishedAt', 'updatedAt'
+        ])
+        && record.schemaVersion == 1
+        && record.courseId == courseId
+        && record.sessionId is string
+        && record.rosterEntryId is string
+        && recordId == record.sessionId + '|' + record.rosterEntryId
+        && record.visibility in ['staged', 'published']
+        && record.mode in ['meeting', 'minutes']
+        && validAcademicTimestamp(record.scheduledDate)
+        && validAcademicTimestamp(record.effectiveDate)
+        && record.startMinute is int
+        && record.startMinute >= 0
+        && record.startMinute < 1440
+        && record.endMinute is int
+        && record.endMinute > record.startMinute
+        && record.endMinute <= 1440
+        && record.unitCount is int
+        && record.unitCount >= 0
+        && record.absentUnits is int
+        && record.absentUnits >= 0
+        && record.inReviewUnits is int
+        && record.inReviewUnits >= 0
+        && record.justifiedUnits is int
+        && record.justifiedUnits >= 0
+        && record.absentUnits <= record.unitCount
+        && record.inReviewUnits <= record.absentUnits
+        && record.justifiedUnits <= record.absentUnits
+        && record.result in ['unmarked', 'present', 'absent', 'partial', 'justified', 'voided']
+        && (record.result == 'voided'
+          ? (record.unitCount == 0 && record.absentUnits == 0
+            && record.inReviewUnits == 0 && record.justifiedUnits == 0)
+          : record.unitCount > 0)
+        && (record.visibility == 'staged'
+          ? record.publishedAt == null
+          : (record.publishedAt is timestamp && record.result != 'unmarked'))
+        && record.updatedAt is timestamp
+        && (record.mode == 'meeting'
+          ? ((record.unitCount == 1 || record.result == 'voided')
+            && !record.keys().hasAny(['segments']))
+          : (record.result == 'voided'
+            ? !record.keys().hasAny(['segments'])
+            : validAttendanceRecordSegments(record.segments)));
+    }
+
+    function attendanceStartHasPassed(session) {
+      let bogotaNow = request.time - duration.value(5, 'h');
+      return session.effectiveDate < bogotaNow.date()
+        || (session.effectiveDate == bogotaNow.date()
+          && bogotaNow.hours() * 60 + bogotaNow.minutes() >= session.startMinute);
+    }
+
+    function validAttendanceRosterMark(mark) {
+      return mark is map
+        && mark.keys().hasAll([
+          'mark', 'absentUnits', 'justificationStatus', 'justifiedUnits'
+        ])
+        && mark.keys().hasOnly([
+          'mark', 'absentUnits', 'justificationStatus', 'justifiedUnits'
+        ])
+        && mark.mark in ['unmarked', 'present', 'absent']
+        && mark.absentUnits is int
+        && mark.absentUnits >= 0
+        && mark.justificationStatus in ['none', 'inReview', 'justified', 'notAccepted']
+        && mark.justifiedUnits is int
+        && mark.justifiedUnits >= 0
+        && mark.justifiedUnits <= mark.absentUnits
+        && (mark.mark == 'absent' || mark.absentUnits == 0)
+        && (mark.justificationStatus != 'none' || mark.justifiedUnits == 0);
+    }
+
+    function validAttendanceSegmentMarkAt(
+      marks,
+      segmentIds,
+      count,
+      index,
+      requireUnmarked
+    ) {
+      return count <= index
+        ? true
+        : (requireUnmarked
+          ? (validAttendanceRosterMark(marks[segmentIds[index]])
+            && marks[segmentIds[index]].mark == 'unmarked'
+            && marks[segmentIds[index]].absentUnits == 0
+            && marks[segmentIds[index]].justificationStatus == 'none'
+            && marks[segmentIds[index]].justifiedUnits == 0)
+          : validAttendanceRosterMark(marks[segmentIds[index]]));
+    }
+
+    function validAttendanceSegmentMarks(marks, segmentIds, requireUnmarked) {
+      let count = segmentIds.size();
+      // Short-circuit the tail at the actual segment count. A flat chain still
+      // evaluates 24 guards repeatedly and exceeds the limit on two-hour retries.
+      return marks is map
+        && marks.keys().hasAll(segmentIds)
+        && marks.keys().hasOnly(segmentIds)
+        && (count <= 0 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 0, requireUnmarked)
+          && (count <= 1 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 1, requireUnmarked)
+          && (count <= 2 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 2, requireUnmarked)
+          && (count <= 3 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 3, requireUnmarked)
+          && (count <= 4 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 4, requireUnmarked)
+          && (count <= 5 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 5, requireUnmarked)
+          && (count <= 6 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 6, requireUnmarked)
+          && (count <= 7 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 7, requireUnmarked)
+          && (count <= 8 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 8, requireUnmarked)
+          && (count <= 9 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 9, requireUnmarked)
+          && (count <= 10 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 10, requireUnmarked)
+          && (count <= 11 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 11, requireUnmarked)
+          && (count <= 12 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 12, requireUnmarked)
+          && (count <= 13 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 13, requireUnmarked)
+          && (count <= 14 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 14, requireUnmarked)
+          && (count <= 15 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 15, requireUnmarked)
+          && (count <= 16 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 16, requireUnmarked)
+          && (count <= 17 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 17, requireUnmarked)
+          && (count <= 18 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 18, requireUnmarked)
+          && (count <= 19 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 19, requireUnmarked)
+          && (count <= 20 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 20, requireUnmarked)
+          && (count <= 21 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 21, requireUnmarked)
+          && (count <= 22 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 22, requireUnmarked)
+          && (count <= 23 || validAttendanceSegmentMarkAt(marks, segmentIds, count, 23, requireUnmarked)))))))))))))))))))))))));
+    }
+
+    function validAttendanceRosterEntry(rosterEntryId, entry, session) {
+      let common = entry.keys().hasAll([
+          'rosterEntryId', 'displayName', 'version', 'updatedAt', 'updatedBy'
+        ])
+        && entry.rosterEntryId == rosterEntryId
+        && entry.displayName is string
+        && entry.displayName.size() > 0
+        && entry.displayName.size() <= 120
+        && entry.version is int
+        && entry.version >= 0
+        && entry.updatedAt is timestamp
+        && entry.updatedBy is string
+        && (!entry.keys().hasAny(['studentUid'])
+          || entry.studentUid == null
+          || (entry.studentUid is string && entry.studentUid.size() > 0));
+      return common
+        && (session.mode == 'meeting'
+          ? (entry.keys().hasAll([
+                'meetingMark', 'justificationStatus', 'justifiedUnits'
+              ])
+            && entry.keys().hasOnly([
+              'rosterEntryId', 'displayName', 'studentUid', 'meetingMark',
+              'justificationStatus', 'justifiedUnits', 'version', 'updatedAt',
+              'updatedBy'
+            ])
+            && entry.meetingMark in ['unmarked', 'present', 'absent']
+            && entry.justificationStatus in [
+              'none', 'inReview', 'justified', 'notAccepted'
+            ]
+            && entry.justifiedUnits is int
+            && entry.justifiedUnits >= 0
+            && entry.justifiedUnits <= 1
+            && (entry.version != 0 || session.status != 'preparing'
+              || (entry.meetingMark == 'unmarked'
+                && entry.justificationStatus == 'none'
+                && entry.justifiedUnits == 0))
+            && (entry.meetingMark == 'absent'
+              || (entry.justificationStatus == 'none'
+                && entry.justifiedUnits == 0))
+            && (entry.justificationStatus != 'none'
+              || entry.justifiedUnits == 0))
+          : (entry.keys().hasAll(['segments'])
+            && entry.keys().hasOnly([
+              'rosterEntryId', 'displayName', 'studentUid', 'segments',
+              'version', 'updatedAt', 'updatedBy'
+            ])
+            && validAttendanceSegmentMarks(
+              entry.segments,
+              session.segmentIds,
+              entry.version == 0 && session.status == 'preparing'
+            )));
+    }
+
+    function unmarkedSegmentAt(marks, segmentIds, count, index) {
+      return count <= index
+        ? true
+        : (marks[segmentIds[index]].mark == 'unmarked'
+          && marks[segmentIds[index]].absentUnits == 0
+          && marks[segmentIds[index]].justificationStatus == 'none'
+          && marks[segmentIds[index]].justifiedUnits == 0);
+    }
+
+    function allAttendanceSegmentsUnmarked(marks, segmentIds) {
+      let count = segmentIds.size();
+      return (count <= 0 || unmarkedSegmentAt(marks, segmentIds, count, 0)
+          && (count <= 1 || unmarkedSegmentAt(marks, segmentIds, count, 1)
+          && (count <= 2 || unmarkedSegmentAt(marks, segmentIds, count, 2)
+          && (count <= 3 || unmarkedSegmentAt(marks, segmentIds, count, 3)
+          && (count <= 4 || unmarkedSegmentAt(marks, segmentIds, count, 4)
+          && (count <= 5 || unmarkedSegmentAt(marks, segmentIds, count, 5)
+          && (count <= 6 || unmarkedSegmentAt(marks, segmentIds, count, 6)
+          && (count <= 7 || unmarkedSegmentAt(marks, segmentIds, count, 7)
+          && (count <= 8 || unmarkedSegmentAt(marks, segmentIds, count, 8)
+          && (count <= 9 || unmarkedSegmentAt(marks, segmentIds, count, 9)
+          && (count <= 10 || unmarkedSegmentAt(marks, segmentIds, count, 10)
+          && (count <= 11 || unmarkedSegmentAt(marks, segmentIds, count, 11)
+          && (count <= 12 || unmarkedSegmentAt(marks, segmentIds, count, 12)
+          && (count <= 13 || unmarkedSegmentAt(marks, segmentIds, count, 13)
+          && (count <= 14 || unmarkedSegmentAt(marks, segmentIds, count, 14)
+          && (count <= 15 || unmarkedSegmentAt(marks, segmentIds, count, 15)
+          && (count <= 16 || unmarkedSegmentAt(marks, segmentIds, count, 16)
+          && (count <= 17 || unmarkedSegmentAt(marks, segmentIds, count, 17)
+          && (count <= 18 || unmarkedSegmentAt(marks, segmentIds, count, 18)
+          && (count <= 19 || unmarkedSegmentAt(marks, segmentIds, count, 19)
+          && (count <= 20 || unmarkedSegmentAt(marks, segmentIds, count, 20)
+          && (count <= 21 || unmarkedSegmentAt(marks, segmentIds, count, 21)
+          && (count <= 22 || unmarkedSegmentAt(marks, segmentIds, count, 22)
+          && (count <= 23 || unmarkedSegmentAt(marks, segmentIds, count, 23)))))))))))))))))))))))));
+    }
+
+    function attendanceRosterStartsUnmarked(entry, session) {
+      return session.mode == 'meeting'
+        ? (entry.meetingMark == 'unmarked'
+          && entry.justificationStatus == 'none'
+          && entry.justifiedUnits == 0)
+        : allAttendanceSegmentsUnmarked(entry.segments, session.segmentIds);
+    }
+
+    function attendanceSegmentsAllAbsent(marks, segmentIds) {
+      let count = segmentIds.size();
+      return marks is map
+        && marks.keys().hasAll(segmentIds)
+        && marks.keys().hasOnly(segmentIds)
+        && (count <= 0 ? true : marks[segmentIds[0]].mark == 'absent')
+        && (count <= 1 ? true : marks[segmentIds[1]].mark == 'absent')
+        && (count <= 2 ? true : marks[segmentIds[2]].mark == 'absent')
+        && (count <= 3 ? true : marks[segmentIds[3]].mark == 'absent')
+        && (count <= 4 ? true : marks[segmentIds[4]].mark == 'absent')
+        && (count <= 5 ? true : marks[segmentIds[5]].mark == 'absent')
+        && (count <= 6 ? true : marks[segmentIds[6]].mark == 'absent')
+        && (count <= 7 ? true : marks[segmentIds[7]].mark == 'absent')
+        && (count <= 8 ? true : marks[segmentIds[8]].mark == 'absent')
+        && (count <= 9 ? true : marks[segmentIds[9]].mark == 'absent')
+        && (count <= 10 ? true : marks[segmentIds[10]].mark == 'absent')
+        && (count <= 11 ? true : marks[segmentIds[11]].mark == 'absent')
+        && (count <= 12 ? true : marks[segmentIds[12]].mark == 'absent')
+        && (count <= 13 ? true : marks[segmentIds[13]].mark == 'absent')
+        && (count <= 14 ? true : marks[segmentIds[14]].mark == 'absent')
+        && (count <= 15 ? true : marks[segmentIds[15]].mark == 'absent')
+        && (count <= 16 ? true : marks[segmentIds[16]].mark == 'absent')
+        && (count <= 17 ? true : marks[segmentIds[17]].mark == 'absent')
+        && (count <= 18 ? true : marks[segmentIds[18]].mark == 'absent')
+        && (count <= 19 ? true : marks[segmentIds[19]].mark == 'absent')
+        && (count <= 20 ? true : marks[segmentIds[20]].mark == 'absent')
+        && (count <= 21 ? true : marks[segmentIds[21]].mark == 'absent')
+        && (count <= 22 ? true : marks[segmentIds[22]].mark == 'absent')
+        && (count <= 23 ? true : marks[segmentIds[23]].mark == 'absent');
+    }
+
+    function attendanceRosterChangesMissingToAbsent(before, after, session) {
+      return session.mode == 'meeting'
+        ? (before.meetingMark == 'unmarked'
+          && after.meetingMark == 'absent')
+        : (allAttendanceSegmentsUnmarked(before.segments, session.segmentIds)
+          && attendanceSegmentsAllAbsent(after.segments, session.segmentIds));
+    }
+
+    function canCreateAttendanceRosterEntry(courseId, occurrenceId, rosterEntryId) {
+      let sessionPath = attendanceSessionPath(courseId, occurrenceId);
+      let sessionBefore = get(sessionPath).data;
+      let session = getAfter(sessionPath).data;
+      let entry = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && exists(sessionPath)
+        && session.ownerUid == request.auth.uid
+        && session.courseId == courseId
+        && session.occurrenceId == occurrenceId
+        && session.mode in ['meeting', 'minutes']
+        && session.segmentIds is list
+        && session.status == 'preparing'
+        && session.rosterState == 'building'
+        && session.version == sessionBefore.version + 1
+        && session.updatedAt == request.time
+        && session.updatedBy == request.auth.uid
+        && validAttendanceRosterEntry(
+          rosterEntryId,
+          entry,
+          session
+        )
+        && entry.version == 0
+        && entry.updatedAt == request.time
+        && entry.updatedBy == request.auth.uid;
+    }
+
+    function attendanceRosterHasAuditPair(courseId, occurrenceId, rosterEntryId, sessionAfter) {
+      let eventPath = attendanceEventPath(
+        courseId,
+        occurrenceId,
+        sessionAfter.lastEventId
+      );
+      let recordId = occurrenceId + '|' + rosterEntryId;
+      let recordPath = attendanceRecordPath(courseId, recordId);
+      let event = getAfter(eventPath).data;
+      let record = getAfter(recordPath).data;
+      return sessionAfter.lastEventId is string
+        && existsAfter(eventPath)
+        && event.kind == sessionAfter.lastMutationKind
+        && event.rosterEntryId == rosterEntryId
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid
+        && existsAfter(recordPath)
+        && record.sessionId == occurrenceId
+        && record.rosterEntryId == rosterEntryId
+        && record.visibility == 'published'
+        && record.updatedAt == request.time;
+    }
+
+    function canUpdateAttendanceRosterEntry(courseId, occurrenceId, rosterEntryId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let sessionPath = attendanceSessionPath(courseId, occurrenceId);
+      let sessionBefore = get(sessionPath).data;
+      let sessionAfter = getAfter(sessionPath).data;
+      let common = ownsExistingCourse(courseId)
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && sessionBefore.ownerUid == request.auth.uid
+        && sessionAfter.ownerUid == request.auth.uid
+        && sessionAfter.version == sessionBefore.version + 1
+        && sessionAfter.updatedAt == request.time
+        && sessionAfter.updatedBy == request.auth.uid
+        && after.version == before.version + 1
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        && before.rosterEntryId == rosterEntryId
+        && after.rosterEntryId == before.rosterEntryId
+        && after.diff(before).affectedKeys().hasOnly([
+          'displayName', 'studentUid', 'meetingMark', 'justificationStatus',
+          'justifiedUnits', 'segments', 'version', 'updatedAt', 'updatedBy'
+        ]);
+      return common
+        && (sessionBefore.status == 'preparing'
+          ? (sessionBefore.rosterState == 'building'
+            && sessionAfter.status == 'preparing'
+            && sessionAfter.rosterState == 'building'
+            // Reconciliation only refreshes an unmarked identity. Freeze all
+            // marks, and validate the resulting row once instead of repeating
+            // the segment validators for both maps (1000-expression limit).
+            && after.diff(before).affectedKeys().hasOnly([
+              'displayName', 'studentUid', 'version', 'updatedAt', 'updatedBy'
+            ])
+            && validAttendanceRosterEntry(rosterEntryId, after, sessionAfter)
+            && attendanceRosterStartsUnmarked(after, sessionAfter))
+          : (sessionBefore.status == 'inProgress'
+            ? (sessionAfter.status == 'inProgress'
+              ? (sessionAfter.lastMutationKind == 'mark'
+                && sessionAfter.lastMutationRosterEntryId == rosterEntryId
+                && sessionAfter.lastEventId == null
+                && sessionAfter.markedCount >= sessionBefore.markedCount - 1
+                && sessionAfter.markedCount <= sessionBefore.markedCount + 1
+                && sessionAfter.unmarkedCount >= sessionBefore.unmarkedCount - 1
+                && sessionAfter.unmarkedCount <= sessionBefore.unmarkedCount + 1
+                && ((sessionBefore.mode == 'meeting'
+                    && before.meetingMark != after.meetingMark)
+                  || (sessionBefore.mode == 'minutes'
+                    && before.segments != after.segments))
+                && validAttendanceRosterEntry(rosterEntryId, after, sessionAfter))
+              : (sessionAfter.status == 'closing'
+                && attendanceRosterChangesMissingToAbsent(
+                  before, after, sessionBefore
+                )
+                && sessionAfter.unmarkedConfirmed
+                && sessionAfter.markedCount + sessionAfter.unmarkedCount
+                  == sessionBefore.rosterCount
+                && sessionAfter.lastMutationRosterEntryId
+                  == sessionBefore.lastMutationRosterEntryId
+                && sessionAfter.lastMutationKind == sessionBefore.lastMutationKind
+                && sessionAfter.lastEventId == sessionBefore.lastEventId
+                && sessionAfter.markedCount > sessionBefore.markedCount
+                && sessionAfter.markedCount <= sessionBefore.markedCount + 10
+                && sessionAfter.unmarkedCount < sessionBefore.unmarkedCount
+                && sessionAfter.unmarkedCount >= sessionBefore.unmarkedCount - 10
+                && validAttendanceRosterEntry(rosterEntryId, after, sessionAfter)))
+            : (sessionBefore.status == 'closing'
+              ? (sessionAfter.status == 'closing'
+                && attendanceRosterChangesMissingToAbsent(
+                  before, after, sessionBefore
+                )
+                && sessionAfter.unmarkedConfirmed
+                && sessionAfter.markedCount + sessionAfter.unmarkedCount
+                  == sessionBefore.rosterCount
+                && sessionAfter.lastMutationRosterEntryId
+                  == sessionBefore.lastMutationRosterEntryId
+                && sessionAfter.lastMutationKind == sessionBefore.lastMutationKind
+                && sessionAfter.lastEventId == sessionBefore.lastEventId
+                && sessionAfter.markedCount > sessionBefore.markedCount
+                && sessionAfter.markedCount <= sessionBefore.markedCount + 10
+                && sessionAfter.unmarkedCount < sessionBefore.unmarkedCount
+                && sessionAfter.unmarkedCount >= sessionBefore.unmarkedCount - 10
+                && validAttendanceRosterEntry(rosterEntryId, after, sessionAfter))
+              : (sessionBefore.status == 'finalized'
+                && sessionAfter.status == 'finalized'
+                && sessionAfter.lastMutationKind in [
+                  'correction', 'justification', 'rosterCorrection'
+                ]
+                && sessionAfter.lastMutationRosterEntryId == rosterEntryId
+                && validAttendanceRosterEntry(
+                  rosterEntryId, after, sessionAfter
+                )
+                && attendanceRosterHasAuditPair(
+                  courseId, occurrenceId, rosterEntryId, sessionAfter
+                )))));
+    }
+    function canDeleteAttendanceRosterEntry(courseId, occurrenceId, rosterEntryId) {
+      let sessionPath = attendanceSessionPath(courseId, occurrenceId);
+      let sessionBefore = get(sessionPath).data;
+      let sessionAfter = getAfter(sessionPath).data;
+      let entry = resource.data;
+      return ownsExistingCourse(courseId)
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && sessionBefore.ownerUid == request.auth.uid
+        && sessionAfter.ownerUid == request.auth.uid
+        && sessionBefore.status == 'preparing'
+        && sessionBefore.rosterState == 'building'
+        && sessionAfter.status == 'preparing'
+        && sessionAfter.rosterState == 'building'
+        && sessionAfter.version == sessionBefore.version + 1
+        && sessionAfter.updatedAt == request.time
+        && sessionAfter.updatedBy == request.auth.uid
+        && validAttendanceRosterEntry(rosterEntryId, entry, sessionBefore)
+        && attendanceRosterStartsUnmarked(entry, sessionBefore);
+    }
+
+    function attendanceAuditEventPaired(
+      courseId,
+      occurrenceId,
+      event,
+      sessionBefore,
+      sessionAfter
+    ) {
+      let rowPath = attendanceRosterPath(
+        courseId,
+        occurrenceId,
+        event.get('rosterEntryId', '__void__')
+      );
+      let recordId = occurrenceId + '|' + event.get('rosterEntryId', '__void__');
+      let recordPath = attendanceRecordPath(courseId, recordId);
+      let rosterAfter = getAfter(rowPath).data;
+      let recordAfter = getAfter(recordPath).data;
+      return event.kind in [
+          'correction', 'justification', 'rosterCorrection'
+        ]
+        && sessionBefore.status == 'finalized'
+        && sessionAfter.status == 'finalized'
+        && exists(rowPath)
+        && existsAfter(rowPath)
+        && rosterAfter.rosterEntryId == event.rosterEntryId
+        && rosterAfter.version == get(rowPath).data.version + 1
+        && rosterAfter.updatedAt == request.time
+        && rosterAfter.updatedBy == request.auth.uid
+        && exists(recordPath)
+        && existsAfter(recordPath)
+        && recordAfter.sessionId == occurrenceId
+        && recordAfter.rosterEntryId == event.rosterEntryId
+        && recordAfter.visibility == 'published'
+        && recordAfter.updatedAt == request.time;
+    }
+
+    function canCreateAttendanceEvent(courseId, occurrenceId, eventId) {
+      let event = request.resource.data;
+      let sessionPath = attendanceSessionPath(courseId, occurrenceId);
+      let sessionBefore = get(sessionPath).data;
+      let sessionAfter = getAfter(sessionPath).data;
+      let voidEvent = event.kind == 'void'
+        && event.oldValue.status == sessionBefore.status
+        && event.newValue.status == 'voided'
+        && event.reason == sessionAfter.reason
+        && sessionAfter.status in ['voiding', 'voided'];
+      return ownsExistingCourse(courseId)
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && sessionBefore.ownerUid == request.auth.uid
+        && sessionAfter.ownerUid == request.auth.uid
+        && sessionAfter.version == sessionBefore.version + 1
+        && sessionAfter.updatedAt == request.time
+        && sessionAfter.updatedBy == request.auth.uid
+        && sessionAfter.lastMutationKind == event.kind
+        && sessionAfter.lastEventId == eventId
+        && sessionAfter.lastMutationRosterEntryId
+          == event.get('rosterEntryId', null)
+        && validAttendanceEvent(event, eventId)
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid
+        && (event.kind == 'void'
+          ? voidEvent
+          : attendanceAuditEventPaired(
+            courseId,
+            occurrenceId,
+            event,
+            sessionBefore,
+            sessionAfter
+          ));
+    }
+
+    function sessionAndRecordMatch(session, courseId, record) {
+      return session.courseId == courseId
+        && session.occurrenceId == record.sessionId
+        && session.mode == record.mode
+        && session.scheduledDate == record.scheduledDate
+        && session.effectiveDate == record.effectiveDate
+        && session.startMinute == record.startMinute
+        && session.endMinute == record.endMinute;
+    }
+
+    function attendanceSessionHasVoidEvent(courseId, occurrenceId, session) {
+      let eventPath = attendanceEventPath(
+        courseId,
+        occurrenceId,
+        session.lastEventId
+      );
+      let event = get(eventPath).data;
+      return session.status == 'voiding'
+        && session.lastMutationKind == 'void'
+        && session.lastMutationRosterEntryId == null
+        && session.lastEventId is string
+        && exists(eventPath)
+        && event.kind == 'void'
+        && event.changedBy == session.ownerUid
+        && event.reason == session.reason
+        && event.oldValue.status in ['inProgress', 'closing', 'finalized']
+        && event.newValue.status == 'voided';
+    }
+
+    function attendanceRecordVoidShape(before, after) {
+      return after.visibility == 'published'
+        && after.result == 'voided'
+        && after.unitCount == 0
+        && after.absentUnits == 0
+        && after.inReviewUnits == 0
+        && after.justifiedUnits == 0
+        && (before.visibility == 'staged'
+          ? (before.publishedAt == null && after.publishedAt == request.time)
+          : (before.visibility == 'published'
+            && after.publishedAt == before.publishedAt))
+        && after.diff(before).affectedKeys().hasOnly([
+          'visibility', 'publishedAt', 'result', 'unitCount', 'absentUnits',
+          'inReviewUnits', 'justifiedUnits', 'segments', 'updatedAt'
+        ]);
+    }
+
+    function attendanceRecordVoidProjectionAllowed(
+      courseId,
+      before,
+      after,
+      sessionBefore,
+      sessionAfter
+    ) {
+      return sessionBefore.status == 'voiding'
+        && sessionAfter.status == 'voiding'
+        && sessionAfter.version == sessionBefore.version
+        && sessionAfter.updatedAt == sessionBefore.updatedAt
+        && sessionAfter.updatedBy == sessionBefore.updatedBy
+        && attendanceSessionHasVoidEvent(
+          courseId, before.sessionId, sessionAfter
+        )
+        && attendanceRecordVoidShape(before, after);
+    }
+
+    function attendanceRecordAuditPair(
+      courseId,
+      occurrenceId,
+      before,
+      sessionAfter
+    ) {
+      let eventPath = attendanceEventPath(
+        courseId,
+        occurrenceId,
+        sessionAfter.lastEventId
+      );
+      let event = getAfter(eventPath).data;
+      return sessionAfter.lastMutationKind in [
+          'correction', 'justification', 'rosterCorrection'
+        ]
+        && sessionAfter.lastMutationRosterEntryId == before.rosterEntryId
+        && sessionAfter.lastEventId is string
+        && existsAfter(eventPath)
+        && event.kind == sessionAfter.lastMutationKind
+        && event.rosterEntryId == before.rosterEntryId
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid;
+    }
+
+    function canCreateAttendanceRecord(courseId, recordId) {
+      let record = request.resource.data;
+      let sessionPath = attendanceSessionPath(courseId, record.sessionId);
+      let sessionBefore = get(sessionPath).data;
+      let sessionAfter = getAfter(sessionPath).data;
+      return ownsExistingCourse(courseId)
+        && record.sessionId is string
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && validAttendanceRecord(courseId, recordId, record)
+        && sessionBefore.ownerUid == request.auth.uid
+        && sessionAfter.ownerUid == request.auth.uid
+        && sessionAndRecordMatch(sessionAfter, courseId, record)
+        && record.updatedAt == request.time
+        && (record.visibility == 'staged'
+          ? (sessionBefore.status == 'closing'
+            && sessionAfter.status == 'closing'
+            && record.publishedAt == null
+            && record.result != 'voided'
+            && sessionAfter.version == sessionBefore.version + 1
+            && sessionAfter.updatedAt == request.time
+            && sessionAfter.updatedBy == request.auth.uid)
+          : (record.visibility == 'published'
+            && record.result == 'voided'
+            && record.publishedAt == request.time
+            && sessionBefore.status == 'voiding'
+            && sessionAfter.status == 'voiding'
+            && sessionAfter.version == sessionBefore.version
+            && sessionAfter.updatedAt == sessionBefore.updatedAt
+            && sessionAfter.updatedBy == sessionBefore.updatedBy
+            && attendanceSessionHasVoidEvent(
+              courseId, record.sessionId, sessionAfter
+            )));
+    }
+
+    function canUpdateAttendanceRecord(courseId, recordId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let sessionPath = attendanceSessionPath(courseId, before.sessionId);
+      let sessionBefore = get(sessionPath).data;
+      let sessionAfter = getAfter(sessionPath).data;
+      return ownsExistingCourse(courseId)
+        && validAttendanceRecord(courseId, recordId, after)
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && sessionBefore.ownerUid == request.auth.uid
+        && sessionAfter.ownerUid == request.auth.uid
+        && sessionAndRecordMatch(sessionAfter, courseId, after)
+        && after.courseId == before.courseId
+        && after.sessionId == before.sessionId
+        && after.rosterEntryId == before.rosterEntryId
+        && after.mode == before.mode
+        && after.scheduledDate == before.scheduledDate
+        && after.effectiveDate == before.effectiveDate
+        && after.startMinute == before.startMinute
+        && after.endMinute == before.endMinute
+        && after.updatedAt == request.time
+        && (before.visibility == 'staged'
+          ? (after.visibility == 'published'
+            ? (after.result == 'voided'
+              ? attendanceRecordVoidProjectionAllowed(
+                courseId, before, after, sessionBefore, sessionAfter
+              )
+              : (before.publishedAt == null
+                && after.publishedAt == request.time
+                && sessionBefore.status == 'finalized'
+                && sessionAfter.status == 'finalized'
+                && sessionAfter.version == sessionBefore.version
+                && sessionAfter.updatedAt == sessionBefore.updatedAt
+                && sessionAfter.updatedBy == sessionBefore.updatedBy
+                && after.diff(before).affectedKeys().hasOnly([
+                  'visibility', 'publishedAt', 'updatedAt'
+                ])))
+            : false)
+          : (before.visibility == 'published'
+            ? (sessionBefore.status == 'voiding'
+              ? attendanceRecordVoidProjectionAllowed(
+                courseId, before, after, sessionBefore, sessionAfter
+              )
+              : (sessionBefore.status == 'finalized'
+                && sessionAfter.status == 'finalized'
+                && sessionAfter.version == sessionBefore.version + 1
+                && sessionAfter.updatedAt == request.time
+                && sessionAfter.updatedBy == request.auth.uid
+                && attendanceRecordAuditPair(
+                  courseId, before.sessionId, before, sessionAfter
+                )
+                && after.publishedAt == before.publishedAt
+                && after.diff(before).affectedKeys().hasOnly([
+                  'absentUnits', 'inReviewUnits', 'justifiedUnits', 'result',
+                  'segments', 'updatedAt'
+                ]))
+              )
+            : false));
+    }
+
+    function validAttendanceRecordSegment(segment) {
+      return segment is map
+        && segment.keys().hasAll([
+          'segmentId', 'startMinute', 'endMinute', 'durationMinutes', 'mark',
+          'absentUnits', 'justificationStatus', 'justifiedUnits'
+        ])
+        && segment.keys().hasOnly([
+          'segmentId', 'startMinute', 'endMinute', 'durationMinutes', 'mark',
+          'absentUnits', 'justificationStatus', 'justifiedUnits'
+        ])
+        && segment.segmentId is string
+        && segment.segmentId.size() > 0
+        && segment.startMinute is int
+        && segment.startMinute >= 0
+        && segment.startMinute < 1440
+        && segment.endMinute is int
+        && segment.endMinute > segment.startMinute
+        && segment.endMinute <= 1440
+        && segment.durationMinutes == segment.endMinute - segment.startMinute
+        && segment.mark in ['unmarked', 'present', 'absent']
+        && segment.absentUnits is int
+        && segment.absentUnits >= 0
+        && segment.absentUnits <= segment.durationMinutes
+        && segment.justificationStatus in ['none', 'inReview', 'justified', 'notAccepted']
+        && segment.justifiedUnits is int
+        && segment.justifiedUnits >= 0
+        && segment.justifiedUnits <= segment.absentUnits;
+    }
+
+    function validAttendanceRecordSegmentAt(segments, count, index) {
+      return count <= index
+        ? true
+        : validAttendanceRecordSegment(segments[index]);
+    }
+
+    function validAttendanceRecordSegments(segments) {
+      let count = segments.size();
+      return segments is list
+        && count >= 1
+        && count <= 24
+        && validAttendanceRecordSegmentAt(segments, count, 0)
+        && validAttendanceRecordSegmentAt(segments, count, 1)
+        && validAttendanceRecordSegmentAt(segments, count, 2)
+        && validAttendanceRecordSegmentAt(segments, count, 3)
+        && validAttendanceRecordSegmentAt(segments, count, 4)
+        && validAttendanceRecordSegmentAt(segments, count, 5)
+        && validAttendanceRecordSegmentAt(segments, count, 6)
+        && validAttendanceRecordSegmentAt(segments, count, 7)
+        && validAttendanceRecordSegmentAt(segments, count, 8)
+        && validAttendanceRecordSegmentAt(segments, count, 9)
+        && validAttendanceRecordSegmentAt(segments, count, 10)
+        && validAttendanceRecordSegmentAt(segments, count, 11)
+        && validAttendanceRecordSegmentAt(segments, count, 12)
+        && validAttendanceRecordSegmentAt(segments, count, 13)
+        && validAttendanceRecordSegmentAt(segments, count, 14)
+        && validAttendanceRecordSegmentAt(segments, count, 15)
+        && validAttendanceRecordSegmentAt(segments, count, 16)
+        && validAttendanceRecordSegmentAt(segments, count, 17)
+        && validAttendanceRecordSegmentAt(segments, count, 18)
+        && validAttendanceRecordSegmentAt(segments, count, 19)
+        && validAttendanceRecordSegmentAt(segments, count, 20)
+        && validAttendanceRecordSegmentAt(segments, count, 21)
+        && validAttendanceRecordSegmentAt(segments, count, 22)
+        && validAttendanceRecordSegmentAt(segments, count, 23);
+    }
+
+    function validAttendanceEvent(event, eventId) {
+      return event.keys().hasAll([
+          'kind', 'oldValue', 'newValue', 'reason', 'changedAt', 'changedBy'
+        ])
+        && event.keys().hasOnly([
+          'kind', 'rosterEntryId', 'oldValue', 'newValue', 'reason',
+          'changedAt', 'changedBy'
+        ])
+        && eventId.size() > 0
+        && eventId.size() <= 128
+        && event.kind in ['correction', 'justification', 'rosterCorrection', 'void']
+        && event.oldValue is map
+        && event.newValue is map
+        && event.oldValue.size() > 0
+        && event.newValue.size() > 0
+        && event.oldValue.size() <= 8
+        && event.newValue.size() <= 8
+        && event.oldValue != event.newValue
+        && event.reason is string
+        && event.reason.size() > 0
+        && event.reason.size() <= 500
+        && event.changedAt is timestamp
+        && event.changedBy is string
+        && (event.kind == 'void'
+          ? (!event.keys().hasAny(['rosterEntryId'])
+            && event.oldValue.keys().hasOnly(['status'])
+            && event.newValue.keys().hasOnly(['status'])
+            && event.oldValue.status is string
+            && event.newValue.status == 'voided')
+          : (event.rosterEntryId is string
+            && event.rosterEntryId.size() > 0));
+    }
+
+    function attendanceEventMatchesSession(courseId, occurrenceId, eventId, session) {
+      let path = attendanceEventPath(courseId, occurrenceId, eventId);
+      let event = getAfter(path).data;
+      return existsAfter(path)
+        && event.kind == session.lastMutationKind
+        && event.changedAt == request.time
+        && event.changedBy == request.auth.uid
+        && event.get('rosterEntryId', null)
+          == session.lastMutationRosterEntryId;
+    }
+
+    function attendanceSessionHasRosterMutation(courseId, occurrenceId, before, after) {
+      let rosterPath = attendanceRosterPath(
+        courseId,
+        occurrenceId,
+        after.lastMutationRosterEntryId
+      );
+      let rosterBefore = get(rosterPath).data;
+      let rosterAfter = getAfter(rosterPath).data;
+      return after.lastMutationRosterEntryId is string
+        && exists(rosterPath)
+        && existsAfter(rosterPath)
+        && rosterAfter.rosterEntryId == after.lastMutationRosterEntryId
+        && rosterAfter.version == rosterBefore.version + 1
+        && rosterAfter.updatedAt == request.time
+        && rosterAfter.updatedBy == request.auth.uid
+        && after.version == before.version + 1
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid;
+    }
+
+    function attendanceEffectiveScheduleMatches(courseId, occurrenceId, session) {
+      let path = /databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId);
+      let change = get(path).data;
+      return exists(path)
+        ? (change.kind != 'cancelled'
+          && session.occurrenceKind == change.kind
+          && session.scheduledDate == change.originalDate
+          && session.effectiveDate == change.effectiveDate
+          && session.startMinute == change.startMinute
+          && session.endMinute == change.endMinute)
+        : (session.occurrenceKind == 'planned'
+          && session.effectiveDate == session.scheduledDate);
+    }
+
+    function canCreateAttendanceSession(courseId, occurrenceId) {
+      let session = request.resource.data;
+      let configPath = attendanceConfigPath(courseId);
+      let configBefore = get(configPath).data;
+      let configAfter = getAfter(configPath).data;
+      return exists(configPath)
+        && configAfter.mode == configBefore.mode
+        && configAfter.sessionCount == configBefore.sessionCount + 1
+        && configAfter.lastSessionId == occurrenceId
+        && configAfter.createdAt == configBefore.createdAt
+        && configAfter.createdBy == configBefore.createdBy
+        && configAfter.updatedAt == request.time
+        && configAfter.updatedBy == request.auth.uid
+        && ownsExistingCourse(courseId)
+        && validNewAttendanceSession(courseId, occurrenceId, session)
+        && attendanceEffectiveScheduleMatches(courseId, occurrenceId, session)
+        && session.ownerUid == request.auth.uid
+        && session.mode == configBefore.mode
+        && (!attendanceStartHasPassed(session)
+          || (session.get('lateRegistrationReason', null) is string
+            && session.get('lateRegistrationReason', null).size() > 0
+            && session.get('lateRegistrationReason', null).size() <= 500))
+        ;
+    }
+
+    function isAttendancePreparationTransition(before, after) {
+      return before.status == 'preparing'
+        ? (before.rosterState == 'building'
+          ? (after.status == 'preparing'
+            && after.rosterState in ['building', 'ready']
+            && (after.rosterState == 'ready'
+              ? (after.markedCount == 0 && after.unmarkedCount == after.rosterCount)
+              : (after.rosterCount == before.rosterCount
+                && after.markedCount == before.markedCount
+                && after.unmarkedCount == before.unmarkedCount))
+            && (after.rosterState != 'ready'
+              || (after.lastMutationKind == before.lastMutationKind
+                && after.lastMutationRosterEntryId
+                  == before.lastMutationRosterEntryId
+                && after.lastEventId == before.lastEventId)))
+          : (before.rosterState == 'ready'
+            && after.status == 'inProgress'
+            && after.rosterState == 'ready'
+            && attendanceStartHasPassed(after)
+            && after.markedCount == before.markedCount
+            && after.unmarkedCount == before.unmarkedCount))
+        : false;
+    }
+
+    function isAttendanceActiveTransition(courseId, occurrenceId, before, after) {
+      return before.status == 'inProgress'
+        ? (after.status == 'inProgress'
+          ? (after.rosterState == 'ready'
+            && after.lastMutationKind == 'mark'
+            && after.lastEventId == null
+            && after.lastMutationRosterEntryId is string
+            && attendanceSessionHasRosterMutation(
+              courseId, occurrenceId, before, after
+            )
+            && after.markedCount >= before.markedCount - 1
+            && after.markedCount <= before.markedCount + 1
+            && after.unmarkedCount >= before.unmarkedCount - 1
+            && after.unmarkedCount <= before.unmarkedCount + 1)
+          : (after.status == 'closing'
+            && after.rosterState == 'ready'
+            && (before.unmarkedCount == 0
+              || (after.unmarkedConfirmed
+                && after.unmarkedConfirmedAt == request.time
+                && after.unmarkedConfirmedBy == request.auth.uid))))
+        : (before.status == 'closing'
+          ? (after.status == 'closing'
+            ? (after.rosterState == 'ready'
+              && after.markedCount >= before.markedCount
+              && after.markedCount <= before.markedCount + 10
+              && after.unmarkedCount <= before.unmarkedCount
+              && after.unmarkedCount >= before.unmarkedCount - 10)
+            : (after.status == 'finalized'
+              && after.rosterState == 'ready'
+              && after.markedCount == after.rosterCount
+              && after.unmarkedCount == 0
+              && after.get('finalizedAt', null) == request.time
+              && after.unmarkedConfirmed == before.unmarkedConfirmed))
+          : (before.status == 'finalized'
+            && after.status == 'finalized'
+            && after.lastMutationKind in [
+              'correction', 'justification', 'rosterCorrection'
+            ]
+            && after.lastMutationRosterEntryId is string
+            && attendanceSessionHasRosterMutation(
+              courseId, occurrenceId, before, after
+            )
+            && after.lastEventId is string
+            && attendanceEventMatchesSession(
+              courseId, occurrenceId, after.lastEventId, after
+            )));
+    }
+
+    function isAttendanceVoidTransition(courseId, occurrenceId, before, after) {
+      let voidEventPaired = after.lastMutationKind == 'void'
+        && after.lastEventId is string
+        && attendanceEventMatchesSession(
+          courseId,
+          occurrenceId,
+          after.lastEventId,
+          after
+        );
+      let terminalVoid = before.status in [
+          'inProgress', 'closing', 'finalized'
+        ]
+        && after.status == 'voiding'
+        && voidEventPaired;
+      let draftVoid = before.status == 'preparing'
+        && after.status == 'voided'
+        && voidEventPaired
+        && after.get('voidedAt', null) == request.time;
+      let finishVoid = before.status == 'voiding'
+        && after.status == 'voided'
+        && after.lastMutationKind == before.lastMutationKind
+        && after.lastEventId == before.lastEventId
+        && after.get('reason', null) == before.get('reason', null)
+        && after.get('voidedAt', null) == request.time;
+      return terminalVoid || draftVoid || finishVoid;
+    }
+
+    function canUpdateAttendanceSession(courseId, occurrenceId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && before.ownerUid == request.auth.uid
+        && after.ownerUid == before.ownerUid
+        && before.courseId == courseId
+        && before.occurrenceId == occurrenceId
+        && (after.rosterCount == before.rosterCount
+          || (before.status == 'preparing' && before.rosterState == 'building'
+            && after.status == 'preparing' && after.rosterState == 'ready'
+            && after.rosterCount is int && after.rosterCount >= 0
+            && before.markedCount == 0 && after.markedCount == 0))
+        && after.markedCount is int
+        && after.markedCount >= 0
+        && after.unmarkedCount is int
+        && after.unmarkedCount >= 0
+        && after.markedCount + after.unmarkedCount == after.rosterCount
+        && after.unmarkedConfirmed is bool
+        && after.version == before.version + 1
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        && (after.get('lateRegistrationReason', null) == before.get('lateRegistrationReason', null)
+          || (before.status == 'preparing' && before.rosterState == 'building'
+            && after.status == 'preparing' && after.rosterState == 'building'
+            && before.get('lateRegistrationReason', null) == null
+            && attendanceStartHasPassed(before)
+            && after.get('lateRegistrationReason', null) is string
+            && after.lateRegistrationReason.size() > 0
+            && after.lateRegistrationReason.size() <= 500))
+        && (after.unmarkedConfirmed == before.unmarkedConfirmed
+          ? (after.get('unmarkedConfirmedAt', null)
+              == before.get('unmarkedConfirmedAt', null)
+            && after.get('unmarkedConfirmedBy', null)
+              == before.get('unmarkedConfirmedBy', null))
+          : (!before.unmarkedConfirmed
+            && after.status == 'closing'
+            && after.get('unmarkedConfirmedAt', null) == request.time
+            && after.get('unmarkedConfirmedBy', null) == request.auth.uid))
+        && after.diff(before).affectedKeys().hasOnly([
+          'status', 'rosterState', 'rosterCount', 'markedCount', 'unmarkedCount',
+          'unmarkedConfirmed', 'unmarkedConfirmedAt', 'unmarkedConfirmedBy',
+          'version', 'updatedAt', 'updatedBy', 'lastMutationRosterEntryId',
+          'lastMutationKind', 'lastEventId', 'finalizedAt', 'voidedAt', 'reason',
+          'lateRegistrationReason'
+        ])
+        && ((after.status in ['voiding', 'voided']
+            || before.status == 'voiding')
+          ? isAttendanceVoidTransition(courseId, occurrenceId, before, after)
+          : (before.status == 'preparing'
+            ? isAttendancePreparationTransition(before, after)
+            : isAttendanceActiveTransition(courseId, occurrenceId, before, after)));
+    }
+
+    function canCreateAttendanceSegment(courseId, occurrenceId, segmentId) {
+      let sessionPath = attendanceSessionPath(courseId, occurrenceId);
+      let sessionBefore = get(sessionPath).data;
+      let session = getAfter(sessionPath).data;
+      return ownsExistingCourse(courseId)
+        && exists(sessionPath)
+        && existsAfter(sessionPath)
+        && session.ownerUid == request.auth.uid
+        && session.courseId == courseId
+        && session.occurrenceId == occurrenceId
+        && session.mode == 'minutes'
+        && session.segmentIds is list
+        && sessionBefore.status == 'preparing'
+        && sessionBefore.rosterState == 'building'
+        && session.version == sessionBefore.version + 1
+        && session.updatedAt == request.time
+        && session.updatedBy == request.auth.uid
+        && validAttendanceSegment(
+          occurrenceId,
+          segmentId,
+          request.resource.data,
+          session
+        );
+    }
+
+    function canWriteStudentCalendar(courseId, occurrenceId) {
+      let sourcePath = /databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId);
+      let source = getAfter(sourcePath).data;
+      let projection = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && existsAfter(sourcePath)
+        && projection.keys().hasOnly(['occurrenceId', 'kind', 'originalDate',
+          'effectiveDate', 'startMinute', 'endMinute', 'version'])
+        && projection.occurrenceId == occurrenceId
+        && projection.occurrenceId == source.occurrenceId
+        && projection.kind == source.kind
+        && projection.originalDate == source.originalDate
+        && projection.effectiveDate == source.effectiveDate
+        && projection.startMinute == source.startMinute
+        && projection.endMinute == source.endMinute
+        && projection.version == source.version;
+    }
+
+    function canCreateAttendanceCalendarChange(courseId, occurrenceId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      let change = request.resource.data;
+      return ownsExistingCourse(courseId)
+        && validAttendanceCalendarChange(occurrenceId, change)
+        && change.version == 1
+        && change.createdAt == request.time
+        && change.createdBy == request.auth.uid
+        && change.updatedAt == request.time
+        && change.updatedBy == request.auth.uid
+        && change.originalDate >= course.startDate
+        && change.originalDate <= course.endDate
+        && change.effectiveDate >= course.startDate
+        && change.effectiveDate <= course.endDate;
+    }
+
+    function canUpdateAttendanceCalendarChange(courseId, occurrenceId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      let course = get(coursePath).data;
+      return ownsExistingCourse(courseId)
+        && validAttendanceCalendarChange(occurrenceId, after)
+        && after.version == before.version + 1
+        && after.createdAt == before.createdAt
+        && after.createdBy == before.createdBy
+        && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        && after.originalDate >= course.startDate
+        && after.originalDate <= course.endDate
+        && after.effectiveDate >= course.startDate
+        && after.effectiveDate <= course.endDate
+        && after.diff(before).affectedKeys().hasOnly([
+          'kind', 'originalDate', 'effectiveDate', 'startMinute', 'endMinute',
+          'reason', 'version', 'updatedAt', 'updatedBy'
+        ]);
+    }
+
+    function validAttendanceSegment(occurrenceId, segmentId, segment, session) {
+      return segment.keys().hasAll([
+          'segmentId', 'order', 'startMinute', 'endMinute', 'durationMinutes',
+          'createdAt'
+        ])
+        && segment.keys().hasOnly([
+          'segmentId', 'order', 'startMinute', 'endMinute', 'durationMinutes',
+          'createdAt'
+        ])
+        && segment.segmentId == segmentId
+        && segment.order is int
+        && segment.order >= 0
+        && segment.order < session.segmentIds.size()
+        && segment.order < 24
+        && session.segmentIds[segment.order] == segmentId
+        && segment.startMinute is int
+        && segment.startMinute >= session.startMinute
+        && segment.endMinute is int
+        && segment.endMinute > segment.startMinute
+        && segment.endMinute <= session.endMinute
+        && segment.durationMinutes == segment.endMinute - segment.startMinute
+        && segment.durationMinutes >= 1
+        && segment.durationMinutes <= 60
+        && segment.createdAt == request.time
+        && session.occurrenceId == occurrenceId
+        && session.mode == 'minutes'
+        && session.status == 'preparing'
+        && session.rosterState == 'building';
+    }
+
     match /users/{uid} {
       // A user can directly fetch their own profile; profile enumeration is denied.
       allow get: if ownsUser(uid) || adminCanGetPendingRequesterProfile(uid);
@@ -1937,6 +3283,86 @@ service cloud.firestore {
           request.resource.data
         );
         allow update, delete: if false;
+      }
+
+      match /attendance_config/{configId} {
+        allow get: if configId == 'current'
+          && canGetAttendanceConfig(courseId);
+        allow list: if false;
+        allow create: if canCreateAttendanceConfig(courseId, configId);
+        allow update: if canChangeAttendanceConfig(courseId, configId)
+          || canIncrementAttendanceSessionCount(courseId, configId);
+        allow delete: if false;
+      }
+
+      match /student_calendar/{occurrenceId} {
+        allow get, list: if ownsExistingCourse(courseId)
+          || studentEnrolledInCourse(courseId);
+        allow create, update: if canWriteStudentCalendar(courseId, occurrenceId);
+        allow delete: if false;
+      }
+
+      match /attendance_calendar/{occurrenceId} {
+        allow get, list: if ownsExistingCourse(courseId);
+        allow create: if canCreateAttendanceCalendarChange(courseId, occurrenceId);
+        allow update: if canUpdateAttendanceCalendarChange(courseId, occurrenceId);
+        allow delete: if false;
+      }
+
+      match /attendance_sessions/{occurrenceId} {
+        allow get, list: if ownsExistingCourse(courseId);
+        allow create: if canCreateAttendanceSession(courseId, occurrenceId);
+        allow update: if canUpdateAttendanceSession(courseId, occurrenceId);
+        allow delete: if false;
+
+        match /segments/{segmentId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if canCreateAttendanceSegment(
+            courseId,
+            occurrenceId,
+            segmentId
+          );
+          allow update, delete: if false;
+        }
+
+        match /roster/{rosterEntryId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if canCreateAttendanceRosterEntry(
+            courseId,
+            occurrenceId,
+            rosterEntryId
+          );
+          allow update: if canUpdateAttendanceRosterEntry(
+            courseId,
+            occurrenceId,
+            rosterEntryId
+          );
+          allow delete: if canDeleteAttendanceRosterEntry(
+            courseId,
+            occurrenceId,
+            rosterEntryId
+          );
+        }
+
+        match /events/{eventId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if canCreateAttendanceEvent(
+            courseId,
+            occurrenceId,
+            eventId
+          );
+          allow update, delete: if false;
+        }
+      }
+
+      match /attendance_records/{recordId} {
+        allow get: if ownsExistingCourse(courseId)
+          || studentCanReadAttendanceRecord(courseId, recordId);
+        allow list: if ownsExistingCourse(courseId)
+          || studentCanListAttendanceRecords(courseId);
+        allow create: if canCreateAttendanceRecord(courseId, recordId);
+        allow update: if canUpdateAttendanceRecord(courseId, recordId);
+        allow delete: if false;
       }
 
       match /invitation/{invitationId} {

@@ -9,6 +9,7 @@ import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/course_schedule.dart';
 import '../../schedule/domain/planned_meeting_generator.dart';
 import '../../schedule/domain/weekly_block.dart';
+import '../../attendance/domain/attendance_mode.dart';
 import '../application/course_draft_validator.dart';
 import '../domain/course_creation_result.dart';
 import '../domain/course_draft.dart';
@@ -40,6 +41,7 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
   int _step = 0;
   bool _saving = false;
   bool _checkingOnly = false;
+  AttendanceMode? _attendanceMode;
   String? _operationError;
   List<CourseValidationIssue> _validationIssues = const [];
 
@@ -69,6 +71,7 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
       group: _groupController.text,
       period: _periodController.text,
       program: _programController.text,
+      attendanceMode: _attendanceMode,
       schedule: CourseSchedule(
         startDate: start,
         endDate: end,
@@ -148,6 +151,7 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
         _groupController.text.trim().isNotEmpty ||
         _periodController.text.trim().isNotEmpty ||
         _programController.text.trim().isNotEmpty ||
+        _attendanceMode != null ||
         _startDate != null ||
         _endDate != null ||
         _blocks.isNotEmpty;
@@ -194,6 +198,12 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
 
   void _continueFromDetails() {
     if (_metadataFormKey.currentState?.validate() != true) return;
+    if (_attendanceMode == null) {
+      setState(() {
+        _operationError = 'Elige cómo se contarán las faltas de este curso.';
+      });
+      return;
+    }
     setState(() {
       _step = 1;
       _operationError = null;
@@ -412,6 +422,33 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
         ),
       ),
       const SizedBox(height: 20),
+      const CourseSectionHeading(title: 'Forma de contar las faltas'),
+      const SizedBox(height: 8),
+      _attendanceModeChoice(
+        value: AttendanceMode.meeting,
+        title: 'Por encuentro',
+        detail:
+            'Cada clase cuenta como una unidad. Una ausencia suma una falta.',
+        icon: Icons.event_available_outlined,
+      ),
+      const SizedBox(height: 8),
+      _attendanceModeChoice(
+        value: AttendanceMode.minutes,
+        title: 'Por horas',
+        detail:
+            'Registra tramos en minutos y permite ajustar ausencias parciales.',
+        icon: Icons.schedule_outlined,
+      ),
+      if (_operationError != null) ...[
+        const SizedBox(height: 12),
+        CourseStateCard(
+          title: 'Revisa los datos',
+          message: _operationError!,
+          icon: Icons.error_outline,
+          color: AppColors.danger,
+        ),
+      ],
+      const SizedBox(height: 18),
       CoursePrimaryButton(
         label: 'Definir calendario',
         icon: Icons.arrow_forward,
@@ -425,6 +462,66 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
       ),
     ],
   );
+
+  Widget _attendanceModeChoice({
+    required AttendanceMode value,
+    required String title,
+    required String detail,
+    required IconData icon,
+  }) {
+    final selected = _attendanceMode == value;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '$title. $detail',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: _saving
+            ? null
+            : () => setState(() {
+                FocusScope.of(context).unfocus();
+                _attendanceMode = value;
+                _operationError = null;
+                _validationIssues = const [];
+              }),
+        child: CoursePanel(
+          padding: const EdgeInsets.all(15),
+          borderColor: selected ? AppColors.primary : AppColors.outline,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                color: selected ? AppColors.primary : AppColors.muted,
+              ),
+              const SizedBox(width: 12),
+              Icon(icon, color: AppColors.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      detail,
+                      style: const TextStyle(color: AppColors.muted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _scheduleStep() => CourseContent(
     children: [
@@ -619,6 +716,11 @@ class _CourseCreationFlowState extends State<CourseCreationFlow> {
               Text(
                 draft.program,
                 style: const TextStyle(color: AppColors.muted),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Faltas ${draft.attendanceMode == AttendanceMode.meeting ? 'por encuentro' : 'por horas'}',
+                style: const TextStyle(color: AppColors.primary),
               ),
               const Divider(height: 24),
               Text(

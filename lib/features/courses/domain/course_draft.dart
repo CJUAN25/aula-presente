@@ -1,5 +1,6 @@
 import '../../schedule/domain/course_schedule.dart';
 import '../../schedule/domain/weekly_block.dart';
+import '../../attendance/domain/attendance_mode.dart';
 
 /// An in-memory create operation. It has no owner UID: the repository derives
 /// ownership from the currently authenticated Firebase user.
@@ -11,6 +12,7 @@ class CourseDraft {
     required this.period,
     required this.program,
     required this.schedule,
+    this.attendanceMode,
   });
 
   /// Stable operation ID retained across form navigation and retries.
@@ -21,6 +23,10 @@ class CourseDraft {
   final String program;
   final CourseSchedule schedule;
 
+  /// Explicitly selected when creating a new course. Null is kept so
+  /// validation can reject incomplete drafts without assigning a default.
+  final AttendanceMode? attendanceMode;
+
   CourseDraft normalized() => CourseDraft(
     id: id,
     subject: normalizeCourseText(subject),
@@ -28,6 +34,7 @@ class CourseDraft {
     period: normalizeCourseText(period),
     program: normalizeCourseText(program),
     schedule: schedule.normalized(),
+    attendanceMode: attendanceMode,
   );
 
   /// Normalized business values used to compare an idempotent retry.

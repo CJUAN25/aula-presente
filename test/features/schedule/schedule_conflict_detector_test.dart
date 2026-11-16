@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aula_presente/features/courses/domain/course.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/schedule/application/schedule_conflict_detector.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
 import 'package:aula_presente/features/schedule/domain/course_schedule.dart';
@@ -35,6 +36,7 @@ void main() {
     group: '1',
     period: '2026-2',
     program: 'Engineering',
+    attendanceMode: AttendanceMode.meeting,
     schedule: value,
   );
 

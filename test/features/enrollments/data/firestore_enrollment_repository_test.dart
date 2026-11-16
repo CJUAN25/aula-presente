@@ -693,6 +693,11 @@ void main() {
         DateTime.utc(todayBogota.year, todayBogota.month, todayBogota.day),
       ),
     );
+    expect(
+      store
+          .pendingStatusEvents['$path/status_events/withdraw-pending-before-start']?['fromEffectiveStartDate'],
+      futureStart,
+    );
 
     final writeCountAfterWithdrawal = store.transactionWriteCount;
     final retry = await repository.changePendingEnrollmentStatus(
@@ -721,6 +726,11 @@ void main() {
       store
           .pendingStatusEvents['$path/status_events/reopen-pending-before-start']?['fromStatus'],
       'withdrawn',
+    );
+    expect(
+      store
+          .pendingStatusEvents['$path/status_events/reopen-pending-before-start']?['fromEffectiveStartDate'],
+      futureStart,
     );
   });
 

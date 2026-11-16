@@ -107,14 +107,20 @@ void main() {
       await tester.enterText(_field(1), '04');
       await tester.enterText(_field(2), '2026-2');
       await tester.enterText(_field(3), 'Ingeniería de sistemas');
+      await tester.ensureVisible(find.text('Por encuentro'));
+      await tester.tap(find.text('Por encuentro'));
+      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.radio_button_checked), findsOneWidget);
+      await tester.ensureVisible(find.text('Definir calendario'));
       await tester.tap(find.text('Definir calendario'));
       await tester.pumpAndSettle();
-      expect(find.text('Define el horario'), findsOneWidget);
+      expect(find.text('Horario del curso'), findsOneWidget);
       expect(repository.createCalls, 0);
 
       await tester.tap(find.byTooltip('Volver'));
       await tester.pumpAndSettle();
-      expect(find.text('Datos del curso'), findsOneWidget);
+      expect(find.text('Crear curso'), findsOneWidget);
+      await tester.ensureVisible(_field(0));
       expect(
         tester.widget<TextFormField>(_field(0)).controller!.text,
         'Arquitectura móvil',

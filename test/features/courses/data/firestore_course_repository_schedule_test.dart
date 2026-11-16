@@ -1,5 +1,6 @@
 import 'package:aula_presente/features/courses/data/firestore_course_repository.dart';
 import 'package:aula_presente/features/courses/domain/course_draft.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/courses/domain/course_failure.dart';
 import 'package:aula_presente/features/schedule/application/schedule_conflict_detector.dart';
 import 'package:aula_presente/features/schedule/domain/academic_date.dart';
@@ -148,6 +149,7 @@ CourseDraft _logic() => CourseDraft(
   group: '01',
   period: 'test',
   program: 'test',
+  attendanceMode: AttendanceMode.meeting,
   schedule: CourseSchedule(
     startDate: AcademicDate(year: 2026, month: 11, day: 2),
     endDate: AcademicDate(year: 2026, month: 11, day: 15),

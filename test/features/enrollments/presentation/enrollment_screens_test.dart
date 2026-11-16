@@ -1,3 +1,7 @@
+import '../../../helpers/calendar_attendance_stub.dart';
+
+import 'package:aula_presente/app/attendance_repository_scope.dart';
+
 import 'dart:async';
 
 import 'package:aula_presente/app/theme/app_theme.dart';
@@ -380,7 +384,10 @@ Widget _app(Widget screen, {double scale = 1}) => MaterialApp(
   theme: AppTheme.dark,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
-    child: child!,
+    child: AttendanceRepositoryScope(
+      repository: CalendarAttendanceStub(),
+      child: child!,
+    ),
   ),
   home: screen,
 );

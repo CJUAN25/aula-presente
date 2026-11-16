@@ -140,6 +140,140 @@ async function seedCourse(
   });
 }
 
+function attendanceDate(offsetDays = 0) {
+  return Timestamp.fromMillis(bogotaToday().toMillis() + offsetDays * 86400000);
+}
+
+function attendanceConfig(uid, mode = "meeting", extra = {}) {
+  return {
+    schemaVersion: 1,
+    mode,
+    sessionCount: 0,
+    lastSessionId: null,
+    createdAt: serverTimestamp(),
+    createdBy: uid,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+    ...extra,
+  };
+}
+
+function attendanceSessionData(courseId, ownerUid, occurrenceId, extra = {}) {
+  const scheduledDate = attendanceDate(1);
+  return {
+    schemaVersion: 1,
+    courseId,
+    ownerUid,
+    occurrenceId,
+    occurrenceKind: "planned",
+    mode: "meeting",
+    status: "preparing",
+    rosterState: "building",
+    scheduledDate,
+    effectiveDate: scheduledDate,
+    startMinute: 480,
+    endMinute: 540,
+    timezone: "America/Bogota",
+    segmentIds: [],
+    rosterCount: 1,
+    markedCount: 0,
+    unmarkedCount: 1,
+    unmarkedConfirmed: false,
+    version: 1,
+    lastMutationRosterEntryId: null,
+    lastMutationKind: null,
+    lastEventId: null,
+    createdAt: serverTimestamp(),
+    createdBy: ownerUid,
+    updatedAt: serverTimestamp(),
+    updatedBy: ownerUid,
+    ...extra,
+  };
+}
+
+function attendanceRosterEntry(rosterEntryId, extra = {}) {
+  return {
+    rosterEntryId,
+    displayName: "Estudiante de prueba",
+    meetingMark: "unmarked",
+    justificationStatus: "none",
+    justifiedUnits: 0,
+    version: 0,
+    updatedAt: serverTimestamp(),
+    updatedBy: "teacher",
+    ...extra,
+  };
+}
+
+function attendanceRecordData(courseId, sessionId, rosterEntryId, extra = {}) {
+  const scheduledDate = attendanceDate(-1);
+  return {
+    schemaVersion: 1,
+    courseId,
+    sessionId,
+    rosterEntryId,
+    visibility: "published",
+    mode: "meeting",
+    scheduledDate,
+    effectiveDate: scheduledDate,
+    startMinute: 480,
+    endMinute: 540,
+    unitCount: 1,
+    absentUnits: 0,
+    inReviewUnits: 0,
+    justifiedUnits: 0,
+    result: "present",
+    publishedAt: scheduledDate,
+    updatedAt: scheduledDate,
+    ...extra,
+  };
+}
+
+async function seedAttendanceConfig(courseId, uid, mode = "meeting", extra = {}) {
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", courseId, "attendance_config", "current"),
+      attendanceConfig(uid, mode, extra),
+    );
+  });
+}
+
+async function seedAttendanceSession(courseId, uid, occurrenceId, extra = {}) {
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(context.firestore(), "courses", courseId, "attendance_sessions", occurrenceId),
+      attendanceSessionData(courseId, uid, occurrenceId, extra),
+    );
+  });
+}
+
+async function seedAttendanceEnrollment(courseId, studentUid, ownerUid, email, rosterEntryId = email) {
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const data = enrollmentData(studentUid, ownerUid, email);
+    if (rosterEntryId == null) delete data.rosterEntryId;
+    else data.rosterEntryId = rosterEntryId;
+    await setDoc(
+      doc(context.firestore(), "courses", courseId, "enrollments", studentUid),
+      data,
+    );
+  });
+}
+
+async function seedAttendanceRecord(courseId, sessionId, rosterEntryId, extra = {}) {
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(
+      doc(
+        context.firestore(),
+        "courses",
+        courseId,
+        "attendance_records",
+        `${sessionId}|${rosterEntryId}`,
+      ),
+      attendanceRecordData(courseId, sessionId, rosterEntryId, extra),
+    );
+  });
+}
+
 function directoryData(uid, email, profileData = profile(email), extra = {}) {
   return {
     uid,
@@ -247,6 +381,7 @@ async function changePendingEnrollmentAtomically(
   operationId,
   nextStatus,
   effectiveDate,
+  eventOptions = {},
 ) {
   const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
   const eventRef = doc(
@@ -275,6 +410,9 @@ async function changePendingEnrollmentAtomically(
       fromStatus: before.status,
       toStatus: nextStatus,
       effectiveDate,
+      ...(!eventOptions.omitFromEffectiveStartDate
+        ? { fromEffectiveStartDate: eventOptions.fromEffectiveStartDate ?? before.effectiveStartDate }
+        : {}),
       changedAt: serverTimestamp(),
       changedBy: before.ownerUid,
     });
@@ -287,7 +425,12 @@ async function linkPendingEnrollmentAtomically(
   courseId,
   email,
   studentUid,
-  { operationId = "link", resolveMatchingJoinRequest = true } = {},
+  {
+    operationId = "link",
+    resolveMatchingJoinRequest = true,
+    omitFromEffectiveStartDate = false,
+    fromEffectiveStartDate,
+  } = {},
 ) {
   const pendingRef = doc(db, "courses", courseId, "pending_enrollments", email);
   const enrollmentRef = doc(db, "courses", courseId, "enrollments", studentUid);
@@ -343,6 +486,9 @@ async function linkPendingEnrollmentAtomically(
       fromStatus: pending.status,
       toStatus: "linked",
       effectiveDate: pending.effectiveStartDate,
+      ...(!omitFromEffectiveStartDate
+        ? { fromEffectiveStartDate: fromEffectiveStartDate ?? pending.effectiveStartDate }
+        : {}),
       changedAt: serverTimestamp(),
       changedBy: studentUid,
     });
@@ -432,6 +578,7 @@ async function enrollManuallyAndReconcilePending(
       fromStatus: pending.status,
       toStatus: "linked",
       effectiveDate: pending.effectiveStartDate,
+      fromEffectiveStartDate: pending.effectiveStartDate,
       changedAt: serverTimestamp(),
       changedBy: course.ownerUid,
     });
@@ -798,12 +945,27 @@ async function createCourseAtomically(
   reference,
   payload,
   blocks,
-  { omitOrders = [], childOverrides = {}, extraChildren = [] } = {},
+  {
+    omitOrders = [],
+    childOverrides = {},
+    extraChildren = [],
+    omitAttendanceConfig = false,
+    attendanceMode = "meeting",
+  } = {},
 ) {
   return runTransaction(db, async (transaction) => {
     const existing = await transaction.get(reference);
     if (existing.exists()) throw new Error("course-already-exists");
     transaction.set(reference, payload);
+    if (!omitAttendanceConfig) {
+      transaction.set(doc(
+        db,
+        "courses",
+        reference.id,
+        "attendance_config",
+        "current",
+      ), attendanceConfigData(payload.ownerUid, attendanceMode));
+    }
     const writtenBlockIds = new Set();
     blocks.forEach((block, order) => {
       if (omitOrders.includes(order) || writtenBlockIds.has(block.id)) return;
@@ -821,6 +983,19 @@ async function createCourseAtomically(
     }
     return "created";
   });
+}
+
+function attendanceConfigData(uid, mode = "meeting") {
+  return {
+    schemaVersion: 1,
+    mode,
+    sessionCount: 0,
+    createdAt: serverTimestamp(),
+    createdBy: uid,
+    updatedAt: serverTimestamp(),
+    updatedBy: uid,
+    lastSessionId: null,
+  };
 }
 
 async function writeCourse(db, courseId, uid, options = {}) {
@@ -3646,6 +3821,24 @@ test("conjunto 7: cambios pending requieren evento atómico y permiten cancelar 
     "future-student@example.test",
   );
   await assertSucceeds(createPendingEnrollment(teacher, "future-course", "future-student@example.test"));
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "missing-original-start",
+    "withdrawn",
+    today,
+    { omitFromEffectiveStartDate: true },
+  ));
+  await assertPermissionDenied(changePendingEnrollmentAtomically(
+    teacher,
+    "future-course",
+    "future-student@example.test",
+    "wrong-original-start",
+    "withdrawn",
+    today,
+    { fromEffectiveStartDate: Timestamp.fromMillis(courseStart.toMillis() + 86400000) },
+  ));
 
   await assertPermissionDenied(setDoc(doc(
     teacher,
@@ -3864,6 +4057,13 @@ test("conjunto 7: link estudiantil concilia pending y solo resuelve solicitud C4
 
   await assertSucceeds(createInvitationAtomically(teacher, "course", inviteCodeA));
   await assertSucceeds(createPendingEnrollment(teacher, "course", "student@example.test"));
+  const originalStartDate = (await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "student@example.test",
+  )))).data().effectiveStartDate;
   assert.equal(await assertSucceeds(submitJoinRequestAtomically(
     student,
     "course",
@@ -3884,6 +4084,23 @@ test("conjunto 7: link estudiantil concilia pending y solo resuelve solicitud C4
     lastEventId: "link",
     lastStatusChangedAt: serverTimestamp(),
   }));
+  await assertPermissionDenied(linkPendingEnrollmentAtomically(
+    student,
+    "course",
+    "student@example.test",
+    "student",
+    { operationId: "link", omitFromEffectiveStartDate: true },
+  ));
+  await assertPermissionDenied(linkPendingEnrollmentAtomically(
+    student,
+    "course",
+    "student@example.test",
+    "student",
+    {
+      operationId: "link",
+      fromEffectiveStartDate: Timestamp.fromMillis(originalStartDate.toMillis() + 86400000),
+    },
+  ));
   assert.equal(await assertSucceeds(linkPendingEnrollmentAtomically(
     student,
     "course",
@@ -4146,4 +4363,942 @@ test("conjunto 7: matrícula manual enlaza pending y decisión C4 en la misma tr
     "student@example.test",
     "status_events",
   )))).size, 1);
+});
+
+test("conjunto 7: los eventos históricos de cinco campos siguen siendo legibles", async () => {
+  await seedProfile("teacher", "teacher@example.test", ["teacher"]);
+  await seedCourse("teacher", "course");
+  const teacher = userContext("teacher", "teacher@example.test", true);
+  const today = bogotaToday();
+  await assertSucceeds(createPendingEnrollment(teacher, "course", "legacy@example.test"));
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(
+      context.firestore(),
+      "courses",
+      "course",
+      "pending_enrollments",
+      "legacy@example.test",
+      "status_events",
+      "legacy-five-fields",
+    ), {
+      fromStatus: "pending",
+      toStatus: "withdrawn",
+      effectiveDate: today,
+      changedAt: today,
+      changedBy: "teacher",
+    });
+  });
+
+  const legacyEvent = (await assertSucceeds(getDoc(doc(
+    teacher,
+    "courses",
+    "course",
+    "pending_enrollments",
+    "legacy@example.test",
+    "status_events",
+    "legacy-five-fields",
+  )))).data();
+  assert.deepEqual(Object.keys(legacyEvent).sort(), [
+    "changedAt",
+    "changedBy",
+    "effectiveDate",
+    "fromStatus",
+    "toStatus",
+  ]);
+});
+
+test("conjunto 8: attendance privado solo es legible por docente verificado dueño", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("other", "other@example.test", ["teacher"]);
+  await seedProfile("admin", "admin@example.test", ["admin"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceConfig("course", "owner");
+  await seedAttendanceSession("course", "owner", "session", {
+    status: "finalized",
+    rosterState: "ready",
+    finalizedAt: attendanceDate(-1),
+  });
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    const date = Timestamp.fromDate(new Date("2027-01-05T00:00:00.000Z"));
+    await setDoc(doc(db, "courses", "course", "attendance_calendar", "calendar-1"), {
+      occurrenceId: "calendar-1",
+      kind: "additional",
+      originalDate: date,
+      effectiveDate: date,
+      startMinute: 480,
+      endMinute: 540,
+      reason: "Recuperación",
+      version: 1,
+      createdAt: date,
+      createdBy: "owner",
+      updatedAt: date,
+      updatedBy: "owner",
+    });
+    await setDoc(doc(db, "courses", "course", "attendance_sessions", "session", "segments", "seg-1"), {
+      segmentId: "seg-1", order: 0, startMinute: 480, endMinute: 540,
+      durationMinutes: 60, createdAt: date,
+    });
+    await setDoc(doc(db, "courses", "course", "attendance_sessions", "session", "roster", "student@example.test"),
+      attendanceRosterEntry("student@example.test", { updatedBy: "owner" }));
+    await setDoc(doc(db, "courses", "course", "attendance_sessions", "session", "events", "event-1"), {
+      kind: "correction",
+      rosterEntryId: "student@example.test",
+      oldValue: { meetingMark: "present" },
+      newValue: { meetingMark: "absent" },
+      reason: "Corrección auditada",
+      changedAt: date,
+      changedBy: "owner",
+    });
+    await setDoc(doc(db, "courses", "course", "attendance_records", "session|student@example.test"),
+      attendanceRecordData("course", "session", "student@example.test"));
+  });
+
+  const owner = userContext("owner", "owner@example.test", true);
+  const other = userContext("other", "other@example.test", true);
+  const unverifiedOwner = userContext("owner", "owner@example.test", false);
+  const adminOnly = userContext("admin", "admin@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const paths = [
+    ["courses", "course", "attendance_config", "current"],
+    ["courses", "course", "attendance_calendar", "calendar-1"],
+    ["courses", "course", "attendance_sessions", "session"],
+    ["courses", "course", "attendance_sessions", "session", "segments", "seg-1"],
+    ["courses", "course", "attendance_sessions", "session", "roster", "student@example.test"],
+    ["courses", "course", "attendance_sessions", "session", "events", "event-1"],
+    ["courses", "course", "attendance_records", "session|student@example.test"],
+  ];
+  for (const path of paths) {
+    await assertSucceeds(getDoc(doc(owner, ...path)));
+    await assertPermissionDenied(getDoc(doc(other, ...path)));
+    await assertPermissionDenied(getDoc(doc(unverifiedOwner, ...path)));
+    await assertPermissionDenied(getDoc(doc(adminOnly, ...path)));
+    await assertPermissionDenied(getDoc(doc(student, ...path)));
+  }
+  await assertSucceeds(getDocs(collection(owner, "courses", "course", "attendance_sessions")));
+  await assertPermissionDenied(getDocs(collection(other, "courses", "course", "attendance_sessions")));
+  await assertPermissionDenied(getDocs(collection(student, "courses", "course", "attendance_sessions")));
+  await assertPermissionDenied(getDocs(collection(student, "courses", "course", "attendance_sessions", "session", "roster")));
+  await assertPermissionDenied(getDocs(collection(student, "courses", "course", "attendance_sessions", "session", "events")));
+});
+
+test("conjunto 8: curso nuevo conserva configuración atómica y sesión incrementa lastSessionId", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  const owner = userContext("owner", "owner@example.test", true);
+  await assertSucceeds(writeCourse(owner, "new-course", "owner"));
+  const createdConfig = (await assertSucceeds(getDoc(doc(
+    owner, "courses", "new-course", "attendance_config", "current",
+  )))).data();
+  assert.equal(createdConfig.sessionCount, 0);
+  assert.equal(createdConfig.lastSessionId, null);
+
+  await seedCourse("owner", "existing-course");
+  await seedAttendanceConfig("existing-course", "owner");
+  const configRef = doc(owner, "courses", "existing-course", "attendance_config", "current");
+  const sessionRef = doc(owner, "courses", "existing-course", "attendance_sessions", "occurrence-1");
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const configSnapshot = await transaction.get(configRef);
+    const config = configSnapshot.data();
+    transaction.set(sessionRef, attendanceSessionData("existing-course", "owner", "occurrence-1"));
+    transaction.update(configRef, {
+      sessionCount: config.sessionCount + 1,
+      lastSessionId: "occurrence-1",
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+  }));
+  const updatedConfig = (await assertSucceeds(getDoc(configRef))).data();
+  assert.equal(updatedConfig.sessionCount, 1);
+  assert.equal(updatedConfig.lastSessionId, "occurrence-1");
+  assert.equal((await assertSucceeds(getDoc(sessionRef))).exists(), true);
+});
+
+test("conjunto 8: Rules rechaza incremento o sesión sin su pareja y bloquea cambiar modo usado", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceConfig("course", "owner");
+  const owner = userContext("owner", "owner@example.test", true);
+  const configRef = doc(owner, "courses", "course", "attendance_config", "current");
+  await assertPermissionDenied(updateDoc(configRef, {
+    sessionCount: 1,
+    lastSessionId: "orphan-session",
+    updatedAt: serverTimestamp(),
+    updatedBy: "owner",
+  }));
+  await assertPermissionDenied(setDoc(
+    doc(owner, "courses", "course", "attendance_sessions", "orphan-session"),
+    attendanceSessionData("course", "owner", "orphan-session"),
+  ));
+
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), "courses", "course", "attendance_config", "current"), {
+      sessionCount: 1,
+      lastSessionId: "historical-session",
+    });
+  });
+  await assertPermissionDenied(updateDoc(configRef, {
+    mode: "minutes",
+    updatedAt: serverTimestamp(),
+    updatedBy: "owner",
+  }));
+});
+
+test("conjunto 8: estudiante consulta solo su proyección publicada con filtros de identidad", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  await seedAttendanceSession("course", "owner", "final-session", {
+    status: "finalized", rosterState: "ready", finalizedAt: attendanceDate(-1),
+  });
+  await seedAttendanceSession("course", "owner", "other-session", {
+    status: "finalized", rosterState: "ready", finalizedAt: attendanceDate(-1),
+  });
+  await seedAttendanceSession("course", "owner", "staged-session", {
+    status: "closing", rosterState: "ready",
+  });
+  await seedAttendanceRecord("course", "final-session", "student@example.test");
+  await seedAttendanceRecord("course", "other-session", "other@example.test");
+  await seedAttendanceRecord("course", "staged-session", "student@example.test", {
+    visibility: "staged", publishedAt: null,
+  });
+
+  const student = userContext("student", "student@example.test", true);
+  const records = collection(student, "courses", "course", "attendance_records");
+  const exactQuery = query(
+    records,
+    where("rosterEntryId", "==", "student@example.test"),
+    where("visibility", "==", "published"),
+    orderBy("effectiveDate", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const ownPage = await assertSucceeds(getDocs(exactQuery));
+  assert.equal(ownPage.size, 1);
+  assert.equal(ownPage.docs[0].id, "final-session|student@example.test");
+  await assertSucceeds(getDoc(doc(records, "final-session|student@example.test")));
+  await assertPermissionDenied(getDoc(doc(records, "other-session|other@example.test")));
+  await assertPermissionDenied(getDoc(doc(records, "staged-session|student@example.test")));
+  await assertPermissionDenied(getDocs(query(records, where("rosterEntryId", "==", "student@example.test"))));
+  await assertPermissionDenied(getDocs(query(records, where("visibility", "==", "published"))));
+
+  const legacyUid = "legacy-student";
+  await seedProfile(legacyUid, "legacy@example.test", ["student"]);
+  await seedAttendanceEnrollment("course", legacyUid, "owner", "legacy@example.test", null);
+  await seedAttendanceSession("course", "owner", "legacy-session", {
+    status: "finalized", rosterState: "ready", finalizedAt: attendanceDate(-1),
+  });
+  await seedAttendanceRecord("course", "legacy-session", `legacy:${legacyUid}`);
+  const legacy = userContext(legacyUid, "legacy@example.test", true);
+  await assertSucceeds(getDoc(doc(
+    legacy, "courses", "course", "attendance_records",
+    `legacy-session|legacy:${legacyUid}`,
+  )));
+});
+
+test("conjunto 8: publicación y lectura esperan finalización; closing y voiding quedan ocultos", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const commonDate = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "closing-session", {
+    status: "closing", rosterState: "ready", scheduledDate: commonDate,
+    effectiveDate: commonDate,
+  });
+  await seedAttendanceSession("course", "owner", "voiding-session", {
+    status: "voiding", rosterState: "ready", scheduledDate: commonDate,
+    effectiveDate: commonDate, lastMutationKind: "void", lastEventId: "void-op",
+    reason: "Anulada",
+  });
+  await seedAttendanceSession("course", "owner", "voided-session", {
+    status: "voided", rosterState: "ready", scheduledDate: commonDate,
+    effectiveDate: commonDate, lastMutationKind: "void", lastEventId: "void-op",
+    reason: "Anulada", voidedAt: commonDate,
+  });
+  await seedAttendanceRecord("course", "closing-session", "student@example.test", {
+    scheduledDate: commonDate, effectiveDate: commonDate,
+  });
+  await seedAttendanceRecord("course", "voiding-session", "student@example.test", {
+    scheduledDate: commonDate, effectiveDate: commonDate,
+  });
+  await seedAttendanceRecord("course", "voided-session", "student@example.test", {
+    scheduledDate: commonDate, effectiveDate: commonDate,
+    result: "voided", unitCount: 0, absentUnits: 0, inReviewUnits: 0,
+    justifiedUnits: 0,
+  });
+
+  const student = userContext("student", "student@example.test", true);
+  const records = collection(student, "courses", "course", "attendance_records");
+  await assertPermissionDenied(getDoc(doc(records, "closing-session|student@example.test")));
+  await assertPermissionDenied(getDoc(doc(records, "voiding-session|student@example.test")));
+  await assertSucceeds(getDoc(doc(records, "voided-session|student@example.test")));
+});
+
+test("conjunto 8: segmentos y nómina de minutos se crean por chunks versionados", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("other", "other@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceSession("course", "owner", "minutes-session", {
+    mode: "minutes", segmentIds: ["seg-1"],
+    startMinute: 480, endMinute: 540, rosterCount: 1, unmarkedCount: 1,
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const other = userContext("other", "other@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "minutes-session");
+  const segmentRef = doc(sessionRef, "segments", "seg-1");
+  const rosterRef = doc(sessionRef, "roster", "student@example.test");
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    transaction.update(sessionRef, {
+      version: sessionSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.set(segmentRef, {
+      segmentId: "seg-1", order: 0, startMinute: 480, endMinute: 540,
+      durationMinutes: 60, createdAt: serverTimestamp(),
+    });
+  }));
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    assert.equal(sessionSnapshot.exists(), true);
+    transaction.set(rosterRef, {
+      rosterEntryId: "student@example.test",
+      displayName: "Estudiante de prueba",
+      segments: {
+        "seg-1": {
+          mark: "unmarked", absentUnits: 0,
+          justificationStatus: "none", justifiedUnits: 0,
+        },
+      },
+      version: 0,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.update(sessionRef, {
+      version: sessionSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+  }));
+  await assertSucceeds(getDoc(segmentRef));
+  await assertSucceeds(getDoc(rosterRef));
+  await assertPermissionDenied(updateDoc(rosterRef, { displayName: "Alterado" }));
+  await assertPermissionDenied(setDoc(doc(
+    other, "courses", "course", "attendance_sessions", "minutes-session",
+    "segments", "foreign-segment",
+  ), {
+    segmentId: "foreign-segment", order: 0, startMinute: 480, endMinute: 540,
+    durationMinutes: 60, createdAt: serverTimestamp(),
+  }));
+});
+
+test("conjunto 8: cierre confirmado actualiza dos faltantes en un chunk atómico", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  const previousDate = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "closing-batch", {
+    status: "inProgress", rosterState: "ready", scheduledDate: previousDate,
+    effectiveDate: previousDate, rosterCount: 2, markedCount: 0, unmarkedCount: 2,
+  });
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (const id of ["student-a@example.test", "student-b@example.test"]) {
+      await setDoc(doc(db, "courses", "course", "attendance_sessions", "closing-batch", "roster", id),
+        attendanceRosterEntry(id, { updatedBy: "owner" }));
+    }
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "closing-batch");
+  const rowA = doc(sessionRef, "roster", "student-a@example.test");
+  const rowB = doc(sessionRef, "roster", "student-b@example.test");
+
+  await assertPermissionDenied(updateDoc(rowA, {
+    meetingMark: "absent", version: 1,
+    updatedAt: serverTimestamp(), updatedBy: "owner",
+  }));
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    const snapshotA = await transaction.get(rowA);
+    const snapshotB = await transaction.get(rowB);
+    transaction.update(sessionRef, {
+      status: "closing",
+      markedCount: 2,
+      unmarkedCount: 0,
+      unmarkedConfirmed: true,
+      unmarkedConfirmedAt: serverTimestamp(),
+      unmarkedConfirmedBy: "owner",
+      version: sessionSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    for (const snapshot of [snapshotA, snapshotB]) {
+      transaction.update(snapshot.ref, {
+        meetingMark: "absent",
+        version: snapshot.data().version + 1,
+        updatedAt: serverTimestamp(),
+        updatedBy: "owner",
+      });
+    }
+  }));
+  assert.equal((await assertSucceeds(getDoc(sessionRef))).data().status, "closing");
+  assert.equal((await assertSucceeds(getDoc(rowA))).data().meetingMark, "absent");
+  assert.equal((await assertSucceeds(getDoc(rowB))).data().meetingMark, "absent");
+});
+
+test("conjunto 8: anulación registra evento sin rosterEntryId en una transacción", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const date = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "void-session", {
+    status: "finalized", rosterState: "ready", scheduledDate: date,
+    effectiveDate: date, finalizedAt: date, rosterCount: 12, markedCount: 12,
+    unmarkedCount: 0,
+  });
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (let index = 0; index < 12; index += 1) {
+      const rosterEntryId = index === 0
+        ? "student@example.test"
+        : `student-${index}@example.test`;
+      await setDoc(
+        doc(db, "courses", "course", "attendance_records", `void-session|${rosterEntryId}`),
+        attendanceRecordData("course", "void-session", rosterEntryId, {
+          scheduledDate: date,
+          effectiveDate: date,
+          publishedAt: date,
+          updatedAt: date,
+        }),
+      );
+    }
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "void-session");
+  const eventRef = doc(sessionRef, "events", "void-operation");
+  const event = {
+    kind: "void",
+    oldValue: { status: "finalized" },
+    newValue: { status: "voided" },
+    reason: "La clase fue anulada",
+    changedAt: serverTimestamp(),
+    changedBy: "owner",
+  };
+  await assertPermissionDenied(updateDoc(sessionRef, {
+    status: "voiding",
+    reason: "La clase fue anulada",
+    lastMutationKind: "void",
+    lastEventId: "void-operation",
+    version: 2,
+    updatedAt: serverTimestamp(),
+    updatedBy: "owner",
+  }));
+  await assertPermissionDenied(setDoc(doc(sessionRef, "events", "isolated-void"), event));
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const snapshot = await transaction.get(sessionRef);
+    transaction.update(sessionRef, {
+      status: "voiding",
+      reason: "La clase fue anulada",
+      lastMutationRosterEntryId: null,
+      lastMutationKind: "void",
+      lastEventId: "void-operation",
+      version: snapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.set(eventRef, event);
+  }));
+  assert.equal((await assertSucceeds(getDoc(eventRef))).data().kind, "void");
+  const eventData = (await assertSucceeds(getDoc(eventRef))).data();
+  assert.equal(Object.hasOwn(eventData, "rosterEntryId"), false);
+
+  const studentRecordRef = doc(
+    student, "courses", "course", "attendance_records",
+    "void-session|student@example.test",
+  );
+  const studentRecords = collection(student, "courses", "course", "attendance_records");
+  const ownQuery = query(
+    studentRecords,
+    where("rosterEntryId", "==", "student@example.test"),
+    where("visibility", "==", "published"),
+    orderBy("effectiveDate", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  const whileVoiding = await assertSucceeds(getDocs(ownQuery));
+  assert.equal(whileVoiding.size, 1);
+  assert.equal(whileVoiding.docs[0].data().result, "present");
+  await assertPermissionDenied(updateDoc(studentRecordRef, {
+    result: "voided", updatedAt: serverTimestamp(),
+  }));
+
+  for (let index = 0; index < 12; index += 1) {
+    const rosterEntryId = index === 0
+      ? "student@example.test"
+      : `student-${index}@example.test`;
+    await assertSucceeds(updateDoc(doc(
+      owner, "courses", "course", "attendance_records",
+      `void-session|${rosterEntryId}`,
+    ), {
+      result: "voided",
+      unitCount: 0,
+      absentUnits: 0,
+      inReviewUnits: 0,
+      justifiedUnits: 0,
+      updatedAt: serverTimestamp(),
+    }));
+  }
+  assert.equal((await assertSucceeds(getDoc(sessionRef))).data().version, 2);
+  assert.equal((await assertSucceeds(getDocs(ownQuery))).docs[0].data().result, "voided");
+  await assertPermissionDenied(getDoc(studentRecordRef));
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const snapshot = await transaction.get(sessionRef);
+    transaction.update(sessionRef, {
+      status: "voided",
+      voidedAt: serverTimestamp(),
+      version: snapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+  }));
+  assert.equal((await assertSucceeds(getDoc(studentRecordRef))).data().result, "voided");
+});
+
+test("conjunto 8: justificación y corrección actualizan fila, proyección y evento atómicamente", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("other", "other@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const date = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "audit-session", {
+    status: "finalized", rosterState: "ready", scheduledDate: date,
+    effectiveDate: date, finalizedAt: date, rosterCount: 1, markedCount: 1,
+    unmarkedCount: 0,
+  });
+  await testEnvironment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(
+      doc(db, "courses", "course", "attendance_sessions", "audit-session", "roster", "student@example.test"),
+      attendanceRosterEntry("student@example.test", {
+        meetingMark: "absent", updatedBy: "owner", version: 0,
+      }),
+    );
+    await setDoc(
+      doc(db, "courses", "course", "attendance_records", "audit-session|student@example.test"),
+      attendanceRecordData("course", "audit-session", "student@example.test", {
+        scheduledDate: date, effectiveDate: date, result: "absent", absentUnits: 1,
+      }),
+    );
+  });
+
+  const owner = userContext("owner", "owner@example.test", true);
+  const other = userContext("other", "other@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "audit-session");
+  const rowRef = doc(sessionRef, "roster", "student@example.test");
+  const recordRef = doc(owner, "courses", "course", "attendance_records", "audit-session|student@example.test");
+  const justificationRef = doc(sessionRef, "events", "justification-1");
+  const justificationEvent = {
+    kind: "justification",
+    rosterEntryId: "student@example.test",
+    oldValue: { justificationStatus: "none", justifiedUnits: 0 },
+    newValue: { justificationStatus: "justified", justifiedUnits: 1 },
+    reason: "Soporte revisado",
+    changedAt: serverTimestamp(),
+    changedBy: "owner",
+  };
+
+  await assertPermissionDenied(setDoc(doc(sessionRef, "events", "isolated"), justificationEvent));
+  await assertPermissionDenied(setDoc(doc(other, "courses", "course", "attendance_sessions", "audit-session", "events", "foreign"), {
+    ...justificationEvent, changedBy: "other",
+  }));
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    const rowSnapshot = await transaction.get(rowRef);
+    const recordSnapshot = await transaction.get(recordRef);
+    transaction.update(sessionRef, {
+      version: sessionSnapshot.data().version + 1,
+      lastMutationRosterEntryId: "student@example.test",
+      lastMutationKind: "justification",
+      lastEventId: "justification-1",
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.update(rowRef, {
+      justificationStatus: "justified",
+      justifiedUnits: 1,
+      version: rowSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.update(recordRef, {
+      result: "justified",
+      justifiedUnits: 1,
+      updatedAt: serverTimestamp(),
+    });
+    transaction.set(justificationRef, justificationEvent);
+    assert.equal(recordSnapshot.data().result, "absent");
+  }));
+  await assertPermissionDenied(updateDoc(justificationRef, { reason: "Reescrito" }));
+  await assertPermissionDenied(updateDoc(rowRef, {
+    justificationStatus: "notAccepted", justifiedUnits: 0,
+    version: 2, updatedAt: serverTimestamp(), updatedBy: "owner",
+  }));
+  await assertPermissionDenied(updateDoc(doc(student, "courses", "course", "attendance_records", "audit-session|student@example.test"), {
+    result: "present", updatedAt: serverTimestamp(),
+  }));
+
+  const correctionRef = doc(sessionRef, "events", "correction-1");
+  const correctionEvent = {
+    kind: "correction",
+    rosterEntryId: "student@example.test",
+    oldValue: { meetingMark: "absent" },
+    newValue: { meetingMark: "present" },
+    reason: "Se corrigió la marca con evidencia",
+    changedAt: serverTimestamp(),
+    changedBy: "owner",
+  };
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    const rowSnapshot = await transaction.get(rowRef);
+    const recordSnapshot = await transaction.get(recordRef);
+    transaction.update(sessionRef, {
+      version: sessionSnapshot.data().version + 1,
+      lastMutationRosterEntryId: "student@example.test",
+      lastMutationKind: "correction",
+      lastEventId: "correction-1",
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.update(rowRef, {
+      meetingMark: "present",
+      justificationStatus: "none",
+      justifiedUnits: 0,
+      version: rowSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.update(recordRef, {
+      result: "present",
+      absentUnits: 0,
+      justifiedUnits: 0,
+      updatedAt: serverTimestamp(),
+    });
+    transaction.set(correctionRef, correctionEvent);
+    assert.equal(recordSnapshot.data().result, "justified");
+  }));
+  await assertPermissionDenied(updateDoc(correctionRef, { reason: "Reescrito" }));
+});
+
+test("conjunto 8: staged solo se publica después de finalized y la consulta propia funciona", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const date = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "publication-session", {
+    status: "closing", rosterState: "ready", scheduledDate: date,
+    effectiveDate: date, rosterCount: 1, markedCount: 1, unmarkedCount: 0,
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "publication-session");
+  const recordRef = doc(owner, "courses", "course", "attendance_records", "publication-session|student@example.test");
+  const record = attendanceRecordData("course", "publication-session", "student@example.test", {
+    scheduledDate: date,
+    effectiveDate: date,
+    visibility: "staged",
+    publishedAt: null,
+    updatedAt: serverTimestamp(),
+  });
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    transaction.update(sessionRef, {
+      version: sessionSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+    transaction.set(recordRef, record);
+  }));
+  const studentRecord = doc(student, "courses", "course", "attendance_records", "publication-session|student@example.test");
+  await assertPermissionDenied(getDoc(studentRecord));
+
+  await assertPermissionDenied(updateDoc(recordRef, {
+    visibility: "published",
+    publishedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  await assertSucceeds(runTransaction(owner, async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    transaction.update(sessionRef, {
+      status: "finalized",
+      finalizedAt: serverTimestamp(),
+      version: sessionSnapshot.data().version + 1,
+      updatedAt: serverTimestamp(),
+      updatedBy: "owner",
+    });
+  }));
+  await assertPermissionDenied(getDoc(studentRecord));
+  const records = collection(student, "courses", "course", "attendance_records");
+  const ownQuery = query(
+    records,
+    where("rosterEntryId", "==", "student@example.test"),
+    where("visibility", "==", "published"),
+    orderBy("effectiveDate", "desc"),
+    orderBy(documentId(), "desc"),
+  );
+  assert.equal((await assertSucceeds(getDocs(ownQuery))).size, 0);
+  await assertSucceeds(updateDoc(recordRef, {
+    visibility: "published",
+    publishedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }));
+  const visible = await assertSucceeds(getDoc(studentRecord));
+  assert.equal(visible.data().visibility, "published");
+  const visiblePage = await assertSucceeds(getDocs(ownQuery));
+  assert.equal(visiblePage.size, 1);
+});
+
+
+test("C8 regression: prepare future and rescheduled roster before starting", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceConfig("course", "owner");
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), "courses", "course"), {
+      startDate: attendanceDate(-30), endDate: attendanceDate(30),
+    });
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  for (const kind of ["planned", "rescheduled"]) {
+    const id = `future-${kind}`;
+    const sessionRef = doc(owner, "courses", "course", "attendance_sessions", id);
+    const configRef = doc(owner, "courses", "course", "attendance_config", "current");
+    const calendarRef = doc(owner, "courses", "course", "attendance_calendar", id);
+    if (kind === "rescheduled") await assertSucceeds(setDoc(calendarRef, {
+      occurrenceId: id, kind, originalDate: attendanceDate(-2), effectiveDate: attendanceDate(1),
+      startMinute: 480, endMinute: 540, reason: "Cambio de horario", version: 1,
+      createdAt: serverTimestamp(), createdBy: "owner", updatedAt: serverTimestamp(), updatedBy: "owner",
+    }));
+    const create = (override = {}) => runTransaction(owner, async tx => {
+      await tx.get(doc(owner, "courses", "course"));
+      const config = await tx.get(configRef);
+      await tx.get(calendarRef);
+      await tx.get(sessionRef);
+      tx.set(sessionRef, attendanceSessionData("course", "owner", id, {
+        occurrenceKind: kind, scheduledDate: kind === "planned" ? attendanceDate(1) : attendanceDate(-2), ...override,
+      }));
+      tx.update(configRef, {sessionCount: config.data().sessionCount + 1, lastSessionId: id,
+        updatedAt: serverTimestamp(), updatedBy: "owner"});
+    });
+    if (kind === "rescheduled") await assertPermissionDenied(create({effectiveDate: attendanceDate(-2), lateRegistrationReason: "Registro tardío"}));
+    await assertSucceeds(create());
+    const row = doc(sessionRef, "roster", "student@example.test");
+    await assertSucceeds(runTransaction(owner, async tx => {
+      const s = await tx.get(sessionRef); await tx.get(row);
+      tx.set(row, attendanceRosterEntry("student@example.test", {studentUid: "student", updatedBy: "owner"}));
+      tx.update(sessionRef, {version: s.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+    }));
+    await assertSucceeds(updateDoc(sessionRef, {rosterState: "ready", version: 3, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+    await assertPermissionDenied(updateDoc(sessionRef, {status: "inProgress", version: 4, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+  }
+});
+
+
+test("C8 regression: resume published absence void with original publication time", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  const date = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "blocked", {
+    status: "voiding", rosterState: "ready", scheduledDate: date, effectiveDate: date,
+    rosterCount: 1, markedCount: 1, unmarkedCount: 0, version: 2,
+    lastMutationKind: "void", lastEventId: "original-event", reason: "Clase anulada",
+  });
+  await seedAttendanceRecord("course", "blocked", "student@example.test", {
+    scheduledDate: date, effectiveDate: date, result: "absent", absentUnits: 1,
+    publishedAt: date,
+  });
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), "courses", "course", "attendance_sessions", "blocked", "events", "original-event"), {
+      kind: "void", oldValue: {status: "finalized"}, newValue: {status: "voided"},
+      reason: "Clase anulada", changedAt: date, changedBy: "owner",
+    });
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const sessionRef = doc(owner, "courses", "course", "attendance_sessions", "blocked");
+  const recordRef = doc(owner, "courses", "course", "attendance_records", "blocked|student@example.test");
+  const eventRef = doc(sessionRef, "events", "original-event");
+  const original = (await getDoc(recordRef)).data();
+  const replacement = {...original, result: "voided", unitCount: 0, absentUnits: 0,
+    inReviewUnits: 0, justifiedUnits: 0, updatedAt: serverTimestamp()};
+  await assertPermissionDenied(setDoc(recordRef, {...replacement, publishedAt: serverTimestamp()}));
+  await assertSucceeds(runTransaction(owner, async tx => {
+    await tx.get(sessionRef); await tx.get(eventRef); await tx.get(recordRef);
+    tx.set(recordRef, replacement);
+  }));
+  // Fresh client resumes after the record chunk was committed, without a new event.
+  const reopened = userContext("owner", "owner@example.test", true);
+  await assertSucceeds(runTransaction(reopened, async tx => {
+    const ref = doc(reopened, sessionRef.path);
+    const session = await tx.get(ref); await tx.get(doc(reopened, eventRef.path));
+    tx.update(ref, {status: "voided", voidedAt: serverTimestamp(), version: session.data().version + 1,
+      updatedAt: serverTimestamp(), updatedBy: "owner"});
+  }));
+  assert.equal((await getDoc(recordRef)).data().unitCount, 0);
+  assert.equal((await getDoc(recordRef)).data().absentUnits, 0);
+  assert.equal((await getDocs(collection(sessionRef, "events"))).size, 1);
+});
+
+test("C8 regression: student calendar contains schedule only and requires active enrollment", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedProfile("student", "student@example.test");
+  await seedProfile("outsider", "outsider@example.test");
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const owner = userContext("owner", "owner@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const outsider = userContext("outsider", "outsider@example.test", true);
+  const source = {occurrenceId: "changed", kind: "rescheduled", originalDate: attendanceDate(-2),
+    effectiveDate: attendanceDate(1), startMinute: 480, endMinute: 540, reason: "Motivo privado",
+    version: 1, createdAt: attendanceDate(-2), createdBy: "owner", updatedAt: attendanceDate(-2), updatedBy: "owner"};
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), "courses", "course", "attendance_calendar", "changed"), source);
+  });
+  const {reason, createdAt, createdBy, updatedAt, updatedBy, ...projection} = source;
+  const publicRef = doc(owner, "courses", "course", "student_calendar", "changed");
+  await assertPermissionDenied(setDoc(publicRef, {...projection, reason}));
+  await assertPermissionDenied(setDoc(publicRef, {...projection, startMinute: 600}));
+  await assertSucceeds(setDoc(publicRef, projection));
+  const visible = await assertSucceeds(getDocs(collection(student, "courses", "course", "student_calendar")));
+  assert.equal(visible.size, 1); assert.equal(Object.hasOwn(visible.docs[0].data(), "reason"), false);
+  await assertPermissionDenied(getDocs(collection(student, "courses", "course", "attendance_calendar")));
+  await assertPermissionDenied(getDocs(collection(outsider, "courses", "course", "student_calendar")));
+  await assertPermissionDenied(getDocs(collection(testEnvironment.unauthenticatedContext().firestore(), "courses", "course", "student_calendar")));
+  await assertPermissionDenied(setDoc(doc(student, publicRef.path), projection));
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), "courses", "course", "enrollments", "student"), {status: "withdrawn"});
+  });
+  await assertPermissionDenied(getDoc(doc(student, publicRef.path)));
+});
+
+
+test("C8 regression: void minutes projection removes segments and all units", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  const date = attendanceDate(-1);
+  await seedAttendanceSession("course", "owner", "minutes-void", {mode: "minutes", status: "voiding", rosterState: "ready",
+    scheduledDate: date, effectiveDate: date, segmentIds: ["seg-1"], lastMutationKind: "void", lastEventId: "void-event", reason: "Anulada"});
+  await seedAttendanceRecord("course", "minutes-void", "row", {mode: "minutes", scheduledDate: date, effectiveDate: date,
+    unitCount: 60, absentUnits: 60, result: "absent", publishedAt: date,
+    segments: [{segmentId: "seg-1", startMinute: 480, endMinute: 540, durationMinutes: 60, mark: "absent", absentUnits: 60, justificationStatus: "none", justifiedUnits: 0}]});
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), "courses", "course", "attendance_sessions", "minutes-void", "events", "void-event"), {
+      kind: "void", oldValue: {status: "finalized"}, newValue: {status: "voided"}, reason: "Anulada", changedBy: "owner", changedAt: date});
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const ref = doc(owner, "courses", "course", "attendance_records", "minutes-void|row");
+  const {segments, ...before} = (await getDoc(ref)).data();
+  await assertSucceeds(setDoc(ref, {...before, unitCount: 0, absentUnits: 0, inReviewUnits: 0, justifiedUnits: 0, result: "voided", updatedAt: serverTimestamp()}));
+  assert.equal(Object.hasOwn((await getDoc(ref)).data(), "segments"), false);
+});
+
+// The actual retry first reads persisted rows, updates an unmarked identity
+// when it changed, fills missing rows and increments the parent version.
+for (const scenario of [
+  { id: "retry-normal-16", original: "2026-11-16", effective: "2026-11-16", start: 600, kind: "planned" },
+  { id: "retry-12-to-15", original: "2026-11-12", effective: "2026-11-15", start: 600, kind: "rescheduled" },
+  { id: "retry-05-to-16", original: "2026-11-05", effective: "2026-11-16", start: 360, kind: "rescheduled" },
+]) {
+  test(`C8 retry persisted incomplete minutes roster: ${scenario.id}`, async () => {
+    await seedProfile("owner", "owner@example.test", ["student", "teacher"]);
+    await seedCourse("owner", "course");
+    await seedAttendanceSession("course", "owner", scenario.id, {
+      mode: "minutes", segmentIds: ["seg-1", "seg-2"], rosterCount: 2, unmarkedCount: 2,
+      occurrenceKind: scenario.kind,
+      scheduledDate: Timestamp.fromDate(new Date(`${scenario.original}T00:00:00Z`)),
+      effectiveDate: Timestamp.fromDate(new Date(`${scenario.effective}T00:00:00Z`)),
+      startMinute: scenario.start, endMinute: scenario.start + 120,
+    });
+    const rowData = (id, extra = {}) => ({
+      rosterEntryId: id, displayName: "Estudiante sintético",
+      segments: Object.fromEntries(["seg-1", "seg-2"].map(id => [id, {
+        mark: "unmarked", absentUnits: 0, justificationStatus: "none", justifiedUnits: 0,
+      }])), version: 0, updatedAt: serverTimestamp(), updatedBy: "owner", ...extra,
+    });
+    await testEnvironment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), "courses", "course", "attendance_sessions", scenario.id, "roster", "row-1"), rowData("row-1", {displayName: "Snapshot anterior"}));
+    });
+    const owner = userContext("owner", "owner@example.test", true);
+    const sessionRef = doc(owner, "courses", "course", "attendance_sessions", scenario.id);
+    const first = doc(sessionRef, "roster", "row-1");
+    const second = doc(sessionRef, "roster", "row-2");
+    await assertSucceeds(runTransaction(owner, async tx => {
+      const parent = await tx.get(sessionRef);
+      const row = await tx.get(first); await tx.get(second);
+      tx.update(first, rowData("row-1", {studentUid: "student-1", version: row.data().version + 1}));
+      tx.set(second, rowData("row-2", {studentUid: "student-2"}));
+      tx.update(sessionRef, {version: parent.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+    }));
+    assert.equal((await getDoc(first)).data().studentUid, "student-1");
+    assert.equal((await getDoc(second)).exists(), true);
+    const changeExisting = patch => runTransaction(owner, async tx => {
+      const parent = await tx.get(sessionRef); const row = await tx.get(first);
+      tx.update(first, {...patch, version: row.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+      tx.update(sessionRef, {version: parent.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+    });
+    await assertPermissionDenied(changeExisting({segments: {
+      ...rowData("row-1").segments,
+      "seg-1": {mark: "absent", absentUnits: 60, justificationStatus: "none", justifiedUnits: 0},
+    }}));
+    await assertPermissionDenied(changeExisting({unexpected: "not allowed"}));
+    const outsider = userContext("other", "other@example.test", true);
+    await seedProfile("other", "other@example.test", ["teacher"]);
+    await assertPermissionDenied(getDoc(doc(outsider, first.path)));
+    assert.equal((await getDoc(first)).data().segments["seg-1"].mark, "unmarked");
+    const beforeReady = (await getDoc(sessionRef)).data();
+    if (scenario.kind === "rescheduled") {
+      await assertSucceeds(updateDoc(sessionRef, {lateRegistrationReason: "Registro revisado por el docente",
+        version: beforeReady.version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+      await assertPermissionDenied(updateDoc(sessionRef, {lateRegistrationReason: "Reemplazar motivo",
+        version: beforeReady.version + 2, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+    }
+    const latest = (await getDoc(sessionRef)).data();
+    await assertSucceeds(updateDoc(sessionRef, {rosterState: "ready", version: latest.version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+    assert.equal((await getDocs(collection(sessionRef, "roster"))).size, 2);
+    await assertPermissionDenied(changeExisting({displayName: "No reconcile after ready"}));
+    // Two different occurrences at the same effective date never share a parent.
+    await seedAttendanceSession("course", "owner", `${scenario.id}-other-class`, {
+      effectiveDate: beforeReady.effectiveDate, startMinute: scenario.start + 180,
+      endMinute: scenario.start + 300,
+    });
+    assert.equal((await getDoc(sessionRef)).data().rosterState, "ready");
+    assert.equal((await getDoc(doc(owner, "courses", "course", "attendance_sessions", `${scenario.id}-other-class`))).data().rosterState, "building");
+  });
+}
+
+test("C8 retry count follows revalidated membership only while completing an unmarked list", async () => {
+  await seedProfile("owner", "owner@example.test", ["teacher"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceSession("course", "owner", "changed-membership", {rosterCount: 0, unmarkedCount: 0});
+  const owner = userContext("owner", "owner@example.test", true);
+  const parent = doc(owner, "courses", "course", "attendance_sessions", "changed-membership");
+  await assertSucceeds(runTransaction(owner, async tx => {
+    await tx.get(parent);
+    tx.set(doc(parent, "roster", "new-member"), attendanceRosterEntry("new-member", {updatedBy: "owner"}));
+    tx.update(parent, {version: 2, updatedAt: serverTimestamp(), updatedBy: "owner"});
+  }));
+  await assertSucceeds(updateDoc(parent, {rosterState: "ready", rosterCount: 1, markedCount: 0, unmarkedCount: 1,
+    version: 3, updatedAt: serverTimestamp(), updatedBy: "owner"}));
+  await assertPermissionDenied(updateDoc(parent, {rosterCount: 2, unmarkedCount: 2, version: 4, updatedAt: serverTimestamp(), updatedBy: "owner"}));
 });
