@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-La rama de trabajo es [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). C8 **1.0.1+2** corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias anuladas y tramita solicitudes de justificación de texto con decisión docente. Conserva el cierre recuperable y carga la lista antes del historial/publicación secundaria. El commit de C8 está en GitHub y las reglas completas ya están publicadas y comparadas con el archivo de esa rama. Instala la APK indicada en el [seguimiento C8](docs/seguimiento_conjunto_8.md); la validación de estos cambios en el TECNO sigue pendiente. Codex no ejecutó la app en el teléfono.
+La rama C8 [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2) contiene la versión **1.0.1+2**, que corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias anuladas y tramita solicitudes de justificación con decisión docente. Sus reglas están publicadas y comparadas con la rama. La rama de maquetación [`feature/conjunto-9-maquetacion-completa`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-9-maquetacion-completa) agrega un catálogo de vista previa para recorrer los mockups de estudiante, docente, compartidos y administración; sigue en desarrollo. La validación de C8 en el TECNO corresponde al propietario.
 
 ## Qué se puede hacer
 
@@ -44,6 +44,10 @@ Para la prueba usa un curso de ensayo con un docente propietario y un estudiante
 5. Abre **Mis materias → curso → Consultar asistencia**. El estudiante solo puede consultar su propio registro una vez publicado. Si todavía no aparece, vuelve a abrir o actualizar la consulta mientras termina la publicación por filas.
 
 La [guía de activación C8](docs/activacion_conjunto_8.md) conserva recorridos por encuentro y por horas, y el [seguimiento C8](docs/seguimiento_conjunto_8.md) indica cómo retomar las tres sesiones incompletas del 15 y 16 de noviembre.
+
+## Recorrer las maquetas del conjunto 9
+
+En una ejecución **debug**, mantén pulsado el logotipo de la pantalla de bienvenida y elige **C09 · Recorridos de diseño**. El catálogo permite filtrar los 158 marcos del PDF por perfil y avanzar por las pantallas de cada recorrido. Es una previsualización con datos ficticios: sus acciones no llaman a Firebase, no solicitan permisos de cámara/Bluetooth y no cargan archivos. Para usar los flujos conectados, inicia sesión con un perfil autorizado y entra por las rutas normales. La [documentación de la vista previa](lib/features/design_preview/README.md), el [inventario de mockups](docs/inventario_mockups_conjunto_9.md) y el [seguimiento C9](docs/seguimiento_conjunto_9.md) explican la cobertura y las diferencias.
 
 ## Clonar y ejecutar en Android
 

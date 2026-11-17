@@ -16,6 +16,7 @@ import '../../administration/presentation/teacher_access_screens.dart'
 import '../../administration/presentation/teacher_profile_screen.dart'
     as teacher_profile;
 import '../../demo_records/presentation/demo_records_screen.dart';
+import '../../design_preview/presentation/design_preview_screens.dart';
 import '../../courses/presentation/teacher_courses_screen.dart'
     as teacher_courses;
 import '../../enrollments/presentation/student_enrollment_screens.dart';
@@ -2793,6 +2794,10 @@ Future<void> _showPreviewMenu(
                     (
                       'C08D · Perfil docente',
                       const ProfilePreviewScreen(teacher: true),
+                    ),
+                    (
+                      'C09 · Recorridos de diseño',
+                      const DesignPreviewCatalogScreen(),
                     ),
                   ])
                     ListTile(

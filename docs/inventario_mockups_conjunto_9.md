@@ -8,6 +8,8 @@ El PDF exportado no dejó un inventario separado de las páginas Figma. Por eso 
 
 ## Recorridos, datos y prioridades
 
+**Estado de cobertura inicial C9:** `DesignPreviewCatalogScreen` incorpora los 158 números de página en un catálogo navegable por rol y búsqueda. Al abrirlos, los marcos conectados se etiquetan como previsualización y conservan su ruta real en el flujo normal; los que no están integrados son demostraciones locales con datos ficticios. La tabla de abajo conserva el cruce inicial ruta/referencia/trabajo pendiente; los módulos siguientes precisarán cada maqueta y actualizarán las filas con el resultado final. No equivale a 158 pantallas funcionales distintas ni a integración Firebase de funciones nuevas.
+
 - Entrada real: AulaPresenteApp → AuthStartScreen → _destinationForAccess. StudentProfileScreen/StudentCoursesScreen abre el espacio estudiante; TeacherCoursesScreen/CourseDetailScreen el docente; AdminTeacherRequestsScreen la administración. Las cuentas duales conservan el cambio de espacio por perfiles reales y la interfaz nunca concede roles.
 - Funcionalidad conectada existente: Auth, cursos/calendario, C8 manual, consulta propia, solicitudes de texto C8, matrícula C3–C7, códigos/invitaciones, importación Excel y aprobación de acceso docente.
 - No hay rutas para home/agenda dashboard, notificaciones, ayuda, informes, estadísticas, métodos Bluetooth/QR/NFC ni adjuntos PDF. En C9 serán maquetas de demostración explícitas y sin llamadas remotas, permisos de sensores, envío de correo ni archivos.
