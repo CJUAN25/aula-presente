@@ -280,6 +280,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
   bool _actionDone = false;
   bool _present = true;
   String? _decision;
+  String _method = 'Bluetooth';
 
   MockupFrame get _frame => widget.frame;
   int get _position =>
@@ -349,6 +350,9 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
     }.contains(_frame.page);
     final isJustificationReview = _frame.page == 54;
     final isCancel = _frame.page == 43;
+    final isTextJustification = _frame.page == 32 || _frame.page == 33;
+    final needsJustificationText =
+        isTextJustification && _noteController.text.trim().isEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -401,15 +405,46 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 style: const TextStyle(color: AppColors.muted, height: 1.45),
               ),
               const SizedBox(height: 20),
-              _courseCard(_frame),
+              if (_frame.page == 23) ...[
+                TextField(
+                  key: const Key('demo-course-search'),
+                  decoration: const InputDecoration(
+                    hintText: 'Buscar materia o grupo',
+                    prefixIcon: Icon(Icons.search),
+                    filled: true,
+                    fillColor: AppColors.surface,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(18)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (_showsCourseCard(_frame))
+                _courseCard(_frame)
+              else
+                _authPreviewCard(_frame),
               const SizedBox(height: 12),
-              if (_frame.page >= 23 && _frame.page <= 31 ||
-                  _frame.page == 37 ||
-                  _frame.page == 38 ||
-                  _frame.page == 39 ||
-                  _frame.page == 40 ||
-                  _frame.page == 41) ...[
+              if (_showsMetrics(_frame)) ...[
                 _metricsCard(_frame),
+                const SizedBox(height: 12),
+              ],
+              if (_frame.page == 30) ...[
+                _calculationCard(),
+                const SizedBox(height: 12),
+              ],
+              if (_frame.page == 67) ...[
+                _scheduleCard(_frame),
+                const SizedBox(height: 12),
+              ],
+              if (_frame.page == 35) ...[
+                _qrPreviewPanel(),
+                const SizedBox(height: 12),
+              ] else if (_frame.page == 27 || _frame.page == 135) ...[
+                _methodPanel(
+                  _method,
+                  (value) => setState(() => _method = value),
+                ),
                 const SizedBox(height: 12),
               ],
               if (_frame.page == 32 || _frame.page == 33) ...[
@@ -420,6 +455,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                   controller: _noteController,
                   maxLines: 3,
                   maxLength: 180,
+                  onChanged: (_) => setState(() {}),
                   decoration: const InputDecoration(
                     hintText: 'Cuéntale brevemente al docente qué ocurrió',
                     filled: true,
@@ -525,6 +561,10 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 _statusRow('Redes Informáticas', 'Rechazada'),
                 const SizedBox(height: 12),
               ],
+              if (_hasSpecialState(_frame.page)) ...[
+                _stateCard(_frame),
+                const SizedBox(height: 12),
+              ],
               _sectionTitle(_sectionFor(_frame)),
               const SizedBox(height: 9),
               for (final item in _rowsFor(_frame))
@@ -546,6 +586,8 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 FilledButton.icon(
                   key: const Key('demo-primary-action'),
                   onPressed: _actionDone
+                      ? null
+                      : needsJustificationText
                       ? null
                       : isCancel
                       ? _confirmCancellation
@@ -675,6 +717,26 @@ Widget _courseCard(MockupFrame frame) {
     MockupRole.shared => Icons.auto_awesome_outlined,
     MockupRole.admin => Icons.admin_panel_settings_outlined,
   };
+  final courseName = switch (frame.page) {
+    40 || 41 || 42 => 'Bases de Datos',
+    25 => 'Cálculo I',
+    26 => 'Redes Informáticas',
+    _ => 'Programación Móvil',
+  };
+  final status = switch (frame.page) {
+    19 || 37 => 'Próxima clase',
+    20 || 38 => 'Registro abierto',
+    21 => 'Asistencia lista',
+    22 => 'Después',
+    27 => 'Registro disponible',
+    28 || 137 => 'Presente',
+    43 => 'Sin reprogramación',
+    44 => 'Nueva fecha',
+    46 => 'Bluetooth · hasta 10:39',
+    47 => 'Cierre de asistencia',
+    _ =>
+      frame.role == MockupRole.teacher ? 'Curso de prueba' : 'Materia activa',
+  };
   return Container(
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
@@ -698,8 +760,17 @@ Widget _courseCard(MockupFrame frame) {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Programación Móvil',
+              Text(
+                status,
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                courseName,
                 style: TextStyle(
                   color: AppColors.text,
                   fontWeight: FontWeight.w800,
@@ -718,6 +789,85 @@ Widget _courseCard(MockupFrame frame) {
         const Icon(Icons.chevron_right, color: AppColors.muted),
       ],
     ),
+  );
+}
+
+bool _showsCourseCard(MockupFrame frame) {
+  if (frame.page == 134) return false;
+  return frame.page > 18 && frame.role != MockupRole.shared ||
+      const {7, 8, 18}.contains(frame.page);
+}
+
+Widget _authPreviewCard(MockupFrame frame) {
+  if (frame.page == 1) {
+    return _infoCard(
+      Icons.school_outlined,
+      'Aula Presente · asistencia y cursos en un mismo lugar.',
+      AppColors.primary,
+    );
+  }
+  if (frame.page == 2 || frame.page == 14 || frame.page == 132) {
+    return Column(
+      children: [
+        const TextField(
+          decoration: InputDecoration(
+            labelText: 'Correo electrónico',
+            prefixIcon: Icon(Icons.mail_outline),
+            filled: true,
+            fillColor: AppColors.surface,
+          ),
+        ),
+        const SizedBox(height: 10),
+        const TextField(
+          obscureText: true,
+          decoration: InputDecoration(
+            labelText: 'Contraseña',
+            prefixIcon: Icon(Icons.lock_outline),
+            filled: true,
+            fillColor: AppColors.surface,
+          ),
+        ),
+        if (frame.page == 132) ...[
+          const SizedBox(height: 10),
+          _infoCard(
+            Icons.error_outline,
+            'No pudimos iniciar sesión. Revisa los datos de prueba.',
+            AppColors.danger,
+          ),
+        ],
+      ],
+    );
+  }
+  if (frame.page == 4 || frame.page == 15 || frame.page == 17) {
+    return _infoCard(
+      Icons.mark_email_read_outlined,
+      frame.page == 17
+          ? 'Tu solicitud docente está en revisión.'
+          : 'Revisa tu correo para continuar con el acceso.',
+      AppColors.information,
+    );
+  }
+  if (frame.page == 5 || frame.page == 16) {
+    return Column(
+      children: [
+        _listRow(
+          'Espacio estudiante',
+          'Mis materias y asistencia',
+          Icons.school_outlined,
+        ),
+        const SizedBox(height: 8),
+        _listRow(
+          'Espacio docente',
+          'Cursos y lista de asistencia',
+          Icons.co_present_outlined,
+        ),
+      ],
+    );
+  }
+  return _infoCard(
+    Icons.account_circle_outlined,
+    '${frame.title} · vista visual de la ruta conectada.',
+    AppColors.information,
   );
 }
 
@@ -759,6 +909,305 @@ Widget _metricsCard(MockupFrame frame) => Container(
     ],
   ),
 );
+
+bool _showsMetrics(MockupFrame frame) =>
+    const {24, 25, 26, 40, 41, 55, 56, 126, 127, 128}.contains(frame.page);
+
+Widget _calculationCard() => Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(22),
+  ),
+  child: const Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        '3 ÷ 20 × 100 = 15 %',
+        style: TextStyle(
+          color: AppColors.primary,
+          fontSize: 22,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      SizedBox(height: 8),
+      Text(
+        'La app cuenta las clases válidas hasta hoy. El resultado es informativo: no asigna una nota.',
+        style: TextStyle(color: AppColors.muted, height: 1.45),
+      ),
+      SizedBox(height: 12),
+      _CalculationTag(label: 'Justificadas aprobadas no cuentan como falta'),
+    ],
+  ),
+);
+
+class _CalculationTag extends StatelessWidget {
+  const _CalculationTag({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Icon(Icons.info_outline, color: AppColors.information, size: 17),
+      const SizedBox(width: 7),
+      Expanded(
+        child: Text(
+          label,
+          style: const TextStyle(color: AppColors.text, fontSize: 12),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _scheduleCard(MockupFrame frame) => Column(
+  children: [
+    for (final item in [
+      ('Lunes', 'Programación Móvil · 10:00–12:00 · Aula 204'),
+      ('Lunes', 'Redes Informáticas · 14:00–16:00 · Laboratorio 2'),
+      ('Miércoles', 'Cálculo I · 08:00–10:00 · Grupo 3'),
+    ])
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: _listRow(item.$1, item.$2, Icons.calendar_month_outlined),
+      ),
+    if (frame.role == MockupRole.teacher)
+      _infoCard(
+        Icons.event_note_outlined,
+        'Las reprogramaciones aparecen en el calendario del curso.',
+        AppColors.information,
+      ),
+  ],
+);
+
+Widget _methodPanel(
+  String selected,
+  ValueChanged<String> onSelected,
+) => Container(
+  padding: const EdgeInsets.all(15),
+  decoration: BoxDecoration(
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(22),
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text(
+        'Método de prueba',
+        style: TextStyle(color: AppColors.text, fontWeight: FontWeight.w800),
+      ),
+      const SizedBox(height: 4),
+      const Text(
+        'Elige una opción para ver su estado. No se activa ningún sensor.',
+        style: TextStyle(color: AppColors.muted, fontSize: 12),
+      ),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 7,
+        runSpacing: 4,
+        children: [
+          for (final method in ['Manual', 'Bluetooth', 'QR', 'NFC'])
+            ChoiceChip(
+              label: Text(method),
+              selected: selected == method,
+              onSelected: (_) => onSelected(method),
+              selectedColor: AppColors.primary,
+              backgroundColor: AppColors.glass,
+              labelStyle: TextStyle(
+                color: selected == method
+                    ? AppColors.primaryInk
+                    : AppColors.text,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+              showCheckmark: false,
+            ),
+        ],
+      ),
+      const SizedBox(height: 10),
+      Row(
+        children: [
+          const Icon(Icons.timer_outlined, color: AppColors.primary, size: 18),
+          const SizedBox(width: 7),
+          Text(
+            selected == 'Manual'
+                ? 'Registro manual disponible'
+                : '$selected · sesión local',
+            style: const TextStyle(color: AppColors.text, fontSize: 12),
+          ),
+        ],
+      ),
+    ],
+  ),
+);
+
+Widget _qrPreviewPanel() => Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(22),
+  ),
+  child: Column(
+    children: [
+      const Text(
+        'QR dinámico',
+        style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800),
+      ),
+      const SizedBox(height: 10),
+      Container(
+        width: 124,
+        height: 124,
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4FAF7),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Icon(
+          Icons.qr_code_2,
+          size: 108,
+          color: AppColors.background,
+        ),
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Muestra visual · sin código válido',
+        style: TextStyle(color: AppColors.muted, fontSize: 11),
+      ),
+    ],
+  ),
+);
+
+bool _hasSpecialState(int page) => const {
+  6,
+  9,
+  10,
+  13,
+  21,
+  22,
+  28,
+  36,
+  50,
+  138,
+  68,
+  69,
+  70,
+  71,
+  72,
+  136,
+  137,
+  139,
+  142,
+  143,
+  144,
+  147,
+  148,
+  150,
+  155,
+  153,
+  154,
+  157,
+  158,
+}.contains(page);
+
+Widget _stateCard(MockupFrame frame) {
+  final (label, icon, color) = switch (frame.page) {
+    6 || 133 => (
+      'Permiso desactivado',
+      Icons.bluetooth_disabled,
+      AppColors.information,
+    ),
+    9 || 10 => ('Todo al día', Icons.notifications_none, AppColors.primary),
+    13 => ('¿Necesitas ayuda?', Icons.help_outline, AppColors.information),
+    22 => (
+      'Sin clases programadas',
+      Icons.event_available,
+      AppColors.information,
+    ),
+    21 || 28 || 137 => (
+      'Asistencia registrada',
+      Icons.check_circle_outline,
+      AppColors.primary,
+    ),
+    36 => ('Cursos encontrados', Icons.search, AppColors.primary),
+    50 || 147 => ('Reapertura activa', Icons.restart_alt, AppColors.primary),
+    68 ||
+    69 ||
+    70 => ('Curso archivado', Icons.archive_outlined, AppColors.information),
+    71 || 72 => (
+      'Cambio de horario futuro',
+      Icons.edit_calendar_outlined,
+      AppColors.information,
+    ),
+    136 => (
+      'Registro cerrado',
+      Icons.lock_clock_outlined,
+      AppColors.information,
+    ),
+    139 || 144 => (
+      'Cambios pendientes de sincronizar',
+      Icons.sync_problem_outlined,
+      AppColors.information,
+    ),
+    142 => (
+      'No se pudo leer el documento',
+      Icons.error_outline,
+      AppColors.danger,
+    ),
+    143 => (
+      'Bluetooth no disponible',
+      Icons.bluetooth_disabled,
+      AppColors.danger,
+    ),
+    138 => ('Llegaste tarde', Icons.schedule, AppColors.information),
+    148 => (
+      'Justificación aprobada',
+      Icons.verified_outlined,
+      AppColors.primary,
+    ),
+    150 => ('Justificación rechazada', Icons.cancel_outlined, AppColors.danger),
+    153 => ('Invitación no válida', Icons.link_off_outlined, AppColors.danger),
+    154 => ('Sin acceso a esta clase', Icons.lock_outline, AppColors.danger),
+    157 => (
+      'Revisa tus datos',
+      Icons.manage_accounts_outlined,
+      AppColors.information,
+    ),
+    155 => ('El QR venció', Icons.timer_off_outlined, AppColors.danger),
+    158 => (
+      'Marco de revisión',
+      Icons.remove_red_eye_outlined,
+      AppColors.information,
+    ),
+    _ => ('Estado de demostración', Icons.info_outline, AppColors.information),
+  };
+  final detail = switch (frame.page) {
+    6 || 133 => 'Puedes cambiar el permiso en Configuración. Esta demo no abre ajustes del teléfono.',
+    9 || 10 =>
+      'Aquí aparecen avisos de clases, solicitudes y cambios de asistencia.',
+    13 => 'Consulta preguntas frecuentes sobre tus materias y el registro de asistencia.',
+    22 => 'No hay clases para hoy. Puedes consultar el horario de la semana.',
+    21 ||
+    28 ||
+    137 => 'La marca de prueba quedó vinculada a Programación Móvil.',
+    36 => 'Coincidió el código y el curso tiene cupos disponibles (datos ficticios).',
+    136 => 'La sesión cerró. Si necesitas ayuda, comunícate con tu docente.',
+    139 || 144 =>
+      'La app conserva el estado local y permite volver a intentar en la demo.',
+    142 => 'El archivo de ejemplo no se puede revisar. La app real C8 almacena texto, sin adjuntos.',
+    143 => 'Elige otro método o espera a tener Bluetooth disponible. No se solicitó permiso.',
+    138 => 'La marca tardía es una muestra visual; consulta el historial para ver el resultado.',
+    148 => 'La falta cubierta no cuenta; el total de encuentros se conserva.',
+    150 =>
+      'La falta sigue contando. No se puede reenviar esta misma solicitud.',
+    153 => 'El código de ejemplo venció o no coincide con un curso disponible.',
+    154 => 'La invitación no tiene acceso a este curso de prueba.',
+    157 => 'Comprueba que el correo verificado coincide con los datos de la solicitud.',
+    155 =>
+      'Solicita al docente un código vigente para registrar la asistencia.',
+    _ => 'Este estado usa datos de muestra y no modifica el curso real.',
+  };
+  return _infoCard(icon, '$label. $detail', color);
+}
 
 Widget _metric(String value, String label) => Column(
   children: [
@@ -859,6 +1308,24 @@ String _headline(MockupFrame frame) {
   if (frame.page == 22) {
     return 'Hoy tienes un respiro.';
   }
+  if (frame.page == 23) {
+    return 'Tus materias, en un solo lugar.';
+  }
+  if (frame.page == 27) {
+    return 'Estás cerca de tu clase.';
+  }
+  if (frame.page == 28 || frame.page == 137) {
+    return '¡Listo, Alex!';
+  }
+  if (frame.page == 29) {
+    return 'Programación Móvil';
+  }
+  if (frame.page == 30) {
+    return 'Cada materia tiene su cuenta.';
+  }
+  if (frame.page == 31) {
+    return 'Tus clases, organizadas.';
+  }
   if (frame.page == 37 || frame.page == 38) {
     return 'Hola, profe';
   }
@@ -875,10 +1342,16 @@ String _headline(MockupFrame frame) {
     return 'Informes claros, a tiempo.';
   }
   if (frame.page == 32 || frame.page == 33) {
-    return 'Una falta. Un contexto.';
+    return 'Una falta. Un documento.';
   }
   if (frame.page == 34) {
     return 'Sigue tus solicitudes.';
+  }
+  if (frame.page == 134) {
+    return 'Tu semestre empieza aquí.';
+  }
+  if (frame.page == 140) {
+    return 'Revisa tu asistencia.';
   }
   if (frame.page == 54) {
     return 'Revisa esta justificación.';
@@ -913,6 +1386,27 @@ String _description(MockupFrame frame) {
 }
 
 String _sectionFor(MockupFrame frame) {
+  if (const {19, 20, 21, 22, 37, 38}.contains(frame.page)) {
+    return 'Hoy';
+  }
+  if (frame.page == 23 || frame.page == 39) {
+    return frame.role == MockupRole.teacher ? 'Tus cursos' : 'Mis materias';
+  }
+  if (frame.page == 27 ||
+      frame.page == 35 ||
+      frame.page == 45 ||
+      frame.page == 46) {
+    return 'Registro de asistencia';
+  }
+  if (frame.page == 29 || frame.page == 140) {
+    return 'Encuentros recientes';
+  }
+  if (frame.page == 31 || frame.page == 42 || frame.page == 67) {
+    return 'Esta semana';
+  }
+  if (frame.page == 134) {
+    return 'Empieza por vincular una materia';
+  }
   if (frame.role == MockupRole.admin) {
     return 'Resumen de prueba';
   }
@@ -935,6 +1429,413 @@ String _sectionFor(MockupFrame frame) {
 }
 
 List<(String, String, IconData)> _rowsFor(MockupFrame frame) {
+  switch (frame.page) {
+    case 19:
+      return [
+        ('Hoy', 'Ver agenda · clases de esta semana', Icons.today_outlined),
+        (
+          'Redes Informáticas',
+          '14:00–16:00 · Laboratorio 2',
+          Icons.code_rounded,
+        ),
+        (
+          'Mis materias',
+          'Consulta tus materias siempre aquí',
+          Icons.menu_book_outlined,
+        ),
+      ];
+    case 20:
+      return [
+        ('Después', 'Redes Informáticas · lunes, 14:00', Icons.schedule),
+        (
+          'Mis materias',
+          'Consulta tu asistencia cuando quieras',
+          Icons.menu_book_outlined,
+        ),
+      ];
+    case 21:
+      return [
+        (
+          'Comprobante',
+          '10:24 · registro por cercanía',
+          Icons.receipt_long_outlined,
+        ),
+        ('Ver historial', 'Consulta tus encuentros registrados', Icons.history),
+      ];
+    case 22:
+      return [
+        (
+          'Tu próxima clase',
+          'Programación Móvil · lunes, 10:00',
+          Icons.schedule,
+        ),
+        (
+          'Mis materias',
+          'Consulta el estado de cada curso',
+          Icons.menu_book_outlined,
+        ),
+      ];
+    case 23:
+      return [
+        (
+          'Programación Móvil',
+          'Grupo 2 · registro abierto',
+          Icons.code_rounded,
+        ),
+        ('Redes Informáticas', 'Grupo 1 · hoy, 14:00', Icons.router_outlined),
+        ('Cálculo I', 'Grupo 3 · miércoles, 08:00', Icons.functions_rounded),
+      ];
+    case 24:
+    case 25:
+    case 26:
+      return [
+        (
+          'Historial de asistencia',
+          'Fechas, justificaciones y cambios',
+          Icons.history,
+        ),
+        (
+          'Mi horario',
+          'Próximas clases y cambios',
+          Icons.calendar_month_outlined,
+        ),
+        ('Mis materias', 'Consulta otra asignatura', Icons.menu_book_outlined),
+      ];
+    case 27:
+      return [
+        (
+          'Docente detectado',
+          'Registro abierto · aula de prueba',
+          Icons.verified_outlined,
+        ),
+        (
+          'Registro hasta las 10:35',
+          'Confirma desde el aula para guardar tu marca.',
+          Icons.timer_outlined,
+        ),
+      ];
+    case 28:
+    case 137:
+      return [
+        (
+          'Programación Móvil',
+          'Presente · 10:24 · registro por cercanía',
+          Icons.check_circle_outline,
+        ),
+        (
+          'Ver historial',
+          'Consulta el detalle de tus asistencias',
+          Icons.history,
+        ),
+      ];
+    case 29:
+      return [
+        (
+          '28 sep · presente',
+          '10:24 · por cercanía',
+          Icons.check_circle_outline,
+        ),
+        (
+          '24 sep · falta',
+          'Puedes enviar una justificación',
+          Icons.description_outlined,
+        ),
+        (
+          '21 sep · justificada',
+          'No cuenta como falta',
+          Icons.verified_outlined,
+        ),
+      ];
+    case 30:
+      return [
+        (
+          'Calendario semestral',
+          '32 previstas · 1 cancelada · 31 válidas',
+          Icons.calendar_month_outlined,
+        ),
+        (
+          'Justificadas y canceladas',
+          'No suman falta en el cálculo',
+          Icons.verified_outlined,
+        ),
+        (
+          'Umbral · 20 %',
+          'Consulta las reglas de tu curso',
+          Icons.info_outline,
+        ),
+      ];
+    case 31:
+      return [
+        (
+          'Lunes',
+          'Programación Móvil · 10:00–12:00 · Aula 204',
+          Icons.calendar_today_outlined,
+        ),
+        (
+          'Lunes',
+          'Redes Informáticas · 14:00–16:00 · Laboratorio 2',
+          Icons.calendar_today_outlined,
+        ),
+        (
+          'Miércoles',
+          'Cálculo I · 08:00–10:00 · Grupo 3',
+          Icons.calendar_today_outlined,
+        ),
+      ];
+    case 32:
+    case 33:
+      return [
+        (
+          'Programación Móvil',
+          'Grupo 2 · falta del 24 sep',
+          Icons.code_rounded,
+        ),
+        (
+          'justificacion.pdf',
+          'Adjunto visual · no se carga',
+          Icons.picture_as_pdf_outlined,
+        ),
+      ];
+    case 35:
+      return [
+        (
+          'Programación Móvil',
+          'Registro abierto · QR de muestra',
+          Icons.qr_code_2,
+        ),
+        (
+          'Permiso de cámara',
+          'No se solicitará en esta demostración',
+          Icons.no_photography_outlined,
+        ),
+      ];
+    case 34:
+      return [
+        (
+          'Programación Móvil',
+          '24 sep · pendiente de revisión',
+          Icons.schedule,
+        ),
+        ('Programación Móvil', '21 sep · aprobada', Icons.check_circle_outline),
+        ('Redes Informáticas', '18 sep · rechazada', Icons.cancel_outlined),
+      ];
+    case 36:
+      return [
+        ('Programación Móvil', 'G2 · 2026-2 · vinculada', Icons.code_rounded),
+        ('Redes Informáticas', 'G1 · 2026-2 · 1 cupo', Icons.router_outlined),
+      ];
+    case 37:
+      return [
+        (
+          'Mis cursos',
+          'Todos tus grupos, siempre aquí',
+          Icons.menu_book_outlined,
+        ),
+        ('Bases de Datos', 'Grupo 1 · mañana, 08:00', Icons.storage_outlined),
+      ];
+    case 38:
+      return [
+        ('Mis cursos', 'Consulta todos tus grupos', Icons.menu_book_outlined),
+        (
+          'Justificaciones',
+          '1 solicitud por revisar',
+          Icons.fact_check_outlined,
+        ),
+      ];
+    case 39:
+      return [
+        (
+          'Bases de Datos · Grupo 2',
+          '2026-2 · 32 estudiantes activos',
+          Icons.storage_outlined,
+        ),
+        (
+          'Bases de Datos · Grupo 1',
+          '2026-2 · 28 estudiantes activos',
+          Icons.storage_outlined,
+        ),
+        (
+          'Resumen de mis cursos',
+          'Estadísticas del grupo',
+          Icons.bar_chart_rounded,
+        ),
+      ];
+    case 42:
+      return [
+        (
+          '28 sep · 10:00–12:00',
+          'Clase realizada · registro manual',
+          Icons.event_available_outlined,
+        ),
+        (
+          '2 oct · 10:00–12:00',
+          'Reprogramada · por vacaciones',
+          Icons.event_repeat_outlined,
+        ),
+        (
+          'Añadir clase extraordinaria',
+          'Fecha puntual del curso',
+          Icons.add_circle_outline,
+        ),
+      ];
+    case 45:
+      return [
+        (
+          'Método seleccionado en el panel de prueba',
+          'Cambiar a otro método de demostración',
+          Icons.sensors_outlined,
+        ),
+        (
+          'Ventana de registro',
+          '15 minutos · hasta las 10:39',
+          Icons.timer_outlined,
+        ),
+      ];
+    case 46:
+      return [
+        (
+          '32 estudiantes',
+          '24 a tiempo · 2 tarde · 6 pendientes',
+          Icons.groups_outlined,
+        ),
+        ('Control de sesión', 'Ampliar tiempo o cambiar método', Icons.tune),
+      ];
+    case 47:
+      return [
+        ('24 a tiempo', '2 tarde · 6 sin registro', Icons.check_circle_outline),
+        (
+          'Las marcas sin registro quedarán como ausentes.',
+          'Podrás revisar y corregir después.',
+          Icons.info_outline,
+        ),
+      ];
+    case 51:
+    case 54:
+      return [
+        ('Mateo Ruiz', 'Bases de Datos · Grupo 2', Icons.person_outline),
+        (
+          'Solicitud por encuentro',
+          '24 sep · pendiente de revisión',
+          Icons.description_outlined,
+        ),
+      ];
+    case 55:
+    case 56:
+      return [
+        (
+          'Ana Gómez',
+          'Matrícula activa · 16 asistencias',
+          Icons.person_outline,
+        ),
+        (
+          'Mateo Ruiz',
+          'Matrícula activa · 12 asistencias',
+          Icons.person_outline,
+        ),
+        (
+          'Gestionar estudiantes',
+          'Excel, ingresos, invitaciones y retiros',
+          Icons.groups_outlined,
+        ),
+      ];
+    case 67:
+      return [
+        ('Hoy · 08:00', 'Bases de Datos · Grupo 1', Icons.event_outlined),
+        (
+          'Mañana · 10:00',
+          'Programación Móvil · Grupo 2',
+          Icons.event_outlined,
+        ),
+        (
+          'Viernes · 14:00',
+          'Redes Informáticas · Grupo 1',
+          Icons.event_outlined,
+        ),
+      ];
+    case 126:
+      return [
+        (
+          'Programación Móvil',
+          '16 asistencias · 3 faltas · 1 justificada',
+          Icons.code_rounded,
+        ),
+        ('Cálculo I', '20 asistencias · 0 faltas', Icons.functions_rounded),
+      ];
+    case 127:
+      return [
+        (
+          'Estudiantes activos',
+          '32 estudiantes · cifra de muestra',
+          Icons.groups_outlined,
+        ),
+        (
+          'Clases realizadas',
+          '20 de 25 previstas',
+          Icons.event_available_outlined,
+        ),
+        (
+          'Pendientes',
+          '6 estudiantes sin marca en la sesión',
+          Icons.pending_actions,
+        ),
+      ];
+    case 134:
+      return [
+        (
+          'Vincular materia',
+          'Ingresa el código que te dio tu docente',
+          Icons.add_circle_outline,
+        ),
+        (
+          'Ver mi horario',
+          'Cuando tengas una materia vinculada',
+          Icons.calendar_month_outlined,
+        ),
+      ];
+    case 140:
+      return [
+        (
+          '28 sep · presente',
+          '10:24 · encuentro registrado',
+          Icons.check_circle_outline,
+        ),
+        (
+          '24 sep · ausencia',
+          'Puedes solicitar una justificación',
+          Icons.error_outline,
+        ),
+      ];
+    case 141:
+      return [
+        (
+          'Solicitud enviada',
+          'Pendiente de revisión del docente',
+          Icons.schedule,
+        ),
+        (
+          'Programación Móvil',
+          '24 sep · encuentro individual',
+          Icons.code_rounded,
+        ),
+      ];
+    case 142:
+    case 143:
+    case 155:
+      return [
+        (
+          'Intentar otra vez',
+          'El estado es simulado y no cambia el registro real',
+          Icons.refresh,
+        ),
+        (
+          'Elegir otro método',
+          'Continúa desde la sesión del curso',
+          Icons.tune,
+        ),
+      ];
+    default:
+      break;
+  }
   if (frame.page >= 111 && frame.page <= 125 || frame.page == 35) {
     return [
       (
@@ -1010,6 +1911,57 @@ List<(String, String, IconData)> _rowsFor(MockupFrame frame) {
 }
 
 String _actionLabel(MockupFrame frame) {
+  switch (frame.page) {
+    case 19:
+      return 'Registrar asistencia';
+    case 20:
+      return 'Ver materia';
+    case 21:
+      return 'Ver comprobante';
+    case 22:
+      return 'Ver mi horario';
+    case 23:
+    case 36:
+      return 'Vincular otra materia';
+    case 24:
+    case 25:
+    case 26:
+    case 29:
+      return 'Ver historial';
+    case 27:
+      return 'Simular registro de asistencia';
+    case 28:
+    case 137:
+      return 'Volver al inicio';
+    case 30:
+      return 'Entendido';
+    case 31:
+      return 'Ver mis materias';
+    case 34:
+      return 'Justificar otra falta';
+    case 37:
+      return 'Iniciar clase de prueba';
+    case 38:
+      return 'Ver sesión en curso';
+    case 39:
+      return 'Crear curso de prueba';
+    case 45:
+      return 'Abrir registro de prueba';
+    case 46:
+      return 'Agregar tiempo de prueba';
+    case 47:
+      return 'Confirmar cierre de prueba';
+    case 126:
+      return 'Ver mis materias';
+    case 127:
+      return 'Ver cursos';
+    case 134:
+      return 'Vincular primera materia';
+    case 136:
+      return 'Volver al inicio';
+    case 140:
+      return 'Revisar ausencia';
+  }
   if (frame.page == 32 || frame.page == 33) {
     return 'Enviar solicitud de prueba';
   }
@@ -1045,6 +1997,21 @@ String _actionLabel(MockupFrame frame) {
 }
 
 String _actionMessage(MockupFrame frame) {
+  if (frame.page == 19 ||
+      frame.page == 27 ||
+      frame.page == 37 ||
+      frame.page == 45) {
+    return 'La acción se simuló localmente; la asistencia real conserva el flujo C8.';
+  }
+  if (frame.page == 23 || frame.page == 36 || frame.page == 134) {
+    return 'La pantalla de vinculación es una demostración y no crea matrícula.';
+  }
+  if (frame.page == 47) {
+    return 'Cierre de prueba completado en pantalla. No se escribió asistencia.';
+  }
+  if (frame.page == 46) {
+    return 'Tiempo ampliado en la vista local; no se prolongó una sesión real.';
+  }
   if (frame.page == 32 || frame.page == 33) {
     return 'Solicitud de prueba enviada localmente.';
   }

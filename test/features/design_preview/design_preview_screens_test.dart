@@ -6,6 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  void usePhoneViewport(WidgetTester tester, {double width = 390}) {
+    tester.view.physicalSize = Size(width, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
   Widget app() => MaterialApp(
     theme: AppTheme.dark,
     home: const DesignPreviewCatalogScreen(),
@@ -24,6 +31,7 @@ void main() {
   testWidgets('role filters open the student journey and advance locally', (
     tester,
   ) async {
+    usePhoneViewport(tester);
     await tester.pumpWidget(app());
     expect(find.text('158 de 158 marcos · todos los perfiles'), findsOneWidget);
 
@@ -40,7 +48,7 @@ void main() {
     );
     await tester.tap(target);
     await tester.pumpAndSettle();
-    expect(find.text('Una falta. Un contexto.'), findsOneWidget);
+    expect(find.text('Una falta. Un documento.'), findsOneWidget);
     expect(find.byKey(const Key('demo-note')), findsOneWidget);
     final demoNotice = find.textContaining('no se carga');
     await tester.scrollUntilVisible(
@@ -56,6 +64,14 @@ void main() {
       180,
       scrollable: find.byType(Scrollable).last,
     );
+    expect(tester.widget<FilledButton>(primaryAction).onPressed, isNull);
+    await tester.ensureVisible(find.byKey(const Key('demo-note')));
+    await tester.enterText(
+      find.byKey(const Key('demo-note')),
+      'Tuve una cita médica durante este encuentro.',
+    );
+    await tester.pumpAndSettle();
+
     await tester.tap(primaryAction);
     await tester.pumpAndSettle();
     expect(
@@ -79,6 +95,7 @@ void main() {
   testWidgets('teacher can review a fictitious request without a repository', (
     tester,
   ) async {
+    usePhoneViewport(tester);
     await tester.pumpWidget(app());
     await tester.tap(find.byKey(const Key('role-teacher')));
     await tester.pumpAndSettle();
@@ -92,13 +109,74 @@ void main() {
     await tester.tap(target);
     await tester.pumpAndSettle();
     expect(find.text('Revisa esta justificación.'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('demo-reject')));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Solicitud rechazada en esta demostración.'),
-      findsOneWidget,
+    final reject = find.byKey(const Key('demo-reject'));
+    await tester.scrollUntilVisible(
+      reject,
+      180,
+      scrollable: find.byType(Scrollable).last,
     );
+    await tester.ensureVisible(reject);
+    await tester.tap(reject);
+    await tester.pumpAndSettle();
+    final rejectedMessage = find.text(
+      'Solicitud rechazada en esta demostración.',
+    );
+    await tester.scrollUntilVisible(
+      rejectedMessage,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(rejectedMessage, findsOneWidget);
     expect(find.byKey(const Key('demo-approve')), findsNothing);
+  });
+
+  testWidgets('student check-in simulation advances to its receipt locally', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    await tester.tap(find.byKey(const Key('role-student')));
+    await tester.pumpAndSettle();
+
+    final checkIn = find.byKey(const Key('mockup-027'));
+    await tester.scrollUntilVisible(
+      checkIn,
+      260,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(checkIn);
+    await tester.pumpAndSettle();
+    expect(find.text('Estás cerca de tu clase.'), findsOneWidget);
+    await tester.tap(find.widgetWithText(ChoiceChip, 'QR'));
+    await tester.pumpAndSettle();
+    expect(find.text('QR · sesión local'), findsOneWidget);
+
+    final primaryAction = find.byKey(const Key('demo-primary-action'));
+    await tester.scrollUntilVisible(
+      primaryAction,
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(primaryAction);
+    await tester.pumpAndSettle();
+    final result = find.textContaining('se simuló localmente');
+    await tester.scrollUntilVisible(
+      result,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(result, findsOneWidget);
+
+    final nextFrame = find.byKey(const Key('demo-next-frame'));
+    await tester.scrollUntilVisible(
+      nextFrame,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(nextFrame);
+    await tester.pumpAndSettle();
+    expect(find.text('¡Listo, Alex!'), findsOneWidget);
+    expect(find.textContaining('Asistencia registrada.'), findsOneWidget);
   });
 
   testWidgets('catalog and frame fit narrow mobile width', (tester) async {

@@ -19,7 +19,7 @@ Los marcos nuevos incluyen home/resúmenes, agenda, ayuda/notificaciones, inform
 | Orden | Módulo | Páginas | Pruebas por módulo | Estado |
 | --- | --- | --- | --- | --- |
 | 1 | Catálogo y selector de recorrido debug | 1–18, 158 | Estudiante/docente/compartido, navegación adelante/atrás, sin Firebase | Implementado; 4/4 pruebas y análisis limpios. |
-| 2 | Estudiante: inicio, agenda, resúmenes y ayuda | 19–36, 126, 134–143, 148, 150, 153–155, 157 | Contenido, empty/loading/error y acciones locales | Pendiente |
+| 2 | Estudiante: inicio, agenda, resúmenes y ayuda | 19–36, 126, 134–143, 148, 150, 153–155, 157 | Contenido, vacío/error y acciones locales | Implementado; 5/5 pruebas y análisis limpios. |
 | 3 | Docente: home, agenda, informes y estados | 37–58, 67, 126–128, 149 | Recorrido por módulos y prueba visual adaptable | Pendiente |
 | 4 | Métodos de sesión y estados de prototipo | 6, 111–125, 133, 135, 143, 147, 155 | Acciones solo locales; C8 sin modificaciones | Pendiente |
 | 5 | Revisión de pantallas conectadas | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Reusar pruebas de cada módulo, corregir diffs visibles | Pendiente |
@@ -41,5 +41,19 @@ Los marcos nuevos incluyen home/resúmenes, agenda, ayuda/notificaciones, inform
 Archivos: `lib/features/design_preview/mockup_frame.dart`, `mockup_catalog.dart`, `presentation/design_preview_screens.dart`, `README.md`, `test/features/design_preview/design_preview_screens_test.dart` y la entrada debug de `lib/features/auth/presentation/auth_screens.dart`.
 
 **Siguiente acción exacta:** módulo 2, dar forma específica a los marcos y recorridos de estudiante (inicio, materias, registro local, asistencia/justificaciones, horario, ayuda y estados) y actualizar su estado pantalla por pantalla en el inventario.
+
+### Módulo 2 — recorrido de estudiante
+
+**Resultado:** el catálogo diferencia inicio estudiantil (19–22), lista y detalle de materias (23–26), registro/check-in y comprobante (27–28, 35–36, 135–139), historial/cálculo/horario (29–31), formulario y estados de justificación (32–34, 141–142, 148, 150), resumen y estados de invitación (126, 134, 153–155, 157). P134 tiene estado sin materias; P136–144 cubren registro cerrado, comprobante, llegada tarde, cambios pendientes y fallos de documento/Bluetooth. P23 tiene búsqueda visual, P30 explica el cálculo, P31/67 presentan horarios semanales y P35 muestra un QR no válido para escanear. P148/150 explican el efecto de la decisión en la falta.
+
+Se mantienen los datos completamente ficticios. En P27 y P35 los métodos no activan sensores. En P32–33, el mockup pide un PDF, pero C8 acepta solicitudes de texto breve y no admite adjuntos; por eso el campo permite texto y la fila PDF se muestra solo como referencia visual, con la adaptación explicada en pantalla. Las rutas reales de materias, horario, historial y justificaciones siguen siendo las actuales y conectadas al abrir el recorrido normal; la galería no las sustituye.
+
+| Comprobación | Resultado |
+| --- | --- |
+| `flutter test test/features/design_preview/design_preview_screens_test.dart --reporter expanded` | 5/5 aprobadas: 158 marcos/roles, enviar texto solo después de escribir, navegar al siguiente marco, decidir una solicitud ficticia, check-in local → comprobante y viewport 320 px. |
+| `flutter analyze` | Sin problemas. |
+| Revisiones externas | No se abrió Firebase ni se usó cámara, Bluetooth, almacenamiento o correo. No hay AVD configurado; queda pendiente la visualización en Android real/emulado. |
+
+**Siguiente acción exacta:** módulo 3, completar la presentación docente (home, cursos, agenda, sesión, correcciones, justificaciones, informes) y cubrir sus transiciones/estados en pruebas.
 
 Cada módulo probado tendrá un commit y push propio. La compilación Android y revisión integrada quedan para el cierre C9.
