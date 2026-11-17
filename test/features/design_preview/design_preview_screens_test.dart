@@ -307,6 +307,156 @@ void main() {
     expect(result, findsOneWidget);
   });
 
+  testWidgets('QR duration prototype never modifies a real session', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    await tester.tap(find.byKey(const Key('role-teacher')));
+    await tester.pumpAndSettle();
+
+    final extraTime = find.byKey(const Key('mockup-114'));
+    await tester.dragUntilVisible(
+      extraTime,
+      find.byKey(const Key('mockup-frame-list')),
+      const Offset(0, -320),
+    );
+    await tester.tap(extraTime);
+    await tester.pumpAndSettle();
+    expect(find.text('Tiempo adicional'), findsOneWidget);
+    final tenMinutes = find.widgetWithText(ChoiceChip, '10 min');
+    await tester.drag(
+      find.byKey(const Key('mockup-frame-body')),
+      const Offset(0, -360),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(tenMinutes);
+    await tester.tap(tenMinutes);
+    await tester.pumpAndSettle();
+
+    final action = find.byKey(const Key('demo-primary-action'));
+    await tester.scrollUntilVisible(
+      action,
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    final result = find.textContaining('No se modificó una sesión real');
+    await tester.scrollUntilVisible(
+      result,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(result, findsOneWidget);
+  });
+
+  testWidgets('admin statistics preview is marked as fictitious', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    final adminRole = find.byKey(const Key('role-admin'));
+    await tester.dragUntilVisible(
+      adminRole,
+      find.byKey(const Key('mockup-role-filter-list')),
+      const Offset(-180, 0),
+    );
+    await tester.tap(adminRole);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('mockup-128')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('mockup-128')));
+    await tester.pumpAndSettle();
+    expect(find.text('Estadísticas del proyecto'), findsOneWidget);
+    expect(find.textContaining('números ficticios'), findsOneWidget);
+    final coursesCount = find.text('24 cursos · cifra ficticia');
+    await tester.dragUntilVisible(
+      coursesCount,
+      find.byKey(const Key('mockup-frame-body')),
+      const Offset(0, -180),
+    );
+    expect(coursesCount, findsOneWidget);
+  });
+
+  testWidgets('student class lookup leaves loading when the demo completes', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    await tester.tap(find.byKey(const Key('role-student')));
+    await tester.pumpAndSettle();
+
+    final lookup = find.byKey(const Key('mockup-135'));
+    await tester.scrollUntilVisible(
+      lookup,
+      280,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(lookup);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.text('Buscando tu clase').last, findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    final action = find.byKey(const Key('demo-primary-action'));
+    await tester.scrollUntilVisible(
+      action,
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('Clase de prueba encontrada.'), findsOneWidget);
+    expect(find.textContaining('No se consultó la ubicación.'), findsOneWidget);
+  });
+
+  testWidgets('permission and schedule conflict frames show their state', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+
+    final teacherRole = find.byKey(const Key('role-teacher'));
+    await tester.dragUntilVisible(
+      teacherRole,
+      find.byKey(const Key('mockup-role-filter-list')),
+      const Offset(-180, 0),
+    );
+    await tester.tap(teacherRole);
+    await tester.pumpAndSettle();
+
+    final conflict = find.byKey(const Key('mockup-156'));
+    await tester.scrollUntilVisible(
+      conflict,
+      280,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(conflict);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Horario en conflicto.'), findsOneWidget);
+    expect(
+      find.textContaining('coincide con otro bloque horario'),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('role-student')));
+    await tester.pumpAndSettle();
+    final permission = find.byKey(const Key('mockup-133'));
+    await tester.scrollUntilVisible(
+      permission,
+      280,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(permission);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Permiso desactivado.'), findsOneWidget);
+    expect(find.textContaining('no abre ajustes del teléfono'), findsOneWidget);
+  });
+
   testWidgets('catalog and frame fit narrow mobile width', (tester) async {
     tester.view.physicalSize = const Size(320, 900);
     tester.view.devicePixelRatio = 1;

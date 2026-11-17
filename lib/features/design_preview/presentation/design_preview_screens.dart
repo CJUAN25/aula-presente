@@ -110,6 +110,7 @@ class _DesignPreviewCatalogScreenState
                 SizedBox(
                   height: 44,
                   child: ListView(
+                    key: const Key('mockup-role-filter-list'),
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     scrollDirection: Axis.horizontal,
                     children: [
@@ -284,6 +285,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
   DateTime _selectedDate = DateTime(2026, 11, 23);
   String _selectedSlot = '10:00–12:00';
   String _scheduleScope = 'Solo fechas futuras';
+  String _durationMinutes = '15';
 
   MockupFrame get _frame => widget.frame;
   int get _position =>
@@ -517,6 +519,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 520),
           child: ListView(
+            key: const Key('mockup-frame-body'),
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             children: [
               const _DemoBanner(
@@ -563,7 +566,9 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 ),
                 const SizedBox(height: 12),
               ],
-              if (_showsCourseCard(_frame))
+              if (_frame.page == 127 || _frame.page == 128)
+                _summaryHeader(_frame)
+              else if (_showsCourseCard(_frame))
                 _courseCard(_frame)
               else
                 _authPreviewCard(_frame),
@@ -588,7 +593,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 _futureScheduleFields(),
                 const SizedBox(height: 12),
               ],
-              if (_frame.page == 35) ...[
+              if (_isQrPreviewFrame(_frame.page)) ...[
                 _qrPreviewPanel(),
                 const SizedBox(height: 12),
               ] else if (_frame.page == 27 ||
@@ -600,6 +605,28 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                   _method,
                   (value) => setState(() => _method = value),
                 ),
+                const SizedBox(height: 12),
+              ],
+              if (_usesDurationChoice(_frame.page)) ...[
+                _durationPanel(
+                  selected: _durationMinutes,
+                  onSelected: (value) =>
+                      setState(() => _durationMinutes = value),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (_frame.page == 135) ...[
+                if (_actionDone)
+                  _infoCard(
+                    Icons.event_available_outlined,
+                    'Clase de prueba encontrada. Puedes continuar con el recorrido.',
+                    AppColors.primary,
+                  )
+                else
+                  _loadingCard(
+                    'Buscando tu clase',
+                    'La búsqueda solo revisa información ficticia de esta demostración.',
+                  ),
                 const SizedBox(height: 12),
               ],
               if (_frame.page == 32 || _frame.page == 33) ...[
@@ -949,6 +976,14 @@ Widget _courseCard(MockupFrame frame) {
   );
 }
 
+Widget _summaryHeader(MockupFrame frame) => _infoCard(
+  frame.page == 128 ? Icons.insights_outlined : Icons.bar_chart_rounded,
+  frame.page == 128
+      ? 'Estadísticas generales · números ficticios para revisión del prototipo.'
+      : 'Resumen de mis cursos · datos agregados de ejemplo.',
+  AppColors.primary,
+);
+
 bool _showsCourseCard(MockupFrame frame) {
   if (frame.page == 134) return false;
   return frame.page > 18 && frame.role != MockupRole.shared ||
@@ -1211,6 +1246,58 @@ Widget _methodPanel(
   ),
 );
 
+bool _isQrPreviewFrame(int page) =>
+    page == 35 || const {112, 113, 118, 119, 120, 123}.contains(page);
+
+bool _usesDurationChoice(int page) =>
+    const {114, 115, 119, 120, 124, 125}.contains(page);
+
+Widget _durationPanel({
+  required String selected,
+  required ValueChanged<String> onSelected,
+}) => Container(
+  padding: const EdgeInsets.all(15),
+  decoration: BoxDecoration(
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(22),
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text(
+        'Tiempo adicional',
+        style: TextStyle(color: AppColors.text, fontWeight: FontWeight.w800),
+      ),
+      const SizedBox(height: 4),
+      const Text(
+        'La duración cambia solo para esta prueba local.',
+        style: TextStyle(color: AppColors.muted, fontSize: 12),
+      ),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 8,
+        children: [
+          for (final minutes in ['5', '10', '15'])
+            ChoiceChip(
+              label: Text('$minutes min'),
+              selected: selected == minutes,
+              onSelected: (_) => onSelected(minutes),
+              selectedColor: AppColors.primary,
+              backgroundColor: AppColors.glass,
+              labelStyle: TextStyle(
+                color: selected == minutes
+                    ? AppColors.primaryInk
+                    : AppColors.text,
+                fontSize: 12,
+              ),
+              showCheckmark: false,
+            ),
+        ],
+      ),
+    ],
+  ),
+);
+
 Widget _qrPreviewPanel() => Container(
   padding: const EdgeInsets.all(16),
   decoration: BoxDecoration(
@@ -1246,8 +1333,53 @@ Widget _qrPreviewPanel() => Container(
   ),
 );
 
+Widget _loadingCard(String title, String description) => Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(20),
+  ),
+  child: Row(
+    children: [
+      const SizedBox(
+        width: 30,
+        height: 30,
+        child: CircularProgressIndicator(
+          strokeWidth: 3,
+          color: AppColors.primary,
+        ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                color: AppColors.text,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              description,
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
 bool _hasSpecialState(int page) => const {
   6,
+  133,
   9,
   10,
   13,
@@ -1276,6 +1408,7 @@ bool _hasSpecialState(int page) => const {
   154,
   157,
   158,
+  156,
 }.contains(page);
 
 Widget _stateCard(MockupFrame frame) {
@@ -1342,6 +1475,11 @@ Widget _stateCard(MockupFrame frame) {
       AppColors.information,
     ),
     155 => ('El QR venció', Icons.timer_off_outlined, AppColors.danger),
+    156 => (
+      'Horario en conflicto',
+      Icons.event_busy_outlined,
+      AppColors.danger,
+    ),
     158 => (
       'Marco de revisión',
       Icons.remove_red_eye_outlined,
@@ -1373,6 +1511,7 @@ Widget _stateCard(MockupFrame frame) {
     157 => 'Comprueba que el correo verificado coincide con los datos de la solicitud.',
     155 =>
       'Solicita al docente un código vigente para registrar la asistencia.',
+    156 => 'El aula de la clase de prueba coincide con otro bloque horario.',
     _ => 'Este estado usa datos de muestra y no modifica el curso real.',
   };
   return _infoCard(icon, '$label. $detail', color);
@@ -1994,6 +2133,20 @@ List<(String, String, IconData)> _rowsFor(MockupFrame frame) {
           Icons.pending_actions,
         ),
       ];
+    case 128:
+      return [
+        (
+          'Solicitudes docentes',
+          '3 pendientes · muestra',
+          Icons.person_search_outlined,
+        ),
+        ('Cursos activos', '24 cursos · cifra ficticia', Icons.school_outlined),
+        (
+          'Cuentas verificadas',
+          '120 perfiles · cifra ficticia',
+          Icons.verified_user_outlined,
+        ),
+      ];
     case 134:
       return [
         (
@@ -2194,6 +2347,8 @@ String _actionLabel(MockupFrame frame) {
       return 'Ver cursos';
     case 134:
       return 'Vincular primera materia';
+    case 135:
+      return 'Simular clase encontrada';
     case 136:
       return 'Volver al inicio';
     case 140:
@@ -2210,6 +2365,15 @@ String _actionLabel(MockupFrame frame) {
   }
   if (frame.page == 54) {
     return 'Elegir una decisión';
+  }
+  if (frame.page == 114 || frame.page == 120 || frame.page == 125) {
+    return 'Agregar tiempo de prueba';
+  }
+  if (frame.page == 115 || frame.page == 119) {
+    return 'Guardar tiempo adicional';
+  }
+  if (frame.page == 124) {
+    return 'Abrir sesión de prueba';
   }
   if (frame.page >= 111 && frame.page <= 125 ||
       frame.page == 35 ||
@@ -2249,6 +2413,9 @@ String _actionMessage(MockupFrame frame) {
   if (frame.page == 47) {
     return 'Cierre de prueba completado en pantalla. No se escribió asistencia.';
   }
+  if (_usesDurationChoice(frame.page)) {
+    return 'Duración de ${frame.pageLabel} simulada. No se modificó una sesión real.';
+  }
   if (frame.page == 43) {
     return 'La cancelación quedó solo en la demostración.';
   }
@@ -2266,6 +2433,9 @@ String _actionMessage(MockupFrame frame) {
   }
   if (frame.page == 46) {
     return 'Tiempo ampliado en la vista local; no se prolongó una sesión real.';
+  }
+  if (frame.page == 135) {
+    return 'Encontramos una clase de prueba. No se consultó la ubicación.';
   }
   if (frame.page == 32 || frame.page == 33) {
     return 'Solicitud de prueba enviada localmente.';

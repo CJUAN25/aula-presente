@@ -49,6 +49,17 @@ La [guía de activación C8](docs/activacion_conjunto_8.md) conserva recorridos 
 
 En una ejecución **debug**, mantén pulsado el logotipo de la pantalla de bienvenida y elige **C09 · Recorridos de diseño**. El catálogo permite filtrar los 158 marcos del PDF por perfil y avanzar por las pantallas de cada recorrido. Es una previsualización con datos ficticios: sus acciones no llaman a Firebase, no solicitan permisos de cámara/Bluetooth y no cargan archivos. Para usar los flujos conectados, inicia sesión con un perfil autorizado y entra por las rutas normales. La [documentación de la vista previa](lib/features/design_preview/README.md), el [inventario de mockups](docs/inventario_mockups_conjunto_9.md) y el [seguimiento C9](docs/seguimiento_conjunto_9.md) explican la cobertura y las diferencias.
 
+Para ejecutar esa galería, clona la rama C9 (la rama C8 contiene la versión funcional previa):
+
+```bash
+git clone --branch feature/conjunto-9-maquetacion-completa https://github.com/CJUAN25/aula-presente.git
+cd aula-presente
+flutter pub get
+flutter run -d ID_DEL_DISPOSITIVO
+```
+
+Al iniciar en debug, abre **C09 · Recorridos de diseño** desde el logotipo de bienvenida. La misma rama conserva las rutas conectadas de los conjuntos anteriores.
+
 ## Clonar y ejecutar en Android
 
 Se necesita Git, Flutter con Dart, Android Studio con el SDK y las herramientas de Android, y un emulador o dispositivo Android. La versión usada para las verificaciones de esta rama fue Flutter **3.47.1** y Dart **3.13.1**. Android es la plataforma configurada en este proyecto.

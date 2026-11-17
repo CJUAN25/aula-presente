@@ -1,6 +1,6 @@
 # Seguimiento del conjunto 9 — maquetación y navegación
 
-## Punto de recuperación — catálogo de recorridos — 17/11/2026
+## Punto de partida y recuperación de la rama — 17/11/2026
 
 Rama feature/conjunto-9-maquetacion-completa, creada desde el commit C8 exacto 605ac9f3b8017f7c212c99ae53df65fdff34267e. No existía rama local ni remota C9. Este commit agrega el primer módulo visual y conserva C8 como padre.
 
@@ -21,8 +21,8 @@ Los marcos nuevos incluyen home/resúmenes, agenda, ayuda/notificaciones, inform
 | 1 | Catálogo y selector de recorrido debug | 1–18, 158 | Estudiante/docente/compartido, navegación adelante/atrás, sin Firebase | Implementado; 4/4 pruebas y análisis limpios. |
 | 2 | Estudiante: inicio, agenda, resúmenes y ayuda | 19–36, 126, 134–143, 148, 150, 153–155, 157 | Contenido, vacío/error y acciones locales | Implementado; 5/5 pruebas y análisis limpios. |
 | 3 | Docente: home, agenda, informes y estados | 37–58, 67, 126–128, 149 | Recorrido por módulos y prueba adaptable | Implementado; 8/8 pruebas y análisis limpios. |
-| 4 | Métodos de sesión y estados de prototipo | 6, 111–125, 133, 135, 143, 147, 155 | Acciones solo locales; C8 sin modificaciones | Pendiente |
-| 5 | Revisión de pantallas conectadas | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Reusar pruebas de cada módulo, corregir diffs visibles | Pendiente |
+| 4 | Métodos de sesión y estados de prototipo | 6, 9–10, 13, 111–125, 128, 133, 135, 143, 147, 155–156 | Interacción local, datos ficticios, carga→resultado y errores | Implementado; 12/12 pruebas y análisis limpios. |
+| 5 | Revisión de pantallas conectadas e inventario final | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Confirmar rutas/contratos conservados, registrar cobertura por marco | En revisión de código; inspección Android pendiente por falta de AVD. |
 
 ### Siguiente acción
 
@@ -67,5 +67,18 @@ Se mantienen los datos completamente ficticios. En P27 y P35 los métodos no act
 | Límite de integración | No se escribieron sesiones/resultados reales ni se abrieron Bluetooth, NFC, cámara, correo o Firebase. No hay AVD/imagen de sistema instalado; la revisión visual en Android sigue pendiente. |
 
 **Siguiente acción exacta:** módulo 4, completar estados compartidos/admin y métodos de asistencia en los marcos 6, 9–18, 111–125, 128–133, 143–158; cubrir errores, recuperación y los restantes estados de acción ficticia. Después, módulo 5 revisará las rutas conectadas por código y cerrará el inventario.
+
+### Módulo 4 — métodos, estados compartidos y administración
+
+**Resultado:** los marcos QR/Bluetooth/NFC (111–125) ofrecen selección de método, duración y una acción local claramente rotulada; no activan sensores ni modifican la sesión C8. Se completaron el estado de teléfono/permisos (6, 133, 143), notificaciones/ayuda (9, 10, 13), estadísticas ficticias de administración (128), reapertura/QR vencido (147, 155), el conflicto de horario (156) y búsqueda de clase (135). La búsqueda muestra progreso mientras está activa y lo reemplaza con el resultado ficticio al terminar la acción, sin conservar un spinner indefinido. El panel de justificación mantiene la adaptación de PDF visual a texto C8.
+
+| Comprobación | Resultado |
+| --- | --- |
+| `flutter test test/features/design_preview/design_preview_screens_test.dart --reporter expanded` | 12/12 aprobadas: catálogo/roles, flujos locales estudiante y docente, cancelar/cerrar/corregir sin motivo, selección de duración, estadística ficticia admin, progreso→resultado de búsqueda, estados de permiso/conflicto y viewport 320 px. |
+| Fallos durante la prueba | Se corrigió el test para avanzar la transición con la búsqueda animada sin esperar que un spinner indefinido se estabilizara; el test confirma que al simular el resultado el spinner desaparece. Los mensajes de estado se verificaron como parte del texto accesible de la tarjeta. |
+| `flutter analyze` | Sin problemas. |
+| Firebase / dispositivo | C8 productivo y sus reglas no se modificaron. La galería no llama Firebase. No hay AVD configurado; la revisión visual nativa queda pendiente. |
+
+**Siguiente acción exacta:** módulo 5, revisar la implementación de las rutas conectadas contra sus contratos, no sustituir repositorios ni permisos y completar en `docs/inventario_mockups_conjunto_9.md` el resultado final por página y su condición de pantalla conectada o demo local.
 
 Cada módulo probado tendrá un commit y push propio. La compilación Android y revisión integrada quedan para el cierre C9.
