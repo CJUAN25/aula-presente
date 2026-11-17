@@ -281,6 +281,9 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
   bool _present = true;
   String? _decision;
   String _method = 'Bluetooth';
+  DateTime _selectedDate = DateTime(2026, 11, 23);
+  String _selectedSlot = '10:00–12:00';
+  String _scheduleScope = 'Solo fechas futuras';
 
   MockupFrame get _frame => widget.frame;
   int get _position =>
@@ -320,7 +323,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Volver'),
+            child: const Text('Cancelar'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
@@ -334,12 +337,151 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
     }
   }
 
+  Future<void> _confirmFinalize() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Cerrar registro'),
+        content: const Text(
+          'Las marcas sin registro quedarán como ausentes en esta demostración.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Seguir registrando'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirmar cierre'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) _finishAction();
+  }
+
+  Future<void> _chooseDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2026, 11, 17),
+      lastDate: DateTime(2027, 12, 31),
+      helpText: 'Nueva fecha de la clase de prueba',
+    );
+    if (selected != null && mounted) {
+      setState(() => _selectedDate = selected);
+    }
+  }
+
+  Widget _rescheduleFields() => Column(
+    children: [
+      _selectableField(
+        icon: Icons.calendar_month_outlined,
+        label: 'Nueva fecha',
+        value:
+            '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
+        onTap: _chooseDate,
+      ),
+      const SizedBox(height: 8),
+      Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Nuevo horario',
+              style: TextStyle(color: AppColors.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final slot in [
+                  '08:00–10:00',
+                  '10:00–12:00',
+                  '14:00–16:00',
+                ])
+                  ChoiceChip(
+                    label: Text(slot),
+                    selected: _selectedSlot == slot,
+                    onSelected: (_) => setState(() => _selectedSlot = slot),
+                    selectedColor: AppColors.primary,
+                    backgroundColor: AppColors.glass,
+                    labelStyle: TextStyle(
+                      color: _selectedSlot == slot
+                          ? AppColors.primaryInk
+                          : AppColors.text,
+                      fontSize: 11,
+                    ),
+                    showCheckmark: false,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
+      _selectableField(
+        icon: Icons.location_on_outlined,
+        label: 'Lugar',
+        value: 'Aula 204',
+      ),
+    ],
+  );
+
+  Widget _futureScheduleFields() => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(18),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '¿A qué clases aplica?',
+          style: TextStyle(color: AppColors.text, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 9),
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final scope in ['Solo fechas futuras', 'Una fecha puntual'])
+              ChoiceChip(
+                label: Text(scope),
+                selected: _scheduleScope == scope,
+                onSelected: (_) => setState(() => _scheduleScope = scope),
+                selectedColor: AppColors.primary,
+                backgroundColor: AppColors.glass,
+                labelStyle: TextStyle(
+                  color: _scheduleScope == scope
+                      ? AppColors.primaryInk
+                      : AppColors.text,
+                  fontSize: 12,
+                ),
+                showCheckmark: false,
+              ),
+          ],
+        ),
+      ],
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final canEditNote =
         _frame.page == 32 ||
         _frame.page == 33 ||
+        _frame.page == 43 ||
         _frame.page == 44 ||
+        _frame.page == 48 ||
+        _frame.page == 49 ||
+        _frame.page == 74 ||
+        _frame.page == 146 ||
         _frame.page == 68 ||
         _frame.page == 71;
     final isAttendanceCorrection = const {
@@ -350,6 +492,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
     }.contains(_frame.page);
     final isJustificationReview = _frame.page == 54;
     final isCancel = _frame.page == 43;
+    final isFinalize = _frame.page == 47;
     final isTextJustification = _frame.page == 32 || _frame.page == 33;
     final needsJustificationText =
         isTextJustification && _noteController.text.trim().isEmpty;
@@ -429,7 +572,7 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 _metricsCard(_frame),
                 const SizedBox(height: 12),
               ],
-              if (_frame.page == 30) ...[
+              if (_frame.page == 30 || _frame.page == 58) ...[
                 _calculationCard(),
                 const SizedBox(height: 12),
               ],
@@ -437,10 +580,22 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                 _scheduleCard(_frame),
                 const SizedBox(height: 12),
               ],
+              if (_frame.page == 44) ...[
+                _rescheduleFields(),
+                const SizedBox(height: 12),
+              ],
+              if (_frame.page == 71) ...[
+                _futureScheduleFields(),
+                const SizedBox(height: 12),
+              ],
               if (_frame.page == 35) ...[
                 _qrPreviewPanel(),
                 const SizedBox(height: 12),
-              ] else if (_frame.page == 27 || _frame.page == 135) ...[
+              ] else if (_frame.page == 27 ||
+                  _frame.page == 45 ||
+                  _frame.page == 46 ||
+                  _frame.page == 135 ||
+                  (_frame.page >= 111 && _frame.page <= 125)) ...[
                 _methodPanel(
                   _method,
                   (value) => setState(() => _method = value),
@@ -591,6 +746,8 @@ class _MockupFrameScreenState extends State<MockupFrameScreen> {
                       ? null
                       : isCancel
                       ? _confirmCancellation
+                      : isFinalize
+                      ? _confirmFinalize
                       : _finishAction,
                   icon: Icon(_actionDone ? Icons.check : _actionIcon(_frame)),
                   label: Text(_actionDone ? 'Listo' : _actionLabel(_frame)),
@@ -910,8 +1067,20 @@ Widget _metricsCard(MockupFrame frame) => Container(
   ),
 );
 
-bool _showsMetrics(MockupFrame frame) =>
-    const {24, 25, 26, 40, 41, 55, 56, 126, 127, 128}.contains(frame.page);
+bool _showsMetrics(MockupFrame frame) => const {
+  24,
+  25,
+  26,
+  37,
+  38,
+  40,
+  41,
+  55,
+  56,
+  126,
+  127,
+  128,
+}.contains(frame.page);
 
 Widget _calculationCard() => Container(
   padding: const EdgeInsets.all(16),
@@ -1301,6 +1470,49 @@ Widget _infoCard(IconData icon, String message, Color color) => Container(
   ),
 );
 
+Widget _selectableField({
+  required IconData icon,
+  required String label,
+  required String value,
+  VoidCallback? onTap,
+}) => Material(
+  color: AppColors.surface,
+  borderRadius: BorderRadius.circular(17),
+  child: InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(17),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+      child: Row(
+        children: [
+          Icon(icon, color: AppColors.primary, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (onTap != null)
+            const Icon(Icons.chevron_right, color: AppColors.muted),
+        ],
+      ),
+    ),
+  ),
+);
+
 String _headline(MockupFrame frame) {
   if (frame.page == 19 || frame.page == 20 || frame.page == 21) {
     return 'Hola, Alex';
@@ -1340,6 +1552,9 @@ String _headline(MockupFrame frame) {
   }
   if (frame.page == 57 || frame.page == 149) {
     return 'Informes claros, a tiempo.';
+  }
+  if (frame.page == 58) {
+    return 'Reglas claras para el cálculo.';
   }
   if (frame.page == 32 || frame.page == 33) {
     return 'Una falta. Un documento.';
@@ -1951,6 +2166,28 @@ String _actionLabel(MockupFrame frame) {
       return 'Agregar tiempo de prueba';
     case 47:
       return 'Confirmar cierre de prueba';
+    case 48:
+    case 49:
+    case 74:
+    case 146:
+      return 'Guardar corrección local';
+    case 57:
+    case 149:
+      return 'Generar informe de prueba';
+    case 58:
+      return 'Ver reglas de cálculo';
+    case 67:
+      return 'Abrir agenda';
+    case 68:
+      return 'Archivar curso de prueba';
+    case 69:
+      return 'Abrir cursos archivados';
+    case 70:
+      return 'Ver curso archivado';
+    case 71:
+      return 'Guardar horario futuro';
+    case 72:
+      return 'Confirmar cambio de horario';
     case 126:
       return 'Ver mis materias';
     case 127:
@@ -1997,6 +2234,9 @@ String _actionLabel(MockupFrame frame) {
 }
 
 String _actionMessage(MockupFrame frame) {
+  if (frame.page == 43) {
+    return 'Clase cancelada solo en la demostración.';
+  }
   if (frame.page == 19 ||
       frame.page == 27 ||
       frame.page == 37 ||
@@ -2008,6 +2248,21 @@ String _actionMessage(MockupFrame frame) {
   }
   if (frame.page == 47) {
     return 'Cierre de prueba completado en pantalla. No se escribió asistencia.';
+  }
+  if (frame.page == 43) {
+    return 'La cancelación quedó solo en la demostración.';
+  }
+  if (frame.page == 48 ||
+      frame.page == 49 ||
+      frame.page == 74 ||
+      frame.page == 146) {
+    return 'La marca se actualizó localmente; no cambió el resultado C8 real.';
+  }
+  if (frame.page == 68 || frame.page == 69 || frame.page == 70) {
+    return 'El estado de archivo es temporal y solo existe en esta vista.';
+  }
+  if (frame.page == 71 || frame.page == 72) {
+    return 'El horario de muestra se actualizó localmente, sin cambiar el calendario real.';
   }
   if (frame.page == 46) {
     return 'Tiempo ampliado en la vista local; no se prolongó una sesión real.';
@@ -2036,6 +2291,9 @@ String _actionMessage(MockupFrame frame) {
 }
 
 String _resultMessage(MockupFrame frame, bool present) {
+  if (frame.page == 43) {
+    return 'La clase quedó cancelada solo en este prototipo.';
+  }
   if (frame.page == 32 || frame.page == 33) {
     return 'La solicitud queda en estado Pendiente solo en esta demostración.';
   }

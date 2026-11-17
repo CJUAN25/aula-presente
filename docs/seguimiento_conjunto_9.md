@@ -20,7 +20,7 @@ Los marcos nuevos incluyen home/resúmenes, agenda, ayuda/notificaciones, inform
 | --- | --- | --- | --- | --- |
 | 1 | Catálogo y selector de recorrido debug | 1–18, 158 | Estudiante/docente/compartido, navegación adelante/atrás, sin Firebase | Implementado; 4/4 pruebas y análisis limpios. |
 | 2 | Estudiante: inicio, agenda, resúmenes y ayuda | 19–36, 126, 134–143, 148, 150, 153–155, 157 | Contenido, vacío/error y acciones locales | Implementado; 5/5 pruebas y análisis limpios. |
-| 3 | Docente: home, agenda, informes y estados | 37–58, 67, 126–128, 149 | Recorrido por módulos y prueba visual adaptable | Pendiente |
+| 3 | Docente: home, agenda, informes y estados | 37–58, 67, 126–128, 149 | Recorrido por módulos y prueba adaptable | Implementado; 8/8 pruebas y análisis limpios. |
 | 4 | Métodos de sesión y estados de prototipo | 6, 111–125, 133, 135, 143, 147, 155 | Acciones solo locales; C8 sin modificaciones | Pendiente |
 | 5 | Revisión de pantallas conectadas | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Reusar pruebas de cada módulo, corregir diffs visibles | Pendiente |
 
@@ -55,5 +55,17 @@ Se mantienen los datos completamente ficticios. En P27 y P35 los métodos no act
 | Revisiones externas | No se abrió Firebase ni se usó cámara, Bluetooth, almacenamiento o correo. No hay AVD configurado; queda pendiente la visualización en Android real/emulado. |
 
 **Siguiente acción exacta:** módulo 3, completar la presentación docente (home, cursos, agenda, sesión, correcciones, justificaciones, informes) y cubrir sus transiciones/estados en pruebas.
+
+### Módulo 3 — recorrido de docente
+
+**Resultado:** el home muestra clase próxima/registro abierto y resumen. El detalle prototipo cubre cursos y calendario, reprogramación con selector de fecha/hora/lugar y alcance futuro, motivo opcional al cancelar/corregir, método manual/Bluetooth/QR/NFC sin activar sensores, sesión activa, cierre con **Seguir registrando** o confirmación, corrección Presente/Ausente, bandeja/revisión Aprobar/Rechazar, agenda semanal, reglas de cálculo e informe de muestra. Los estados de curso archivado y cambio de horario son locales. El flujo real de asistencia, matrícula, cursos, reprogramación y justificaciones C8 permanece en sus rutas/repositorios de siempre.
+
+| Comprobación | Resultado |
+| --- | --- |
+| `flutter test test/features/design_preview/design_preview_screens_test.dart --reporter expanded` | 8/8 aprobadas, incluye: aprobación/rechazo ficticios, cancelación con motivo vacío y opción **Cancelar**, cierre de asistencia reanudable (**Seguir registrando**), corrección de marca sin motivo, check-in local y viewport 320 px. |
+| `flutter analyze` | Sin problemas. |
+| Límite de integración | No se escribieron sesiones/resultados reales ni se abrieron Bluetooth, NFC, cámara, correo o Firebase. No hay AVD/imagen de sistema instalado; la revisión visual en Android sigue pendiente. |
+
+**Siguiente acción exacta:** módulo 4, completar estados compartidos/admin y métodos de asistencia en los marcos 6, 9–18, 111–125, 128–133, 143–158; cubrir errores, recuperación y los restantes estados de acción ficticia. Después, módulo 5 revisará las rutas conectadas por código y cerrará el inventario.
 
 Cada módulo probado tendrá un commit y push propio. La compilación Android y revisión integrada quedan para el cierre C9.

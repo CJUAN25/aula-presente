@@ -179,6 +179,134 @@ void main() {
     expect(find.textContaining('Asistencia registrada.'), findsOneWidget);
   });
 
+  testWidgets(
+    'teacher can dismiss and confirm a cancellation without a reason',
+    (tester) async {
+      usePhoneViewport(tester);
+      await tester.pumpWidget(app());
+      await tester.tap(find.byKey(const Key('role-teacher')));
+      await tester.pumpAndSettle();
+
+      final cancellation = find.byKey(const Key('mockup-043'));
+      await tester.scrollUntilVisible(
+        cancellation,
+        260,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(cancellation);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('demo-note')), findsOneWidget);
+
+      final action = find.byKey(const Key('demo-primary-action'));
+      await tester.scrollUntilVisible(
+        action,
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+      expect(find.text('Cancelar'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancelar'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+
+      await tester.ensureVisible(action);
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmar'));
+      await tester.pumpAndSettle();
+      final result = find.text(
+        'La clase quedó cancelada solo en este prototipo.',
+      );
+      await tester.scrollUntilVisible(
+        result,
+        180,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(result, findsOneWidget);
+    },
+  );
+
+  testWidgets('teacher confirms or keeps recording from the close frame', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    await tester.tap(find.byKey(const Key('role-teacher')));
+    await tester.pumpAndSettle();
+
+    final closeFrame = find.byKey(const Key('mockup-047'));
+    await tester.dragUntilVisible(
+      closeFrame,
+      find.byKey(const Key('mockup-frame-list')),
+      const Offset(0, -320),
+    );
+    await tester.tap(closeFrame);
+    await tester.pumpAndSettle();
+    final action = find.byKey(const Key('demo-primary-action'));
+    await tester.scrollUntilVisible(
+      action,
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Seguir registrando'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+
+    await tester.ensureVisible(action);
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirmar cierre'));
+    await tester.pumpAndSettle();
+    final result = find.textContaining('Cierre de prueba completado');
+    await tester.scrollUntilVisible(
+      result,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(result, findsOneWidget);
+  });
+
+  testWidgets('teacher corrects a mark locally without a reason', (
+    tester,
+  ) async {
+    usePhoneViewport(tester);
+    await tester.pumpWidget(app());
+    await tester.tap(find.byKey(const Key('role-teacher')));
+    await tester.pumpAndSettle();
+
+    final correction = find.byKey(const Key('mockup-048'));
+    await tester.dragUntilVisible(
+      correction,
+      find.byKey(const Key('mockup-frame-list')),
+      const Offset(0, -320),
+    );
+    await tester.tap(correction);
+    await tester.pumpAndSettle();
+    expect(find.text('Marca de asistencia'), findsOneWidget);
+    expect(find.byKey(const Key('demo-note')), findsOneWidget);
+    await tester.tap(find.text('Ausente'));
+    await tester.pumpAndSettle();
+
+    final action = find.byKey(const Key('demo-primary-action'));
+    await tester.scrollUntilVisible(
+      action,
+      200,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    final result = find.text('Marca Ausente guardada en el prototipo.');
+    await tester.scrollUntilVisible(
+      result,
+      180,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(result, findsOneWidget);
+  });
+
   testWidgets('catalog and frame fit narrow mobile width', (tester) async {
     tester.view.physicalSize = const Size(320, 900);
     tester.view.devicePixelRatio = 1;
