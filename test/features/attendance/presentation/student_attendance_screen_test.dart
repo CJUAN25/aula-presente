@@ -1,3 +1,4 @@
+import 'package:aula_presente/features/attendance/domain/attendance_justification_request.dart';
 import 'package:aula_presente/app/theme/app_theme.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_record.dart';
@@ -152,5 +153,13 @@ class _AttendanceRepository implements AttendanceRepository {
   }) async => AttendanceRecordPage(items: records, nextCursor: null);
 
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #listJustificationRequests) {
+      return Future<List<AttendanceJustificationRequest>>.value([]);
+    }
+    if (invocation.memberName == #getMyJustification) {
+      return Future<AttendanceJustificationRequest?>.value(null);
+    }
+    return super.noSuchMethod(invocation);
+  }
 }

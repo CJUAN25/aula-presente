@@ -9,6 +9,7 @@ import '../domain/attendance_record.dart';
 import '../domain/attendance_repository.dart';
 import '../domain/attendance_session.dart';
 import 'attendance_presentation_components.dart';
+import 'attendance_request_button.dart';
 
 class StudentAttendanceScreen extends StatefulWidget {
   const StudentAttendanceScreen({
@@ -178,7 +179,11 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
             for (final record in _records)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
-                child: _StudentRecordTile(record: record),
+                child: _StudentRecordTile(
+                  key: ValueKey('${record.recordId}|${record.updatedAt}'),
+                  record: record,
+                  repository: widget.repository,
+                ),
               ),
           const SizedBox(height: 12),
           const Text(
@@ -192,9 +197,14 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
 }
 
 class _StudentRecordTile extends StatelessWidget {
-  const _StudentRecordTile({required this.record});
+  const _StudentRecordTile({
+    super.key,
+    required this.record,
+    required this.repository,
+  });
 
   final AttendanceRecord record;
+  final AttendanceRepository repository;
 
   @override
   Widget build(BuildContext context) {
@@ -250,6 +260,12 @@ class _StudentRecordTile extends StatelessWidget {
               style: TextStyle(color: AppColors.muted),
             ),
           ] else if (record.mode == AttendanceMode.meeting) ...[
+            if (record.absentUnits > 0)
+              AttendanceRequestButton(
+                record: record,
+                segmentId: null,
+                repository: repository,
+              ),
             const SizedBox(height: 10),
             Text(
               record.absentUnits == 0
@@ -283,7 +299,18 @@ class _StudentRecordTile extends StatelessWidget {
             for (final segment in record.segments)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
-                child: _SegmentRecordLine(segment: segment),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SegmentRecordLine(segment: segment),
+                    if (segment.absentMinutes > 0)
+                      AttendanceRequestButton(
+                        record: record,
+                        segmentId: segment.segmentId,
+                        repository: repository,
+                      ),
+                  ],
+                ),
               ),
           ],
         ],

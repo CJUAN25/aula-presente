@@ -1,5 +1,141 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
+## Ampliación y corrección de C8 — 17/11/2026 — APK 1.0.1+2
+
+**Punto de partida:** rama local `feature/conjunto-8-asistencia-manual-v2`, HEAD `46a8893d518c87b6337d73b194ac4aa801f568c7`. Se conservaron los cinco archivos con cambios/alta local de la revisión visual previa. El propietario confirmó en el TECNO que puede registrar, finalizar y consultar asistencia. Reportó rechazo al corregir **Ausente → Presente** después de finalizar, en la clase normal del 16/11 10:00–12:00 y la reprogramada 06:00–08:00. Esas pruebas físicas son del propietario. Codex no operó el teléfono.
+
+### Parche y corrección finalizada
+
+`git apply --check C:/Users/juand/Downloads/aula-presente-c8-correccion-finalizada.patch` pasó sin conflictos; después se aplicó. Se mantuvieron sus **dos regresiones** de segunda hora normal/reprogramada, ajustando la fecha del caso normal al 16/11. El parche evita revalidar identidad/esquema completo en una corrección cuando el allowlist ya los mantiene inmutables: revalida resultado y segmentos, y conserva la transacción de fila, proyección, evento y versión de sesión. Se rechazaron alteraciones de fecha y unidades inválidas. Esto corrige otra ruta de evaluación costosa de Rules, distinta del cierre ya publicado anteriormente.
+
+Una prueba de widgets adicional ejecuta las pantallas docente y estudiante con **FirestoreAttendanceRepository real y un almacén sintético**: corrige 11:00–12:00 de ausente a presente, sin motivo, conserva 10:00–11:00 presente y 120 minutos totales, y el estudiante ve 0 % de faltas. Las dos regresiones JS ejecutan transacciones equivalentes contra Firestore Emulator; ninguna de estas pruebas constituye FlutterFire ejecutado en Android.
+
+### Motivos opcionales, anulación y restauración
+
+- Corrección, anulación, reprogramación, cancelación y registro posterior aceptan un motivo vacío (máximo 500 caracteres si se escribe). El diálogo conserva **Cancelar**; cancelar devuelve `null`, confirmar sin texto devuelve `''`. No se inventa un motivo ni se elimina un motivo histórico. Un motivo tardío ya almacenado no se reemplaza.
+- Los eventos privados conservan actor, hora del servidor y valores anterior/nuevo. El historial docente muestra el cambio, fecha en Colombia y los motivos existentes. Las escrituras de calendario del cliente añaden `attendance_calendar/{occurrenceId}/events/{version}` con copia anterior/nueva y auditoría, en la misma transacción; estas entradas son inmutables y solo las lee el propietario.
+- Solo una anulación de una sesión que **ya había sido finalizada** ofrece **Restaurar asistencia**. Conserva las marcas privadas, la identidad de sesión, su finalización original, los motivos/eventos históricos y `publishedAt` de cada fila.
+- La restauración pasa `voided → restoring → finalized`, con un único evento persistido `restore`. Reconstruye las proyecciones desde la nómina/tramos, en lotes de hasta diez, verifica todos los resultados y finalmente cambia el estado. Si se interrumpe, **Continuar restauración** reutiliza el evento y omite filas ya correctas. No recrea sesiones ni habilita marcas durante la restauración.
+- Se probaron interrupciones antes de la primera fila y después del primer lote de **10/12** filas; el reintento completó doce resultados con un solo evento de restauración y sin duplicar unidades. Una restauración completada puede recibir después una corrección normal; la metadata de anulación queda como historia.
+- Durante `voiding` y `restoring`, las proyecciones de estudiantes diferentes convergen por fila. Una consulta puede conservar la última fila publicada o mostrar una fila ya restaurada mientras termina el resto; un `get` directo sigue exigiendo padre `finalized/voided`. No se promete atomicidad entre estudiantes distintos.
+
+### Solicitud del estudiante y decisión docente
+
+Esta ampliación fue solicitada expresamente el 17/11; sustituye la restricción anterior de C8 que solo contemplaba justificaciones ya revisadas por el docente. No recibe adjuntos.
+
+Ruta privada: **`courses/{courseId}/attendance_requests/{sessionId}|{rosterEntryId}|{segmentId o meeting}`**. El documento tiene `sessionId`, `rosterEntryId`, `studentUid`, `segmentId`, `text`, `status`, `createdAt`, `decidedAt`, `decidedBy`, `eventId`. Estados: `pending → approved/rejected`. Texto obligatorio de 1–500 caracteres. La identidad y UID se derivan de Auth/matrícula, no de formularios.
+
+| Acción | Resultado y protección |
+| --- | --- |
+| Estudiante: **Consultar asistencia → ausencia propia → Solicitar justificación → Enviar solicitud** | Solo correo/perfil verificados y matrícula canónica activa; ausencia publicada de sesión finalizada. Una solicitud por encuentro o tramo. Dos pulsaciones/transacciones usan el mismo ID. No se solicita sobre una hora presente o ya cubierta. |
+| Solicitud pendiente | Se muestra pendiente y la falta **sigue contando**. No cambia ni el total ni la cobertura del resultado; la solicitud se carga aparte de la lista. |
+| Docente propietario: leer texto y **Aprobar** | Transacción de cinco documentos: solicitud, fila, proyección, evento y sesión. Cubre una unidad por encuentro o los minutos ausentes actuales del tramo; mantiene ausencia original y denominador. No toca el otro tramo. |
+| Docente propietario: **Rechazar** | Misma auditoría/transacción; cobertura cero, falta sigue contando. Si la marca ya fue corregida a presente, puede rechazar la solicitud pendiente sin volver a crear una ausencia. |
+| Decisión repetida | La misma decisión vuelve como operación ya aplicada; no añade evento ni descuento. Una decisión contraria sobre una solicitud decidida se rechaza. Rules mantiene la decisión inmutable. |
+| Estudiante: resultado | Aprobada o rechazada, envío deshabilitado y **«Si tienes dudas, comunícate con tu docente»**. Actualizar la consulta vuelve a cargar resultado y decisión. |
+| Privacidad | Estudiante puede obtener únicamente sus IDs de solicitud, no enumerar solicitudes, consultar nómina/eventos ni escribir resultados/decisiones. Docente ajeno, cuenta sin verificar o matrícula retirada se rechazan. Solo el propietario lista las solicitudes de la sesión. |
+
+Se conservan la revisión docente manual y las correcciones auditadas previas. Una corrección posterior puede cambiar una marca y su cobertura con un nuevo evento; no crea otra solicitud ni altera el texto/decisión histórica.
+
+### Medición previa y carga progresiva
+
+Muestras del repositorio con 12 estudiantes sintéticos y 5 ms artificiales por lectura, antes de cambiar la carga de pantalla:
+
+| Operación | Antes (ms) | Después (ms) | Interpretación |
+| --- | ---: | ---: | --- |
+| Preparar lista | 238 | 237 | Sin nueva optimización ni reducción de validaciones. |
+| Completar lista | 203 | 193 | Variación local; no se atribuye una mejora nueva. |
+| Leer lista/tramos | 22 | 21 | La lectura necesaria se conserva. |
+| Comprobar publicación finalizada | 79 | 80 | La comprobación sigue completa; ahora es secundaria para mostrar la lista. |
+
+Antes, la pantalla esperaba primero publicación y después el historial junto con la lista. Ahora obtiene sesión, nómina completa y tramos, muestra la lista y carga historial, solicitudes y comprobación de publicación aparte. Mide `[C8] abrir pantalla / leer sesión`, `/ leer datos necesarios para la lista`, `/ lista disponible`, `/ historial secundario` y `/ comprobar publicación secundaria`. Mientras comprueba publicación no anuncia publicación completa ni habilita correcciones sobre un estado sin confirmar. Cada tarea secundaria conserva su error visible y su guardia de sesión/época; el historial ya no bloquea la lista. Un test retiene historial/publicación con `Completer`, avanza 500 ms del reloj de widgets y comprueba que la lista está disponible antes de liberarlos.
+
+Los snapshots, eventos de matrícula, comprobaciones por fecha efectiva y barreras de versión no se redujeron. Preparar/completar mantiene 6 snapshots, 24 historiales y 72 vínculos en el ensayo. Los tiempos son muestras locales, no mediciones ni promesas para el TECNO/Firebase real. Logs: `build/c8-new-latency-before.log`, `build/c8-new-latency-after.log`.
+
+### Verificación final de esta ampliación
+
+| Comprobación | Resultado |
+| --- | --- |
+| Suite Flutter completa | **359/359**, incluidas pantallas de ambos roles, doble envío, resultados aprobados/rechazados, corrección sin motivo, Cancelar anulación, restauración reanudable y prueba de pantalla con repositorio real sintético. |
+| Flutter dirigido C8/acceso estudiante | **80/80**; UI de horas **18/18**. Incluye tamaños 320/390/430 y texto ampliado, más los ajustes visuales locales previos. |
+| Firestore Emulator completo | **109/109**; dos regresiones del parche, solicitudes por encuentro/horas, aprobación/rechazo, reintentos, roles/matrícula y restauración/auditoría. Cero diagnósticos de límite de 1.000 expresiones en la ejecución final. |
+| Análisis, JS y diff | `flutter analyze` sin problemas, `node --check` y `git diff --check` aprobados. |
+| APK | Debug **1.0.1+2**, compilada sin instalar. El aviso futuro de Built-in Kotlin no impidió compilar. |
+
+Evidencia local ignorada por Git: `build/c8-new-full-flutter.log`, `build/c8-new-flutter.log`, `build/c8-new-rules.log`, `build/c8-new-analyze.log`, `build/c8-new-apk.log`, `build/c8-new-integration-widget.log`, `build/c8-new-visual.log`. No se crearon cuentas reales ni se enviaron correos. No se desplegó Firebase ni se ejecutó el TECNO. Los cambios permanecen en la rama local v2, sin commit/push nuevo.
+
+### Publicación y prueba en el TECNO para 1.0.1+2
+
+**Primero publicar el único `firestore.rules` completo de esta revisión y después instalar la APK 1.0.1+2.** Las reglas publicadas que ya permitieron el cierre no bastan para solicitudes/restauración y la nueva corrección. No se añadieron índices ni otra configuración de Firebase; la consulta docente de solicitudes usa igualdad por `sessionId` y orden por ID, con paginación de 100. No requiere Cloud Functions ni Storage.
+
+APK: `build/app/outputs/flutter-apk/app-debug.apk`, **193.529.327 bytes**, SHA-256 **`6D1FB39B44B73D1F4608D7972C55391E5B2B8F6C327BB410BE7B2126259E3CC9`**. Se comprobó en el APK `com.juanceron.aulapresente`, `versionName=1.0.1`, `versionCode=2`. SHA-256 del único `firestore.rules` local: **`69BC301EDDC9B4C61E3FC790E87F607E90B99B014243904264FFD3DD188BEAAE`**. Estas huellas sustituyen las anteriores para la próxima prueba. Repetir construcción: `flutter build apk --debug`. Para reglas, el propietario publica en `aula-presente-movil-juan-2026`, base `(default)`, sin reemplazar el archivo por un fragmento.
+
+1. **Corregir:** instalar la nueva APK conservando datos. Abrir la clase normal del 16/11 10:00–12:00 y la reprogramada original 05/11 → 16/11 06:00–08:00. Elegir el segundo tramo, **Corregir registro → Presente → Guardar corrección**, con motivo vacío. Verificar primera hora intacta, total 120 min y consulta propia del estudiante actualizada. No recrear sesiones.
+2. **Motivos y Cancelar:** en un encuentro de ensayo, abrir **Anular asistencia → Cancelar** y comprobar que nada cambia. Repetir confirmando vacío. Probar también reprogramar, cancelar clase y registrar posteriormente sin motivo; los motivos históricos no deben desaparecer del historial privado.
+3. **Restaurar:** anular un ensayo que estuviera finalizado, comprobar que deja de sumar unidades y pulsar **Restaurar asistencia**. Verificar mismas marcas, mismo encuentro, mismo resultado/cálculo previo. Para interrupción usar exclusivamente el ensayo: recuperar conexión, actualizar y **Continuar restauración**. Reabrir al terminar no debe sumar otra vez ni duplicar evento/resultado. No usar la clase real atascada para inducir cortes.
+4. **Solicitar:** con estudiante verificado y matrícula activa, abrir una ausencia propia publicada y enviar texto breve. Por horas, elegir una hora ausente, no una presente. Pulsar dos veces no debe duplicar. Mientras esté pendiente, la falta sigue contando. Otra cuenta no debe ver la solicitud ni su resultado.
+5. **Decidir:** con el docente dueño, abrir esa sesión y localizar **Solicitudes de justificación**. Leer texto, **Aprobar** y actualizar como estudiante. Solo se descuenta la unidad o los minutos ausentes de esa hora; el total se mantiene. Probar **Rechazar** con otra ausencia: no descuenta. En ambos casos se bloquea reenviar y aparece el mensaje de contacto. Repetir apertura no vuelve a descontar.
+6. **Demoras:** comprobar que lista/tramos aparecen mientras se carga historial/publicación, que el estado de comprobación no simula éxito y que un fallo ofrece reintento. En debug, recoger solo etiquetas/duraciones `[C8]`, sin datos personales. Registrar versión, hora, acción, cantidad de estudiantes y segundos observados.
+
+La publicación de las nuevas reglas, el APK realmente instalado y todos estos resultados físicos siguen pendientes del propietario. Los apartados siguientes conservan antecedentes y no sustituyen esta guía de la versión 1.0.1+2.
+
+## Revisión visual y de recorrido — 16/11/2026
+
+Punto de partida: `feature/conjunto-8-asistencia-manual-v2`, commit `46a8893d518c87b6337d73b194ac4aa801f568c7`, árbol limpio. Esta revisión añade ajustes locales de presentación y pruebas; conserva el arreglo del cierre publicado en ese commit. No modifica el repositorio de datos, el cálculo, la matrícula, `firestore.rules` ni índices.
+
+### Referencia que se pudo abrir
+
+Se intentó abrir `https://www.figma.com/design/XP9LIZClkFzVNf17jUXjGU/NUEVA-CORRECCION?node-id=25-57`: el conector requiere reautenticación y el lector web no pudo abrirlo. La ruta del PDF en la solicitud era un marcador; se localizó **`../FIGMA/NUEVA CORRECCION.pdf`** (158 páginas, productor Figma, páginas de 390 × 844). SHA-256: `5F9AD8A69E6AD6EA958D0370EAAEE2977E9DA8AAFD6562C208D75FD2A0D03FD3`. Se renderizaron y revisaron visualmente solo las páginas **42, 45, 46, 47, 48, 55, 56 y 144**, relacionadas con el recorrido docente. El PDF no conserva nombres/IDs de marcos ni permite confirmar la correspondencia exacta con la página online; por eso las referencias siguientes son **páginas del PDF**, sin atribuirles IDs de Figma.
+
+No se localizó una pantalla específica titulada **Registrar asistencia por horas** en la exportación. Las páginas 55/56 son la referencia comprobada de la lista; los tramos y sus estados se adaptaron al contrato C8. No se declara que esa pantalla falte en el archivo online, al que no hubo acceso.
+
+### Comparación del resultado final
+
+| Pantalla o flujo | Referencia original (marco o página) | Cómo quedó en la app | Motivo de la diferencia |
+| --- | --- | --- | --- |
+| Elegir clase y continuar un registro | PDF p. 42, **Calendario del curso**; p. 45, **Preparar asistencia** | Se conserva **Curso → Asistencia → Gestionar → clase**. La tarjeta identifica fecha efectiva/original y ofrece la acción del estado persistido. Se verificó **Continuar cierre → misma sesión**. | El calendario previsto no crea asistencia automáticamente. Preparar, abrir, continuar y consultar responden al estado real y a la hora efectiva; no se incorporan métodos Bluetooth/QR o plazos automáticos del prototipo. |
+| Lista docente abierta | PDF p. 56, **Estudiantes**, y p. 46, **Sesión en curso** | La lista tiene búsqueda, contadores de Presentes/Ausentes/Pendientes y tarjetas con nombre, estado y hora. Los botones Presente/Ausente actúan dentro de la fila y resaltan la marca seleccionada. | La toma manual es el flujo C8; permite registrar sin abrir un formulario por cada persona. Se conservan Manrope, fondo oscuro, acento menta, tarjetas redondeadas e iconos del tema existente. No se añade el gráfico de Bluetooth/tardanzas. |
+| Buscar estudiante | PDF pp. 55/56, **Buscar estudiante · Nombre o código** | Campo **Buscar estudiante · Nombre o correo**, filtro local sin consultas nuevas, estado **Sin coincidencias** y conservación del texto después de reintentar. Los contadores siguen representando la lista completa del tramo. | C8 guarda nombre e identidad académica por correo en la nómina, pero no código. No se añade otra lectura de perfiles/matrículas ni se promete buscar un campo ausente. |
+| Registrar asistencia por horas | Sin pantalla específica localizada; adaptación de la lista de pp. 55/56 | Encabezado compacto **Asistencia por horas**, modalidad, fecha efectiva, fecha original si se reprogramó, selector **Tramo de la clase**, minutos y resumen del tramo. Marcar afecta solo la hora elegida. Las acciones masivas confirman toda la lista del tramo, incluso con búsqueda activa. | El contrato C8 cuenta minutos por tramos; no hay referencia específica verificable de ese selector. Se reutilizan `CoursePanel`, campos y botones actuales. Se corrigió el desbordamiento del selector con texto ampliado a 320 px. |
+| Revisar y corregir una sesión cerrada | PDF p. 55, **Estudiantes · registro cerrado**; p. 48, **Registro manual** | El selector de tramo sigue visible después de finalizar. **Corregir registro** abre el diálogo del estudiante y tramo, con marca, minutos acotados y motivo obligatorio. Se comprobó cambiar la segunda hora a 30 min sin tocar la primera. | Antes el selector solo existía en `inProgress` y la segunda hora no era accesible para revisión. Se conserva el diálogo auditado y las marcas Presente/Ausente del contrato, en lugar de Tarde/reapertura del prototipo. |
+| Guardar y finalizar | PDF p. 46, **Cerrar registro**, y p. 47, **¿Terminamos el registro?** | Primero se muestran búsqueda y filas; después **Guardar y continuar después** y **Finalizar registro**. Las marcas se guardan al seleccionarlas. La finalización conserva la confirmación explícita de pendientes y la opción de volver a completar. | Evita ofrecer el cierre antes de recorrer la lista. Se mantiene la confirmación existente con `AlertDialog` y unidades de C8; no se convierte una marca pendiente en ausencia sin confirmación. |
+| Carga prolongada y error | PDF p. 144, **Conexión interrumpida**, como referencia general; sin variante específica de lista C8 | `AttendanceWaitStatus` al inicio, aviso de demora desde 8 s y `AttendanceErrorCard` persistente con Reintentar. Se ocultan las filas/acciones hasta completar la carga; un fallo al marcar sigue visible tras recargar. | Se reutilizan los componentes actuales. No se muestra éxito ni se habilitan escrituras sobre datos incompletos. La recarga consulta el estado persistido antes del reintento. |
+| Cierre reanudable | Sin referencia específica localizada; p. 47 solo muestra confirmación de cierre | Tarjeta **Cierre en curso → Continuar finalización**, sin controles de marcado. Se conserva la sesión y se pueden revisar sus dos tramos. | El cierre puede interrumpirse; la recuperación conserva IDs, marcas y la corrección funcional previa. No se crea otra sesión ni se ofrece una reapertura que cambie su estado. |
+| Publicación pendiente y finalización comprobada | Sin referencia específica localizada en la exportación | **Publicación pendiente → Reintentar publicación** o **Registro finalizado → Verificar publicación** aparecen antes de la lista. Se distinguen sesión finalizada y resultado publicado; un aviso nuevo sustituye el anterior para que no persista “pendiente” tras un reintento exitoso. | La publicación converge por estudiante y debe poder reanudarse. Se reutiliza `CourseStateCard`; no se anuncia publicación completa si quedan filas sin confirmar. |
+| Navegación y distribución | PDF pp. 55/56 con barra Inicio/Cursos/Perfil | Se mantiene el retorno al calendario y el recorrido dentro del curso. Las filas, búsqueda y acciones pueden desplazarse; el estado de cierre/publicación queda al inicio. | La pantalla está anidada en el curso y conserva su navegación existente. No se añade una barra global que reinicie el contexto ni acciones de matrícula fuera de esta revisión. No se declara fidelidad píxel a píxel. |
+
+### Verificación local realizada
+
+Se ejecutaron **las pantallas reales de producción** `TeacherAttendanceScreen` y `TeacherAttendanceSessionScreen` en `flutter test`, con repositorio controlado, identidades ficticias y dos tramos. Se interactuó con navegación, búsqueda, marcas, corrección, error/reintento y cierre/publicación, y se inspeccionaron PNG del resultado. Esto es ejecución y render de widgets; **no es una ejecución completa del APK con FlutterFire en Android**. `flutter emulators` no encontró emuladores Android disponibles. No se operó el TECNO ni se contactó Firebase real.
+
+- `flutter analyze`: sin problemas.
+- Pruebas Flutter dirigidas de asistencia y acceso estudiantil: **67/67**, incluidas **10** del nuevo `attendance_hours_flow_test.dart`. Incluyen 320/390/430 px con texto 1.6, marca solo en la segunda hora, corrección con motivo sin alterar la primera, búsqueda sin lecturas adicionales, carga lenta, error persistente y misma sesión al reanudar. El test previo de navegación se actualizó al título de horas.
+- Firestore Emulator: **2/2** regresiones `C8 closing rescheduled minutes` (2/12 estudiantes), sin diagnósticos de límite de 1.000 expresiones. Se conservan permisos, marcas, IDs y publicación idempotente. No se repitió la suite completa de 101 reglas en esta revisión visual.
+- `flutter build apk --debug`: aprobado. Conserva el aviso de compatibilidad futura de Built-in Kotlin.
+- `git diff --check`: aprobado.
+
+Evidencia local ignorada por Git: `build/c8-visual/reference-*.png`, `after-*.png`, `visual-tests.log`, `flutter-tests.log`, `closing-rules.log`, `analyze.log` y `apk.log`. Las capturas muestran pantallas desplazadas cuando el paso requiere alcanzar una fila o una acción. Para repetir las capturas sintéticas:
+
+```powershell
+$env:C8_VISUAL_CAPTURE = 'after'
+flutter test test/features/attendance/presentation/attendance_hours_flow_test.dart --reporter expanded
+Remove-Item Env:C8_VISUAL_CAPTURE
+flutter test test/features/attendance test/features/courses/presentation/student_course_access_test.dart --reporter expanded
+flutter analyze
+```
+
+### APK y comprobaciones pendientes en el TECNO
+
+APK recompilada: `build/app/outputs/flutter-apk/app-debug.apk`, **218.912.577 bytes**, SHA-256 **`11B193FC617BF5443A2E70CD64DFE744750FDF13895B18A42604AFD2603B7B71`**. Esta huella sustituye la APK anterior para probar la interfaz revisada. Las reglas conservan SHA-256 `F8C9C9E7557DA55739F5884582DA342F16B7C9D200E5538657157ACF877DF6E5`: no hay una nueva versión de reglas por estos ajustes visuales; la publicación de las reglas del arreglo anterior sigue por confirmar con el propietario.
+
+1. Instalar esta APK conservando datos y sesiones. Confirmar que están publicadas las reglas del arreglo del cierre antes de intentar la recuperación real.
+2. **Mis cursos → Lógica → Asistencia → Gestionar**, elegir la clase original 05/11 reprogramada al 16/11 06:00–08:00. **Continuar cierre → Continuar finalización** debe conservar marcas, identidad y un resultado por estudiante. Reintentar publicación si se indica pendiente.
+3. En **Ver asistencia**, cambiar entre 06:00–07:00 y 07:00–08:00, comprobar ambas marcas originales y usar búsqueda. Para probar marcas/correcciones, usar un encuentro de ensayo; verificar que solo cambie el tramo elegido, con motivo si ya está finalizado.
+4. Comprobar teclado, desplazamiento, búsqueda sin coincidencias, texto ampliado y botones de guardar/finalizar después de la lista. En un ensayo con conectividad interrumpida, comprobar espera/error y reintento sin duplicados. No inducir cortes durante la recuperación de la sesión real atascada.
+5. Comprobar la consulta propia del estudiante ya publicado. Las pruebas locales no validan la APK instalada, las reglas realmente publicadas, los tiempos de red ni la representación en el TECNO.
+
+Los apartados siguientes conservan los antecedentes y sus verificaciones originales.
+
 ## Incidente de cierre — punto de partida del 16/11/2026
 
 Verificados antes de editar: rama `feature/conjunto-8-asistencia-manual`, HEAD `bed4ac83fd1d82b53080df0af1d2dc467208d4e4`, remoto `https://github.com/CJUAN25/aula-presente.git` y `git status --short` vacío.

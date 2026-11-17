@@ -1,3 +1,5 @@
+import 'package:aula_presente/features/attendance/domain/attendance_justification_request.dart';
+
 import 'dart:async';
 
 import 'package:aula_presente/app/theme/app_theme.dart';
@@ -138,7 +140,7 @@ void main() {
       expect(repo.preparedIds, ['from-12']);
       expect(repo.startedIds, ['from-12']);
       expect(repo.reasons, [null]);
-      expect(find.text('Registrar asistencia'), findsOneWidget);
+      expect(find.text('Asistencia por horas'), findsOneWidget);
       expect(repo.sessions.length, 3);
     },
   );
@@ -376,5 +378,13 @@ class _Repository implements AttendanceRepository {
     int pageSize = 25,
   }) async => AttendanceSegmentPage(items: [], nextCursor: null);
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #listJustificationRequests) {
+      return Future<List<AttendanceJustificationRequest>>.value([]);
+    }
+    if (invocation.memberName == #getMyJustification) {
+      return Future<AttendanceJustificationRequest?>.value(null);
+    }
+    return super.noSuchMethod(invocation);
+  }
 }

@@ -1,3 +1,10 @@
+import 'package:flutter/material.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_segment.dart';
+import 'package:aula_presente/app/theme/app_theme.dart';
+import 'package:aula_presente/features/attendance/application/attendance_record_calculator.dart';
+import 'package:aula_presente/features/attendance/presentation/attendance_session_screen.dart';
+import 'package:aula_presente/features/attendance/presentation/student_attendance_screen.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_justification_request.dart';
 import 'package:aula_presente/features/attendance/application/attendance_segment_factory.dart';
 import 'package:aula_presente/features/attendance/data/attendance_firestore_codec.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
@@ -21,6 +28,249 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('real repository corrects the second hour and student screen sees zero absences', (tester) async {
+    const parent='courses/course-1/attendance_sessions/occurrence-1';
+    final store=_Store()..documents['users/teacher-1']=_teacherProfile()..documents['users/student-1']=_studentProfile()..documents['courses/course-1']={'ownerUid':'teacher-1'};
+    final data={..._session(status:'finalized',rosterCount:1,markedCount:1,unmarkedCount:0,version:8),'mode':'minutes','segmentIds':['seg-1','seg-2'],'startMinute':600,'endMinute':720};
+    store.documents[parent]=data;
+    final session=AttendanceFirestoreCodec.sessionFromMap(data,expectedCourseId:'course-1',expectedOccurrenceId:'occurrence-1');
+    final segments=const [AttendanceSegment(id:'seg-1',order:0,startMinute:600,endMinute:660,durationMinutes:60),AttendanceSegment(id:'seg-2',order:1,startMinute:660,endMinute:720,durationMinutes:60)];
+    final first=const AttendanceRosterMark(mark:AttendanceMark.present,absentUnits:0,justificationStatus:AttendanceJustificationStatus.none,justifiedUnits:0);
+    final entry=AttendanceRosterEntry(rosterEntryId:'roster-1',displayName:'Synthetic student',studentUid:'student-1',meetingMark:null,segmentMarks:{'seg-1':first,'seg-2':const AttendanceRosterMark(mark:AttendanceMark.absent,absentUnits:60,justificationStatus:AttendanceJustificationStatus.none,justifiedUnits:0)},version:1);
+    store.documents['$parent/roster/roster-1']={...AttendanceFirestoreCodec.rosterDocument(entry:entry,mode:AttendanceMode.minutes,uid:'teacher-1'),'updatedAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
+    for(final segment in segments) {
+      store.documents['$parent/segments/${segment.id}']={...AttendanceFirestoreCodec.segmentForCreate(segment:segment),'createdAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
+    }
+    store.documents['courses/course-1/attendance_records/occurrence-1|roster-1']={...AttendanceFirestoreCodec.stagedRecord(AttendanceRecordCalculator.fromRosterEntry(session:session,entry:entry,segments:segments)),'visibility':'published','publishedAt':Timestamp.fromDate(DateTime.utc(2026,11,16)),'updatedAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
+    final course=Course(id:'course-1',ownerUid:'teacher-1',subject:'Synthetic course',group:'01',period:'2026',program:'Program',schedule:CourseSchedule(startDate:AcademicDate(year:2026,month:11,day:1),endDate:AcademicDate(year:2026,month:11,day:30),weeklyBlocks:const [WeeklyBlock(id:'block',weekday:1,startTime:'10:00',endTime:'12:00')]));
+    await tester.pumpWidget(MaterialApp(theme:AppTheme.dark,home:TeacherAttendanceSessionScreen(course:course,session:session,repository:_repository(store))));await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.byType(DropdownButtonFormField<String>),200,scrollable:find.byType(Scrollable).first);
+    await tester.tap(find.byType(DropdownButtonFormField<String>));await tester.pumpAndSettle();
+    await tester.tap(find.text('11:00\u201312:00 \u00b7 60 min').last);await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Corregir registro'),200,scrollable:find.byType(Scrollable).first);await tester.tap(find.text('Corregir registro'));await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of:find.byType(SegmentedButton<AttendanceMark>),matching:find.text('Presente')));await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar correcci\u00f3n'));await tester.pumpAndSettle();
+    final record=store.documents['courses/course-1/attendance_records/occurrence-1|roster-1']!;
+    expect(record['absentUnits'],0);expect(record['unitCount'],120);
+    expect((record['segments'] as List).first['mark'],'present');
+    expect((record['segments'] as List).last['mark'],'present');
+    final student=FirestoreAttendanceRepository(auth:_Auth(_User('student-1','student@example.invalid')),firestore:store,enrollments:_StudentEnrollmentRepository());
+    await tester.pumpWidget(MaterialApp(theme:AppTheme.dark,home:StudentAttendanceScreen(course:course,repository:student)));await tester.pumpAndSettle();
+    expect(find.text('0% de faltas computables'),findsOneWidget);
+    expect(tester.takeException(),isNull);
+  });
+
+  test('restoration reuses marks and resumes after a failed write', () async {
+    final store = _auditStore(mark: 'absent')
+      ..documents['courses/course-1'] = {'ownerUid': 'teacher-1'};
+    final repo = _repository(store);
+    await repo.voidSession(
+      courseId: 'course-1',
+      occurrenceId: 'occurrence-1',
+      operationId: 'void-restore',
+      reason: '',
+    );
+    final original = Map<String, dynamic>.from(
+      store
+          .documents['courses/course-1/attendance_sessions/occurrence-1/roster/student-1']!,
+    );
+    store.failRestorePathOnce =
+        'courses/course-1/attendance_records/occurrence-1|student-1';
+    await expectLater(
+      repo.restoreSession(courseId: 'course-1', occurrenceId: 'occurrence-1'),
+      throwsA(isA<AttendanceFailure>()),
+    );
+    final parent =
+        store.documents['courses/course-1/attendance_sessions/occurrence-1']!;
+    expect(parent['status'], 'restoring');
+    final eventId = parent['lastEventId'];
+    final result = await _repository(store)
+        .restoreSession(courseId: 'course-1', occurrenceId: 'occurrence-1');
+    expect(result.status, AttendanceSessionStatus.finalized);
+    expect(result.lastEventId, eventId);
+    expect(
+      store
+          .documents['courses/course-1/attendance_records/occurrence-1|student-1']!['unitCount'],
+      1,
+    );
+    expect(
+      store
+          .documents['courses/course-1/attendance_records/occurrence-1|student-1']!['absentUnits'],
+      1,
+    );
+    expect(
+      store
+          .documents['courses/course-1/attendance_sessions/occurrence-1/roster/student-1'],
+      original,
+    );
+    final writes = store.transactionWrites.length;
+    await repo.restoreSession(
+      courseId: 'course-1',
+      occurrenceId: 'occurrence-1',
+    );
+    expect(store.transactionWrites.length, writes);
+    // Corrections remain parseable after restoration, including the historical void metadata.
+    final entry = await repo.getRosterEntry(
+      session: result,
+      rosterEntryId: 'student-1',
+    );
+    final replacement = AttendanceRosterEntry(
+      rosterEntryId: 'student-1',
+      displayName: entry!.displayName,
+      studentUid: entry.studentUid,
+      meetingMark: const AttendanceRosterMark(
+        mark: AttendanceMark.present,
+        absentUnits: 0,
+        justificationStatus: AttendanceJustificationStatus.none,
+        justifiedUnits: 0,
+      ),
+      segmentMarks: {},
+      version: entry.version,
+    );
+    await repo.correctRosterEntry(
+      courseId: 'course-1',
+      occurrenceId: 'occurrence-1',
+      operationId: 'after-restore',
+      replacement: replacement,
+      reason: '',
+    );
+    expect(
+      (await repo.getSession(
+        courseId: 'course-1',
+        occurrenceId: 'occurrence-1',
+      ))!.status,
+      AttendanceSessionStatus.finalized,
+    );
+  });
+
+  test('twelve restored projections resume after a committed first chunk', () async {
+    final store = _auditStore(mark: 'absent');
+    final parent =
+        store.documents['courses/course-1/attendance_sessions/occurrence-1']!;
+    parent['rosterCount'] = 12;
+    parent['markedCount'] = 12;
+    for (var i = 1; i <= 12; i++) {
+      store.documents['courses/course-1/attendance_sessions/occurrence-1/roster/student-$i'] =
+          _entry(rosterEntryId: 'student-$i', mark: 'absent', version: 1);
+      store.documents['courses/course-1/attendance_records/occurrence-1|student-$i'] =
+          _record(rosterEntryId: 'student-$i', mark: 'absent');
+    }
+    await _repository(store).voidSession(
+      courseId: 'course-1',
+      occurrenceId: 'occurrence-1',
+      operationId: 'void-all',
+      reason: '',
+    );
+    store.failRestorePathOnce =
+        'courses/course-1/attendance_records/occurrence-1|student-9';
+    await expectLater(
+      _repository(store)
+          .restoreSession(courseId: 'course-1', occurrenceId: 'occurrence-1'),
+      throwsA(isA<AttendanceFailure>()),
+    );
+    final published = store.documents.entries
+        .where(
+          (e) =>
+              e.key.startsWith('courses/course-1/attendance_records/') &&
+              e.value?['result'] != 'voided',
+        )
+        .length;
+    expect(published, 10);
+    await _repository(store)
+        .restoreSession(courseId: 'course-1', occurrenceId: 'occurrence-1');
+    expect(
+      store.documents.entries.where(
+        (e) =>
+            e.key.startsWith('courses/course-1/attendance_records/') &&
+            e.value?['result'] == 'absent',
+      ),
+      hasLength(12),
+    );
+    final events = store.documents.entries.where(
+      (e) => e.key.contains('/events/') && e.value?['kind'] == 'restore',
+    );
+    expect(events, hasLength(1));
+    expect(parent['rosterCount'], 12);
+  });
+
+  for (final approve in [true, false]) {
+    test(
+      'student request is single and decision $approve updates the projection atomically',
+      () async {
+        final store = _auditStore(mark: 'absent');
+        final row = store.documents.remove(
+          'courses/course-1/attendance_sessions/occurrence-1/roster/student-1',
+        )!;
+        row['rosterEntryId'] = 'roster-1';
+        store.documents['courses/course-1/attendance_sessions/occurrence-1/roster/roster-1'] =
+            row;
+        store.documents['courses/course-1/attendance_records/occurrence-1|roster-1'] =
+            _record(mark: 'absent', rosterEntryId: 'roster-1');
+        store.documents['users/student-1'] = _studentProfile();
+        final student = FirestoreAttendanceRepository(
+          auth: _Auth(_User('student-1', 'student@example.invalid')),
+          firestore: store,
+          enrollments: _StudentEnrollmentRepository(),
+        );
+        final record = AttendanceFirestoreCodec.recordFromMap(
+          store
+              .documents['courses/course-1/attendance_records/occurrence-1|roster-1']!,
+          expectedCourseId: 'course-1',
+          expectedRecordId: 'occurrence-1|roster-1',
+        );
+        final request = await student.submitJustification(
+          record: record,
+          segmentId: null,
+          text: 'Solicitud sintética',
+        );
+        final repeated = await student.submitJustification(
+          record: record,
+          segmentId: null,
+          text: 'Segundo toque',
+        );
+        expect(request.id, repeated.id);
+        expect(
+          store
+              .documents['courses/course-1/attendance_records/occurrence-1|roster-1']!['justifiedUnits'],
+          0,
+        );
+        await _repository(store).decideJustificationRequest(
+          courseId: 'course-1',
+          request: request,
+          approve: approve,
+        );
+        final writes = store.transactionWrites.length;
+        await _repository(store).decideJustificationRequest(
+          courseId: 'course-1',
+          request: request,
+          approve: approve,
+        );
+        expect(store.transactionWrites.length, writes);
+        final result = store
+            .documents['courses/course-1/attendance_records/occurrence-1|roster-1']!;
+        expect(result['unitCount'], 1);
+        expect(result['justifiedUnits'], approve ? 1 : 0);
+        expect(
+          (await student.getMyJustification(
+            record: record,
+            segmentId: null,
+          ))!.status,
+          approve
+              ? AttendanceRequestStatus.approved
+              : AttendanceRequestStatus.rejected,
+        );
+        final decisionWrites = store.transactionGroups
+            .where(
+              (g) => g.any(
+                (w) => w.path.contains('/attendance_requests/') && w.update,
+              ),
+            )
+            .single;
+        expect(decisionWrites, hasLength(5));
+      },
+    );
+  }
+
   test('C8 latency profile prepare complete view', () async {
     final date = AcademicDate(year: 2026, month: 11, day: 16);
     final occurrence = AttendanceOccurrence(
@@ -538,22 +788,15 @@ void main() {
         final writes = store.transactionWrites.length;
         await reopened().prepareSession(course: course, occurrence: occurrence);
         expect(store.transactionWrites.length, writes);
-        // Legacy incomplete late preparation asks for a reason, then persists
+        // An omitted late reason is allowed; an optional nonempty reason persists
         // it once before completing the same session (no counter increment).
         store.documents[parentPath]!['rosterState'] = 'building';
         store.documents[parentPath]!['createdAt'] = Timestamp.fromDate(
           DateTime.utc(2026, 11, 15, 18),
         );
-        await expectLater(
-          reopened().prepareSession(course: course, occurrence: occurrence),
-          throwsA(
-            isA<AttendanceFailure>().having(
-              (e) => e.kind,
-              'kind',
-              AttendanceFailureKind.invalidInput,
-            ),
-          ),
-        );
+        await reopened().prepareSession(course: course, occurrence: occurrence);
+        expect(store.documents[parentPath]!['lateRegistrationReason'], isNull);
+        store.documents[parentPath]!['rosterState'] = 'building';
         await reopened().prepareSession(
           course: course,
           occurrence: occurrence,
@@ -1327,6 +1570,8 @@ class _Store implements FirebaseFirestore {
   String? failVoidPathOnce;
   String? failStagePathOnce;
   int _commitNumber = 0;
+  int autoIds = 0;
+  String? failRestorePathOnce;
 
   @override
   CollectionReference<Map<String, dynamic>> collection(String path) =>
@@ -1428,7 +1673,7 @@ class _Collection extends _Query
   _Collection(super.store, super.path);
   @override
   DocumentReference<Map<String, dynamic>> doc([String? path]) =>
-      _Reference(store, '${this.path}/${path ?? ''}');
+      _Reference(store, '${this.path}/${path ?? 'auto-${store.autoIds++}'}');
 }
 
 // ignore: subtype_of_sealed_class
@@ -1515,6 +1760,11 @@ class _Transaction implements Transaction {
     SetOptions? options,
   ]) {
     final values = Map<String, dynamic>.from(data as Map);
+    if (store.failRestorePathOnce == reference.path &&
+        values['result'] != 'voided') {
+      store.failRestorePathOnce = null;
+      throw FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
+    }
     if (store.failStagePathOnce == reference.path &&
         values['visibility'] == 'staged') {
       store.failStagePathOnce = null;

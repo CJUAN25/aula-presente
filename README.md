@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-Esta entrega se comparte en la rama [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). La revisión local del 16/11 corrige un cierre por horas atascado en **Finalizando**, conservando la sesión y sus marcas, y reduce esperas entre lecturas independientes. El propietario reportó una publicación manual de reglas; su versión exacta y la APK anterior siguen por confirmar. Para probar este ajuste debe publicar las reglas nuevas e instalar la APK recompilada, según el [seguimiento C8](docs/seguimiento_conjunto_8.md). Codex no publicó Firebase ni ejecutó la app en el TECNO.
+La rama de trabajo es [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). La revisión local del 17/11 entrega **1.0.1+2**: corrección de la segunda hora finalizada, motivos opcionales, restauración de asistencias anuladas y solicitudes de justificación de texto con decisión docente. Conserva el cierre recuperable y los ajustes visuales de v2; la lista aparece antes de cargar historial/publicación. Estos cambios nuevos siguen locales, sin otro commit/push. Para probarlos debe publicarse el `firestore.rules` completo nuevo e instalarse la APK indicada en el [seguimiento C8](docs/seguimiento_conjunto_8.md). Codex no publicó Firebase ni ejecutó la app en el TECNO.
 
 ## Qué se puede hacer
 
@@ -20,7 +20,7 @@ Esta entrega se comparte en la rama [`feature/conjunto-8-asistencia-manual-v2`](
 
 - Crear una cuenta, verificar el correo, ingresar, recuperar la contraseña y cerrar sesión.
 - Solicitar ingreso a un curso y consultar sus materias activas y su calendario previsto.
-- Consultar sus propios registros de asistencia publicados y el resumen de unidades.
+- Consultar sus propios registros publicados y solicitar justificación de una ausencia por encuentro/tramo. Pendiente o rechazada sigue contando; aprobada conserva el total y resta solo la falta cubierta.
 
 Cada cuenta nueva empieza con el rol de estudiante. La app no permite que una persona se asigne permisos docentes o administrativos desde el cliente.
 
@@ -50,7 +50,7 @@ La [guía de activación C8](docs/activacion_conjunto_8.md) conserva recorridos 
 Se necesita Git, Flutter con Dart, Android Studio con el SDK y las herramientas de Android, y un emulador o dispositivo Android. La versión usada para las verificaciones de esta rama fue Flutter **3.47.1** y Dart **3.13.1**. Android es la plataforma configurada en este proyecto.
 
 ```bash
-git clone --branch feature/conjunto-8-asistencia-manual https://github.com/CJUAN25/aula-presente.git
+git clone --branch feature/conjunto-8-asistencia-manual-v2 https://github.com/CJUAN25/aula-presente.git
 cd aula-presente
 flutter doctor -v
 flutter pub get
@@ -74,7 +74,7 @@ La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Co
 
 La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-La rama contiene un solo `firestore.rules`, con la corrección del cierre por horas y los permisos existentes. El propietario publicó manualmente una versión anterior no identificada; debe publicar el archivo completo de esta revisión antes de repetir el cierre. El índice compuesto de `attendance_records` está declarado en `firestore.indexes.json`; el propietario reportó que ya aparece **Habilitado**, así que no se solicita volver a desplegar índices. En esta entrega no se desplegó Firebase ni se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento; solo una persona autorizada debe publicar reglas.
+La rama mantiene un solo `firestore.rules`. Aunque ya se confirmó la publicación de la corrección inicial del cierre, **1.0.1+2 requiere publicar nuevamente el archivo completo local**, con la corrección de registros finalizados, solicitudes y restauración. No hay índices nuevos; se conserva `attendance_records` habilitado. No se desplegó Firebase ni se modificaron datos reales en esta ampliación. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento para el propietario.
 
 ## Documentación
 
@@ -85,4 +85,4 @@ La rama contiene un solo `firestore.rules`, con la corrección del cierre por ho
 - [Guías de acceso docente](docs/activacion_acceso_docente.md), [cursos](docs/activacion_conjunto_2.md), [matrícula por código](docs/activacion_conjunto_4.md), [retiro y reincorporación](docs/activacion_conjunto_5.md) e [importación de Excel](docs/activacion_conjunto_6.md)
 - [Pruebas de reglas con el emulador](tools/firestore_rules_tests/README.md)
 
-En esta revisión pasaron `flutter analyze`, **57/57** pruebas Flutter dirigidas y **101/101** pruebas de reglas en emulador; la APK debug compiló. El [seguimiento](docs/seguimiento_conjunto_8.md) registra las mediciones locales, las huellas de APK/reglas y los pasos para el propietario. La prueba de esta corrección en Firebase real y TECNO sigue pendiente.
+En la ampliación del 17/11 pasaron `flutter analyze`, **359/359** pruebas Flutter completas y **109/109** pruebas de reglas en emulador; compiló la APK debug **1.0.1+2**. El [seguimiento](docs/seguimiento_conjunto_8.md) registra mediciones, huellas y pasos por flujo. La publicación nueva y la prueba de esta versión en el TECNO siguen pendientes del propietario.

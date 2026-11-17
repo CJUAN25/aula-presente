@@ -5,6 +5,7 @@ enum AttendanceEventKind {
   correction,
   justification,
   rosterCorrection,
+  restore,
   voidSession;
 
   String get value => switch (this) {
@@ -16,6 +17,7 @@ enum AttendanceEventKind {
     'correction' => AttendanceEventKind.correction,
     'justification' => AttendanceEventKind.justification,
     'rosterCorrection' => AttendanceEventKind.rosterCorrection,
+    'restore' => AttendanceEventKind.restore,
     'void' => AttendanceEventKind.voidSession,
     _ => throw FormatException('Unsupported attendance event kind: $value'),
   };

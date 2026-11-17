@@ -4,6 +4,8 @@ import '../../../app/theme/app_theme.dart';
 import '../../courses/domain/course.dart';
 import '../../courses/presentation/course_presentation_components.dart';
 import '../domain/attendance_failure.dart';
+import '../domain/attendance_justification_request.dart';
+import '../data/attendance_operation_trace.dart';
 import '../domain/attendance_mode.dart';
 import '../domain/attendance_repository.dart';
 import '../domain/attendance_segment.dart';
@@ -35,7 +37,13 @@ class _TeacherAttendanceSessionScreenState
   List<AttendanceSegment> _segments = const [];
   List<AttendanceSessionEvent> _events = const [];
   String? _selectedSegmentId;
+  final _searchController = TextEditingController();
+  String _studentQuery = '';
   Object? _error;
+  Object? _extrasError;
+  List<AttendanceJustificationRequest> _requests = [];
+  bool _extrasLoading = false;
+  bool _publicationChecking = false;
   AttendanceFailureKind? _publicationFailureKind;
   bool _loading = true;
   bool _processing = false;
@@ -51,50 +59,38 @@ class _TeacherAttendanceSessionScreenState
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final epoch = ++_epoch;
+    final trace = AttendanceOperationTrace('abrir pantalla')
+      ..start('leer sesión');
     setState(() {
       _loading = true;
+      _extrasLoading = false;
+      _publicationChecking = false;
       _error = null;
+      _extrasError = null;
+      _events = [];
+      _requests = [];
     });
     try {
       final session = await widget.repository.getSession(
         courseId: widget.course.id,
         occurrenceId: widget.session.occurrenceId,
       );
-      if (!mounted || epoch != _epoch) return;
       if (session == null) throw StateError('La sesión ya no está disponible.');
-      var loadedSession = session;
-      var publicationPending = false;
-      AttendanceFailureKind? publicationFailureKind;
-      if (session.status == AttendanceSessionStatus.finalized) {
-        try {
-          final publication = await widget.repository.finalizeSession(
-            courseId: widget.course.id,
-            occurrenceId: session.occurrenceId,
-            confirmUnmarked: false,
-          );
-          loadedSession = publication.session ?? session;
-          publicationPending =
-              publication.publicationPending ||
-              publication.status != AttendanceFinalizeStatus.confirmed;
-          publicationFailureKind = publication.failureKind;
-        } on AttendanceFailure catch (error) {
-          publicationPending = true;
-          publicationFailureKind = error.kind;
-        } catch (_) {
-          publicationPending = true;
-          publicationFailureKind = AttendanceFailureKind.unavailable;
-        }
-      }
       final roster = <AttendanceRosterEntry>[];
       final segments = <AttendanceSegment>[];
-      final events = <AttendanceSessionEvent>[];
       Future<void> loadRoster() async {
         AttendanceRosterCursor? cursor;
         do {
           final page = await widget.repository.listRoster(
-            session: loadedSession,
+            session: session,
             cursor: cursor,
             pageSize: 100,
           );
@@ -104,11 +100,11 @@ class _TeacherAttendanceSessionScreenState
       }
 
       Future<void> loadSegments() async {
-        if (loadedSession.mode == AttendanceMode.meeting) return;
+        if (session.mode == AttendanceMode.meeting) return;
         AttendanceSegmentCursor? cursor;
         do {
           final page = await widget.repository.listSegments(
-            session: loadedSession,
+            session: session,
             cursor: cursor,
             pageSize: 100,
           );
@@ -117,44 +113,150 @@ class _TeacherAttendanceSessionScreenState
         } while (cursor != null);
       }
 
-      Future<void> loadEvents() async {
-        if (loadedSession.status == AttendanceSessionStatus.finalized ||
-            loadedSession.status == AttendanceSessionStatus.voided ||
-            loadedSession.status == AttendanceSessionStatus.voiding) {
-          AttendanceSessionEventCursor? eventCursor;
-          do {
-            final page = await widget.repository.listSessionEvents(
-              session: loadedSession,
-              cursor: eventCursor,
-            );
-            events.addAll(page.items);
-            eventCursor = page.nextCursor;
-          } while (eventCursor != null);
-        }
-      }
-
-      // The collections are independent; each collection still pages in order.
-      await Future.wait([loadRoster(), loadSegments(), loadEvents()]);
+      trace.start('leer datos necesarios para la lista');
+      await Future.wait([loadRoster(), loadSegments()]);
       if (!mounted || epoch != _epoch) return;
       setState(() {
-        _session = loadedSession;
+        _session = session;
         _roster = roster;
         _segments = segments;
-        _events = events;
-        _publicationPending = publicationPending;
-        _publicationFailureKind = publicationFailureKind;
-        _selectedSegmentId ??= segments.isEmpty ? null : segments.first.id;
-        if (_selectedSegmentId != null &&
-            segments.every((segment) => segment.id != _selectedSegmentId)) {
-          _selectedSegmentId = segments.isEmpty ? null : segments.first.id;
-        }
+        _selectedSegmentId = segments.any((s) => s.id == _selectedSegmentId)
+            ? _selectedSegmentId
+            : segments.firstOrNull?.id;
+        _loading = false;
+        _publicationPending = false;
+        _publicationChecking =
+            session.status == AttendanceSessionStatus.finalized;
+        _extrasLoading = true;
       });
+      trace.start('lista disponible');
+      trace.finish();
+      // Secondary data never delays the roster. Each task keeps its validation and epoch guard.
+      _loadExtras(session, epoch);
     } catch (error) {
-      if (mounted && epoch == _epoch) setState(() => _error = error);
+      if (mounted && epoch == _epoch) {
+        setState(() {
+          _error = error;
+          _loading = false;
+        });
+      }
     } finally {
-      if (mounted && epoch == _epoch) setState(() => _loading = false);
+      trace.finish();
     }
   }
+
+  Future<void> _loadExtras(AttendanceSession session, int epoch) async {
+    bool current() => mounted && epoch == _epoch;
+    Future<void> history() async {
+      final trace = AttendanceOperationTrace('abrir pantalla')
+        ..start('historial secundario');
+      try {
+        final events = <AttendanceSessionEvent>[];
+        if ([
+          AttendanceSessionStatus.finalized,
+          AttendanceSessionStatus.voided,
+          AttendanceSessionStatus.voiding,
+          AttendanceSessionStatus.restoring,
+        ].contains(session.status)) {
+          AttendanceSessionEventCursor? cursor;
+          do {
+            final page = await widget.repository.listSessionEvents(
+              session: session,
+              cursor: cursor,
+            );
+            events.addAll(page.items);
+            cursor = page.nextCursor;
+          } while (cursor != null);
+        }
+        if (current()) setState(() => _events = events);
+      } catch (error) {
+        if (current()) setState(() => _extrasError = error);
+      } finally {
+        trace.finish();
+      }
+    }
+
+    Future<void> requests() async {
+      try {
+        final data = await widget.repository.listJustificationRequests(
+          courseId: widget.course.id,
+          occurrenceId: session.occurrenceId,
+        );
+        if (current()) setState(() => _requests = data);
+      } catch (error) {
+        if (current()) setState(() => _extrasError = error);
+      }
+    }
+
+    Future<void> publication() async {
+      if (session.status != AttendanceSessionStatus.finalized) return;
+      final trace = AttendanceOperationTrace('abrir pantalla')
+        ..start('comprobar publicación secundaria');
+      try {
+        final result = await widget.repository.finalizeSession(
+          courseId: widget.course.id,
+          occurrenceId: session.occurrenceId,
+          confirmUnmarked: false,
+        );
+        if (current()) {
+          setState(() {
+            _publicationPending =
+                result.publicationPending ||
+                result.status != AttendanceFinalizeStatus.confirmed;
+            _publicationFailureKind = result.failureKind;
+          });
+        }
+      } on AttendanceFailure catch (error) {
+        if (current()) {
+          setState(() {
+            _publicationPending = true;
+            _publicationFailureKind = error.kind;
+          });
+        }
+      } catch (_) {
+        if (current()) {
+          setState(() {
+            _publicationPending = true;
+            _publicationFailureKind = AttendanceFailureKind.unavailable;
+          });
+        }
+      } finally {
+        if (current()) setState(() => _publicationChecking = false);
+        trace.finish();
+      }
+    }
+
+    await Future.wait([history(), requests(), publication()]);
+    if (current()) setState(() => _extrasLoading = false);
+  }
+
+  Future<void> _restore() => _run(() async {
+    final result = await widget.repository.restoreSession(
+      courseId: widget.course.id,
+      occurrenceId: _current.occurrenceId,
+    );
+    if (mounted) setState(() => _session = result);
+    await _load();
+  });
+
+  String _requestTimeLabel(AttendanceJustificationRequest request) {
+    final segment = _segments
+        .where((s) => s.id == request.segmentId)
+        .firstOrNull;
+    return segment == null
+        ? 'Hora de la clase'
+        : '${attendanceTimeLabel(segment.startMinute)}–${attendanceTimeLabel(segment.endMinute)}';
+  }
+
+  Future<void> _decide(AttendanceJustificationRequest request, bool approve) =>
+      _run(() async {
+        await widget.repository.decideJustificationRequest(
+          courseId: widget.course.id,
+          request: request,
+          approve: approve,
+        );
+        await _load();
+      });
 
   bool get _startIsDue {
     final bogota = DateTime.now().toUtc().subtract(const Duration(hours: 5));
@@ -167,7 +269,7 @@ class _TeacherAttendanceSessionScreenState
   }
 
   Future<void> _run(Future<void> Function() action) async {
-    if (_processing) return;
+    if (_processing || _loading || _error != null) return;
     setState(() {
       _processing = true;
       _error = null;
@@ -177,6 +279,7 @@ class _TeacherAttendanceSessionScreenState
     } catch (error) {
       if (mounted) _showMessage(attendanceErrorMessage(error));
       await _loadAfterFailure();
+      if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _processing = false);
     }
@@ -562,14 +665,16 @@ class _TeacherAttendanceSessionScreenState
     builder: (_) => AttendanceReasonDialog(
       title: title,
       description: description,
-      fieldLabel: 'Motivo',
+      fieldLabel: 'Motivo (opcional)',
       confirmLabel: 'Confirmar',
     ),
   );
 
   void _showMessage(String value) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(value)));
   }
 
   @override
@@ -578,12 +683,23 @@ class _TeacherAttendanceSessionScreenState
     final active = session.status == AttendanceSessionStatus.inProgress;
     final finalized = session.status == AttendanceSessionStatus.finalized;
     final voided = session.status == AttendanceSessionStatus.voided;
+    final ready = !_loading && _error == null;
+    final visibleRoster = _roster
+        .where(
+          (entry) =>
+              entry.displayName.toLowerCase().contains(_studentQuery) ||
+              entry.rosterEntryId.toLowerCase().contains(_studentQuery),
+        )
+        .toList();
     final canMark =
         active &&
+        ready &&
         (session.mode == AttendanceMode.meeting ||
             (_segments.isNotEmpty && _selectedSegmentId != null));
     return CoursePage(
-      title: 'Registrar asistencia',
+      title: session.mode == AttendanceMode.minutes
+          ? 'Asistencia por horas'
+          : 'Registrar asistencia',
       leading: IconButton(
         tooltip: 'Volver al calendario',
         onPressed: () => Navigator.of(context).maybePop(),
@@ -601,7 +717,7 @@ class _TeacherAttendanceSessionScreenState
             session.status == AttendanceSessionStatus.closing)
           IconButton(
             tooltip: 'Anular sesión',
-            onPressed: _processing || voided ? null : _voidSession,
+            onPressed: _processing || !ready || voided ? null : _voidSession,
             icon: const Icon(Icons.block_outlined),
           ),
       ],
@@ -617,6 +733,23 @@ class _TeacherAttendanceSessionScreenState
                 '${attendanceDateLabel(session.effectiveDate)} · ${attendanceTimeLabel(session.startMinute)}–${attendanceTimeLabel(session.endMinute)} · ${_statusLabel(session.status)}',
           ),
           const SizedBox(height: 16),
+          if (_loading)
+            const AttendanceWaitStatus(message: 'Cargando la nómina completa…'),
+          if (_processing && !_loading)
+            const AttendanceWaitStatus(
+              message: 'Guardando los cambios de asistencia…',
+            ),
+          if (_error != null) ...[
+            AttendanceErrorCard(error: _error!, onRetry: _load),
+            const SizedBox(height: 12),
+          ],
+          if (session.scheduledDate != session.effectiveDate) ...[
+            Text(
+              'Reprogramada · fecha original: ${attendanceDateLabel(session.scheduledDate)}',
+              style: const TextStyle(color: AppColors.information),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (session.lateRegistrationReason != null)
             CourseStateCard(
               title: 'Registro posterior',
@@ -624,7 +757,7 @@ class _TeacherAttendanceSessionScreenState
                   'La sesión se preparó después de la hora de inicio. Motivo: ${session.lateRegistrationReason}',
               icon: Icons.history_outlined,
             ),
-          if (session.status == AttendanceSessionStatus.preparing) ...[
+          if (ready && session.status == AttendanceSessionStatus.preparing) ...[
             CourseStateCard(
               title: session.rosterState == AttendanceRosterState.ready
                   ? 'Nómina preparada'
@@ -644,7 +777,7 @@ class _TeacherAttendanceSessionScreenState
               onPressed: !_startIsDue || _processing ? null : _start,
             ),
           ],
-          if (session.status == AttendanceSessionStatus.closing)
+          if (ready && session.status == AttendanceSessionStatus.closing)
             CourseStateCard(
               title: 'Cierre en curso',
               message: 'Puedes reanudar la finalización. El estudiante todavía no puede ver un resultado parcial.',
@@ -653,13 +786,15 @@ class _TeacherAttendanceSessionScreenState
                 label: 'Continuar finalización',
                 icon: Icons.task_alt,
                 busy: _processing,
-                onPressed: _processing ? null : _finalize,
+                onPressed: _processing || _publicationChecking
+                    ? null
+                    : _finalize,
               ),
             ),
-          if (session.status == AttendanceSessionStatus.voiding)
+          if (ready && session.status == AttendanceSessionStatus.voiding)
             CourseStateCard(
               title: 'Anulación en curso',
-              message: 'El proceso se puede reanudar; durante este estado el resultado no se muestra al estudiante.',
+              message: 'El proceso se puede reanudar; los resultados se actualizan por estudiante hasta completar el proceso.',
               icon: Icons.sync,
               action: CoursePrimaryButton(
                 label: 'Completar anulación',
@@ -668,22 +803,100 @@ class _TeacherAttendanceSessionScreenState
                 onPressed: _processing ? null : _voidSession,
               ),
             ),
-          if (voided)
+          if (ready &&
+              (voided || session.status == AttendanceSessionStatus.restoring))
             CourseStateCard(
               title: 'Sesión anulada',
               message:
                   'Motivo interno: ${session.reason ?? 'sin detalle disponible'}. El registro del estudiante se conserva como aviso y no suma unidades.',
               color: AppColors.information,
               icon: Icons.block_outlined,
+              action: session.finalizedAt == null
+                  ? null
+                  : CoursePrimaryButton(
+                      label: session.status == AttendanceSessionStatus.restoring
+                          ? 'Continuar restauración'
+                          : 'Restaurar asistencia',
+                      icon: Icons.restore,
+                      busy: _processing,
+                      onPressed: _processing ? null : _restore,
+                    ),
             ),
-          if (active) ...[
+          if (ready && finalized && !voided) ...[
+            const SizedBox(height: 8),
+            CourseStateCard(
+              title: _publicationChecking
+                  ? 'Comprobando publicación'
+                  : _publicationPending
+                  ? 'Publicación pendiente'
+                  : 'Registro finalizado',
+              message: _publicationChecking
+                  ? 'La lista ya está disponible. Comprobando que cada estudiante pueda consultar su resultado.'
+                  : _publicationPending
+                  ? _publicationPendingMessage(_publicationFailureKind)
+                  : 'La publicación se comprobó. Cada estudiante consulta únicamente su propio resultado; las correcciones y revisiones quedan auditadas.',
+              icon: _publicationPending
+                  ? Icons.sync_problem_outlined
+                  : Icons.verified_outlined,
+              action: CoursePrimaryButton(
+                label: _publicationPending
+                    ? 'Reintentar publicación'
+                    : 'Verificar publicación',
+                icon: Icons.sync,
+                busy: _processing,
+                onPressed: _processing || _publicationChecking
+                    ? null
+                    : _finalize,
+              ),
+            ),
+          ],
+          if (ready && _roster.isNotEmpty) ...[
             CoursePanel(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Marcados: ${session.markedCount} de ${session.rosterCount}',
+                    session.mode == AttendanceMode.minutes
+                        ? 'Resumen del tramo seleccionado'
+                        : 'Resumen de la lista',
                     style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 20,
+                    runSpacing: 12,
+                    children: [
+                      for (final item in [
+                        (
+                          AttendanceMark.present,
+                          'Presentes',
+                          AppColors.primary,
+                        ),
+                        (AttendanceMark.absent, 'Ausentes', AppColors.danger),
+                        (
+                          AttendanceMark.unmarked,
+                          'Pendientes',
+                          AppColors.muted,
+                        ),
+                      ])
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${_roster.where((e) => _markFor(e).mark == item.$1).length}',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w700,
+                                color: item.$3,
+                              ),
+                            ),
+                            Text(
+                              item.$2,
+                              style: const TextStyle(color: AppColors.muted),
+                            ),
+                          ],
+                        ),
+                    ],
                   ),
                   if (session.unmarkedConfirmed)
                     Padding(
@@ -697,6 +910,7 @@ class _TeacherAttendanceSessionScreenState
                       _segments.isNotEmpty) ...[
                     const SizedBox(height: 14),
                     DropdownButtonFormField<String>(
+                      isExpanded: true,
                       initialValue: _selectedSegmentId,
                       decoration: const InputDecoration(
                         labelText: 'Tramo de la clase',
@@ -724,29 +938,94 @@ class _TeacherAttendanceSessionScreenState
                     ),
                   ],
                   const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: _processing || _roster.isEmpty || !canMark
-                            ? null
-                            : () => _applyToAll(AttendanceMark.present),
-                        icon: const Icon(Icons.done_all),
-                        label: const Text('Todos presentes'),
-                      ),
-                      OutlinedButton.icon(
-                        onPressed: _processing || _roster.isEmpty || !canMark
-                            ? null
-                            : () => _applyToAll(AttendanceMark.absent),
-                        icon: const Icon(Icons.group_off_outlined),
-                        label: const Text('Todos ausentes'),
-                      ),
-                    ],
-                  ),
+                  if (active)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: _processing || _roster.isEmpty || !canMark
+                              ? null
+                              : () => _applyToAll(AttendanceMark.present),
+                          icon: const Icon(Icons.done_all),
+                          label: const Text('Todos presentes'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _processing || _roster.isEmpty || !canMark
+                              ? null
+                              : () => _applyToAll(AttendanceMark.absent),
+                          icon: const Icon(Icons.group_off_outlined),
+                          label: const Text('Todos ausentes'),
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+          ],
+          const SizedBox(height: 16),
+          if (!_loading && _error == null && _roster.isEmpty)
+            const CourseStateCard(
+              title: 'Nómina vacía',
+              message: 'No hay estudiantes que pertenecieran al curso en la fecha efectiva de esta clase. Si esperabas estudiantes, revisa el historial de matrícula.',
+              icon: Icons.groups_outlined,
+            ),
+          if (ready && _roster.isNotEmpty) ...[
+            CourseSectionHeading(
+              title: 'Estudiantes',
+              trailing: Text('${_roster.length}'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _searchController,
+              onChanged: (value) =>
+                  setState(() => _studentQuery = value.trim().toLowerCase()),
+              decoration: InputDecoration(
+                labelText: 'Buscar estudiante',
+                hintText: 'Nombre o correo',
+                prefixIcon: Icon(Icons.search),
+                filled: true,
+                fillColor: AppColors.surface,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (visibleRoster.isEmpty)
+              const CourseStateCard(
+                title: 'Sin coincidencias',
+                message: 'Prueba con otro nombre o correo. La lista y sus marcas se conservan.',
+                icon: Icons.search_off,
+              ),
+            for (final entry in visibleRoster)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 9),
+                child: _RosterTile(
+                  entry: entry,
+                  mark: _markFor(entry),
+                  mode: session.mode,
+                  segment:
+                      session.mode == AttendanceMode.minutes &&
+                          _segments.isNotEmpty
+                      ? _selectedSegment
+                      : null,
+                  processing: _processing,
+                  canMark: canMark && !_processing,
+                  canReview:
+                      finalized &&
+                      ready &&
+                      !_processing &&
+                      !_publicationChecking,
+                  onPresent: () => _markEntry(entry, AttendanceMark.present),
+                  onAbsent: () => _markEntry(entry, AttendanceMark.absent),
+                  onCorrect: () => _correct(entry),
+                  onJustification: () => _reviewJustification(entry),
+                ),
+              ),
+          ],
+          if (active && ready) ...[
             const SizedBox(height: 14),
             CoursePrimaryButton(
               label: _processing ? 'Guardando…' : 'Guardar y continuar después',
@@ -764,55 +1043,68 @@ class _TeacherAttendanceSessionScreenState
             CourseSecondaryButton(
               label: 'Finalizar registro',
               icon: Icons.task_alt,
-              onPressed: _processing ? null : _finalize,
+              onPressed: _processing || _publicationChecking ? null : _finalize,
             ),
           ],
-          const SizedBox(height: 16),
-          if (_loading)
-            const AttendanceWaitStatus(message: 'Cargando la nómina completa…'),
-          if (_processing && !_loading)
+          if (_extrasLoading)
             const AttendanceWaitStatus(
-              message: 'Guardando los cambios de asistencia…',
+              message: 'Cargando historial y solicitudes?',
             ),
-          if (_error != null) ...[
-            AttendanceErrorCard(error: _error!, onRetry: _load),
-            const SizedBox(height: 12),
-          ],
-          if (!_loading && _error == null && _roster.isEmpty)
-            const CourseStateCard(
-              title: 'Nómina vacía',
-              message: 'No hay estudiantes que pertenecieran al curso en la fecha efectiva de esta clase. Si esperabas estudiantes, revisa el historial de matrícula.',
-              icon: Icons.groups_outlined,
+          if (_extrasError != null)
+            AttendanceErrorCard(error: _extrasError!, onRetry: _load),
+          if (_requests.isNotEmpty)
+            const CourseSectionHeading(
+              title: 'Solicitudes de justificaci\u00f3n',
             ),
-          if (_roster.isNotEmpty) ...[
-            CourseSectionHeading(
-              title: 'Estudiantes',
-              trailing: Text('${_roster.length}'),
-            ),
-            const SizedBox(height: 8),
-            for (final entry in _roster)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 9),
-                child: _RosterTile(
-                  entry: entry,
-                  mark: _markFor(entry),
-                  mode: session.mode,
-                  segment:
-                      session.mode == AttendanceMode.minutes &&
-                          _segments.isNotEmpty
-                      ? _selectedSegment
-                      : null,
-                  processing: _processing,
-                  canMark: canMark && !_processing,
-                  canReview: finalized && !_processing,
-                  onPresent: () => _markEntry(entry, AttendanceMark.present),
-                  onAbsent: () => _markEntry(entry, AttendanceMark.absent),
-                  onCorrect: () => _correct(entry),
-                  onJustification: () => _reviewJustification(entry),
-                ),
+          for (final request in _requests)
+            CoursePanel(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _roster
+                            .where(
+                              (e) => e.rosterEntryId == request.rosterEntryId,
+                            )
+                            .firstOrNull
+                            ?.displayName ??
+                        'Estudiante del curso',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    request.segmentId == null
+                        ? 'Justificación del encuentro'
+                        : 'Tramo: ${_requestTimeLabel(request)}',
+                  ),
+                  Text(request.text),
+                  Text(switch (request.status) {
+                    AttendanceRequestStatus.pending => 'Pendiente',
+                    AttendanceRequestStatus.approved => 'Aprobada',
+                    AttendanceRequestStatus.rejected => 'Rechazada',
+                  }),
+                  if (request.status == AttendanceRequestStatus.pending &&
+                      finalized)
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        TextButton(
+                          onPressed: _processing || _publicationChecking
+                              ? null
+                              : () => _decide(request, true),
+                          child: const Text('Aprobar'),
+                        ),
+                        TextButton(
+                          onPressed: _processing || _publicationChecking
+                              ? null
+                              : () => _decide(request, false),
+                          child: const Text('Rechazar'),
+                        ),
+                      ],
+                    ),
+                ],
               ),
-          ],
-          if (_events.isNotEmpty) ...[
+            ),
+          if (ready && _events.isNotEmpty) ...[
             const SizedBox(height: 12),
             const CourseSectionHeading(title: 'Historial de cambios'),
             const SizedBox(height: 8),
@@ -821,28 +1113,6 @@ class _TeacherAttendanceSessionScreenState
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _EventTile(event: event, roster: _roster),
               ),
-          ],
-          if (finalized && !voided) ...[
-            const SizedBox(height: 8),
-            CourseStateCard(
-              title: _publicationPending
-                  ? 'Publicación pendiente'
-                  : 'Registro finalizado',
-              message: _publicationPending
-                  ? _publicationPendingMessage(_publicationFailureKind)
-                  : 'La publicación se comprobó. Cada estudiante consulta únicamente su propio resultado; las correcciones y revisiones quedan auditadas.',
-              icon: _publicationPending
-                  ? Icons.sync_problem_outlined
-                  : Icons.verified_outlined,
-              action: CoursePrimaryButton(
-                label: _publicationPending
-                    ? 'Reintentar publicación'
-                    : 'Verificar publicación',
-                icon: Icons.sync,
-                busy: _processing,
-                onPressed: _processing ? null : _finalize,
-              ),
-            ),
           ],
         ],
       ),
@@ -867,6 +1137,7 @@ String _statusLabel(AttendanceSessionStatus status) => switch (status) {
   AttendanceSessionStatus.finalized => 'Finalizada',
   AttendanceSessionStatus.voiding => 'Anulación en curso',
   AttendanceSessionStatus.voided => 'Anulada',
+  AttendanceSessionStatus.restoring => 'Restaurando',
 };
 
 class _RosterTile extends StatelessWidget {
@@ -968,11 +1239,21 @@ class _RosterTile extends StatelessWidget {
             children: [
               OutlinedButton.icon(
                 onPressed: processing ? null : onPresent,
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: mark.mark == AttendanceMark.present
+                      ? AppColors.primary.withValues(alpha: 0.15)
+                      : null,
+                ),
                 icon: const Icon(Icons.check_circle_outline),
                 label: const Text('Presente'),
               ),
               OutlinedButton.icon(
                 onPressed: processing ? null : onAbsent,
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: mark.mark == AttendanceMark.absent
+                      ? AppColors.danger.withValues(alpha: 0.15)
+                      : null,
+                ),
                 icon: const Icon(Icons.cancel_outlined),
                 label: const Text('Ausente'),
               ),
@@ -1046,7 +1327,7 @@ class _CorrectionDialogState extends State<_CorrectionDialog> {
 
   void _submit() {
     final reason = _reason.text.trim();
-    if (reason.isEmpty) return;
+
     int? units;
     if (widget.mode == AttendanceMode.minutes &&
         _mark == AttendanceMark.absent) {
@@ -1125,7 +1406,7 @@ class _CorrectionDialogState extends State<_CorrectionDialog> {
             maxLines: 4,
             maxLength: 500,
             textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(labelText: 'Motivo obligatorio'),
+            decoration: const InputDecoration(labelText: 'Motivo (opcional)'),
           ),
         ],
       ),
@@ -1178,7 +1459,7 @@ class _JustificationDialogState extends State<_JustificationDialog> {
 
   void _submit() {
     final reason = _reason.text.trim();
-    if (reason.isEmpty) return;
+
     final units = _status == AttendanceJustificationStatus.justified
         ? widget.mode == AttendanceMode.meeting
               ? 1
@@ -1265,8 +1546,33 @@ class _EventTile extends StatelessWidget {
   final AttendanceSessionEvent event;
   final List<AttendanceRosterEntry> roster;
 
+  String _valueLabel(Map<String, Object?> value) {
+    if (value['status'] != null) {
+      return switch (value['status']) {
+        'finalized' => 'Finalizada',
+        'voided' => 'Anulada',
+        'closing' => 'Finalizando',
+        _ => 'Registro abierto',
+      };
+    }
+    final mark = value['mark'];
+    if (mark is! Map) return 'Registro';
+    final state = switch (mark['justificationStatus']) {
+      'justified' => 'Justificada',
+      'notAccepted' => 'No aceptada',
+      'inReview' => 'En revisión',
+      _ => switch (mark['mark']) {
+        'present' => 'Presente',
+        'absent' => 'Ausente',
+        _ => 'Sin marcar',
+      },
+    };
+    return '$state · ${mark['absentUnits'] ?? 0} unidades ausentes · ${mark['justifiedUnits'] ?? 0} justificadas';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final time = event.changedAt?.toUtc().subtract(const Duration(hours: 5));
     String? name;
     for (final entry in roster) {
       if (entry.rosterEntryId == event.rosterEntryId) {
@@ -1285,7 +1591,17 @@ class _EventTile extends StatelessWidget {
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 4),
-          Text(event.reason, style: const TextStyle(color: AppColors.muted)),
+          Text(
+            '${_valueLabel(event.oldValue)} → ${_valueLabel(event.newValue)}',
+          ),
+          Text(
+            time == null
+                ? 'Docente del curso'
+                : 'Docente del curso · ${time.day}/${time.month}/${time.year} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')} (Colombia)',
+            style: const TextStyle(color: AppColors.muted),
+          ),
+          if (event.reason.trim().isNotEmpty)
+            Text(event.reason, style: const TextStyle(color: AppColors.muted)),
         ],
       ),
     );
@@ -1293,6 +1609,7 @@ class _EventTile extends StatelessWidget {
 }
 
 String _eventLabel(AttendanceEventKind kind) => switch (kind) {
+  AttendanceEventKind.restore => 'Restauración',
   AttendanceEventKind.correction => 'Corrección',
   AttendanceEventKind.justification => 'Revisión de justificación',
   AttendanceEventKind.rosterCorrection => 'Corrección de nómina',

@@ -1,4 +1,16 @@
-# Estado actual — 16 de noviembre de 2026
+# Estado actual — 17 de noviembre de 2026
+
+## C8 ampliado — versión local 1.0.1+2
+
+El propietario confirmó en TECNO registro, finalización y consulta, y reportó el fallo Ausente → Presente en la segunda hora de sesiones finalizadas normales/reprogramadas. Se verificó e integró `aula-presente-c8-correccion-finalizada.patch` sin conflictos, conservando los ajustes locales de v2 y las dos regresiones. Se añadieron motivos opcionales, Cancelar anulación, restauración `voided → restoring → finalized` desde marcas conservadas y solicitudes de texto del estudiante por encuentro/tramo con decisión docente atómica e idempotente. Los eventos conservan valores, actor y hora; la aprobación mantiene el denominador y descuenta solo la cobertura de esa ausencia. El historial/publicación se cargan después de los datos necesarios para mostrar la lista, conservando validaciones y errores.
+
+Verificación local: **359/359** Flutter completos, **80/80** dirigidos, **109/109** reglas en emulador, análisis limpio y APK debug **1.0.1+2** compilada. Repositorio y pantallas se probaron con datos sintéticos; no equivale a FlutterFire en Android ni a la prueba física. **Hay que publicar el `firestore.rules` nuevo antes de instalar/probar esta APK; no hay índices nuevos.** La guía, evidencia y huellas están al inicio del [seguimiento C8](seguimiento_conjunto_8.md). No hubo publicación en Firebase, instalación en TECNO ni nuevo commit/push. Los apartados siguientes conservan el historial anterior.
+
+## Revisión visual local de C8
+
+Sobre `feature/conjunto-8-asistencia-manual-v2`, base `46a8893`, se revisaron las páginas docentes relevantes de `../FIGMA/NUEVA CORRECCION.pdf`; el conector Figma requiere reconexión. Se añadieron búsqueda local y contadores por tramo, selección de ambas horas también después de finalizar, acciones de guardar/finalizar después de la lista y estado de publicación al inicio. Carga/error bloquean las acciones hasta recargar; el error de escritura permanece visible. El selector se adapta a 320 px con texto ampliado. La lógica de asistencia, repositorio y reglas del arreglo anterior se conservan.
+
+Verificado en esta revisión: **67/67** pruebas Flutter dirigidas (pantallas reales con datos sintéticos y capturas), **2/2** regresiones de cierre en Firestore Emulator, análisis sin problemas, APK debug compilada y diff sin errores. No hay emulador Android disponible ni ejecución del APK/FlutterFire en teléfono. La tabla **pantalla o flujo | referencia original | cómo quedó | motivo** y la nueva huella de APK están al inicio del [seguimiento C8](seguimiento_conjunto_8.md). La exportación no contiene una referencia específica de registro por horas ni de cierre reanudable/publicación pendiente; esas adaptaciones están identificadas. La comparación con la página online y la validación del APK en TECNO siguen pendientes. Estos ajustes permanecen locales, sin un nuevo commit/push.
 
 ## Nuevo incidente C8 — punto de partida de esta revisión
 

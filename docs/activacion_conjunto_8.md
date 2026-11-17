@@ -1,5 +1,11 @@
 # Activación y prueba manual — conjunto 8
 
+## Versión vigente para la próxima prueba: 1.0.1+2 (17/11)
+
+Publica **el `firestore.rules` completo nuevo** en `aula-presente-movil-juan-2026`, base `(default)`, e instala la APK recompilada `build/app/outputs/flutter-apk/app-debug.apk`, versión **1.0.1+2**. No hay índices nuevos. Esta revisión corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias finalizadas anuladas y añade solicitudes estudiantiles de texto. La publicación y prueba física las hace el propietario. Los pasos exactos para cada flujo y las huellas están en el [inicio del seguimiento C8](seguimiento_conjunto_8.md#ampliación-y-corrección-de-c8--17112026--apk-1012).
+
+Los recorridos inferiores son antecedentes: donde indiquen motivo obligatorio para asistencia/calendario, ahora puede dejarse vacío. **Cancelar** no aplica cambios. La justificación puede iniciarla el estudiante desde su propia ausencia; el docente propietario decide Aprobar/Rechazar. Para una sesión ya finalizada y anulada, usa **Restaurar asistencia**, o **Continuar restauración** después de una interrupción; nunca recrees la sesión.
+
 Esta guía es para el propietario. El índice `attendance_records` está **Habilitado** según su reporte y ya comprobó flujos C8 en TECNO con Firebase real. También reportó una publicación manual de reglas desde VS Code; la versión exacta y la APK anterior siguen por confirmar. El cierre por horas de Lógica reprogramada al 16/11 06:00–08:00 falló en **Continuar finalización**. El nuevo ajuste se probó localmente con una sesión ya `closing`, y necesita publicar **solo las reglas revisadas** e instalar la **APK recompilada**. Codex no desplegó reglas ni índices ni operó el teléfono. No se deben usar datos sensibles de excusas.
 
 ## Recuperar primero Lógica en Finalizando

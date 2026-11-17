@@ -238,7 +238,7 @@ class AttendanceReasonDialog extends StatefulWidget {
     super.key,
     required this.title,
     required this.description,
-    this.fieldLabel = 'Motivo',
+    this.fieldLabel = 'Motivo (opcional)',
     this.confirmLabel = 'Confirmar',
   });
 
@@ -288,7 +288,7 @@ class _AttendanceReasonDialogState extends State<AttendanceReasonDialog> {
       FilledButton(
         onPressed: () {
           final value = _controller.text.trim();
-          if (value.isNotEmpty) Navigator.of(context).pop(value);
+          if (value.length <= 500) Navigator.of(context).pop(value);
         },
         child: Text(widget.confirmLabel),
       ),

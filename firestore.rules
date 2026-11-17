@@ -1936,7 +1936,6 @@ service cloud.firestore {
         && change.endMinute > change.startMinute
         && change.endMinute <= 1440
         && change.reason is string
-        && change.reason.size() >= 1
         && change.reason.size() <= 500
         && change.version is int
         && change.version >= 1
@@ -1994,7 +1993,7 @@ service cloud.firestore {
         && session.updatedBy == request.auth.uid
         && (session.get('lateRegistrationReason', null) == null
           || (session.get('lateRegistrationReason', null) is string
-            && session.get('lateRegistrationReason', null).size() > 0
+            && session.get('lateRegistrationReason', null).size() >= 0
             && session.get('lateRegistrationReason', null).size() <= 500))
         && (session.mode == 'meeting'
           ? session.segmentIds.size() == 0
@@ -2072,6 +2071,35 @@ service cloud.firestore {
         && start is int && start >= 0 && start < 1440
         && end is int && end > start && end <= 1440
         && units is int && units >= 0
+        && absent is int && absent >= 0
+        && inReview is int && inReview >= 0
+        && justified is int && justified >= 0
+        && absent <= units
+        && inReview <= absent
+        && justified <= absent
+        && record.result in ['unmarked', 'present', 'absent', 'partial', 'justified', 'voided']
+        && (record.result == 'voided'
+          ? (units == 0 && absent == 0 && inReview == 0 && justified == 0)
+          : units > 0)
+        && (record.visibility == 'staged'
+          ? record.publishedAt == null
+          : (record.publishedAt is timestamp && record.result != 'unmarked'))
+        && record.updatedAt is timestamp
+        && (record.mode == 'meeting'
+          ? ((units == 1 || record.result == 'voided')
+            && !record.keys().hasAny(['segments']))
+          : (record.result == 'voided'
+            ? !record.keys().hasAny(['segments'])
+            : validAttendanceRecordSegments(record.segments)));
+    }
+
+    // Corrections and justifications revalidate the result and its segments.
+    function validAttendanceRecordResult(record) {
+      let units = record.unitCount;
+      let absent = record.absentUnits;
+      let inReview = record.inReviewUnits;
+      let justified = record.justifiedUnits;
+      return units is int && units >= 0
         && absent is int && absent >= 0
         && inReview is int && inReview >= 0
         && justified is int && justified >= 0
@@ -2535,8 +2563,10 @@ service cloud.firestore {
         && validAttendanceEvent(event, eventId)
         && event.changedAt == request.time
         && event.changedBy == request.auth.uid
-        && (event.kind == 'void'
-          ? voidEvent
+        && (event.kind == 'restore'
+          ? (sessionBefore.status == 'voided' && sessionAfter.status == 'restoring'
+            && event.oldValue.status == 'voided' && event.newValue.status == 'finalized')
+          : event.kind == 'void' ? voidEvent
           : attendanceAuditEventPaired(
             courseId,
             occurrenceId,
@@ -2677,16 +2707,21 @@ service cloud.firestore {
       let sessionAfter = getAfter(sessionPath).data;
       return ownsExistingCourse(courseId)
         && exists(sessionPath)
-        && existsAfter(sessionPath)
         && sessionBefore.ownerUid == request.auth.uid
         && sessionAfter.ownerUid == request.auth.uid
         && sessionAndRecordMatch(sessionAfter, courseId, after)
         // Every permitted branch below restricts affectedKeys and excludes
         // all identity/schedule fields. Do not compare those eight fields twice.
         && after.updatedAt == request.time
-        && (before.visibility == 'staged'
+        && (sessionBefore.status == 'restoring'
+          ? (sessionAfter == sessionBefore && sessionBefore.lastMutationKind == 'restore'
+            && before.visibility == 'published' && after.visibility == 'published'
+            && recordId == before.sessionId + '|' + before.rosterEntryId
+            && after.diff(before).affectedKeys().hasOnly(['unitCount','absentUnits','inReviewUnits','justifiedUnits','result','segments','updatedAt'])
+            && after.result != 'voided' && validAttendanceRecordResult(after))
+          : (before.visibility == 'staged'
           ? (after.visibility == 'published'
-            ? (after.result == 'voided'
+            ? ((after.result == 'voided'
               ? attendanceRecordVoidProjectionAllowed(
                 courseId, before, after, sessionBefore, sessionAfter
               )
@@ -2700,12 +2735,14 @@ service cloud.firestore {
                 && after.diff(before).affectedKeys().hasOnly([
                   'visibility', 'publishedAt', 'updatedAt'
                 ])))
+            && validAttendanceRecord(courseId, recordId, after))
             : false)
           : (before.visibility == 'published'
             ? (sessionBefore.status == 'voiding'
-              ? attendanceRecordVoidProjectionAllowed(
-                courseId, before, after, sessionBefore, sessionAfter
-              )
+              ? (attendanceRecordVoidProjectionAllowed(
+                  courseId, before, after, sessionBefore, sessionAfter
+                )
+                && validAttendanceRecord(courseId, recordId, after))
               : (sessionBefore.status == 'finalized'
                 && sessionAfter.status == 'finalized'
                 && sessionAfter.version == sessionBefore.version + 1
@@ -2718,10 +2755,12 @@ service cloud.firestore {
                 && after.diff(before).affectedKeys().hasOnly([
                   'absentUnits', 'inReviewUnits', 'justifiedUnits', 'result',
                   'segments', 'updatedAt'
-                ]))
+                ])
+                // The field allowlist freezes the stored identity and schedule.
+                && recordId == before.sessionId + '|' + before.rosterEntryId
+                && validAttendanceRecordResult(after))
               )
-            : false))
-        && validAttendanceRecord(courseId, recordId, after);
+            : false)));
     }
 
     function validAttendanceRecordSegment(segment) {
@@ -2788,7 +2827,7 @@ service cloud.firestore {
         ])
         && eventId.size() > 0
         && eventId.size() <= 128
-        && event.kind in ['correction', 'justification', 'rosterCorrection', 'void']
+        && event.kind in ['correction', 'justification', 'rosterCorrection', 'void', 'restore']
         && event.oldValue is map
         && event.newValue is map
         && event.oldValue.size() > 0
@@ -2797,16 +2836,15 @@ service cloud.firestore {
         && event.newValue.size() <= 8
         && event.oldValue != event.newValue
         && event.reason is string
-        && event.reason.size() > 0
         && event.reason.size() <= 500
         && event.changedAt is timestamp
         && event.changedBy is string
-        && (event.kind == 'void'
+        && (event.kind in ['void', 'restore']
           ? (!event.keys().hasAny(['rosterEntryId'])
             && event.oldValue.keys().hasOnly(['status'])
             && event.newValue.keys().hasOnly(['status'])
             && event.oldValue.status is string
-            && event.newValue.status == 'voided')
+            && event.newValue.status == (event.kind == 'void' ? 'voided' : 'finalized'))
           : (event.rosterEntryId is string
             && event.rosterEntryId.size() > 0));
     }
@@ -2874,10 +2912,7 @@ service cloud.firestore {
         && attendanceEffectiveScheduleMatches(courseId, occurrenceId, session)
         && session.ownerUid == request.auth.uid
         && session.mode == configBefore.mode
-        && (!attendanceStartHasPassed(session)
-          || (session.get('lateRegistrationReason', null) is string
-            && session.get('lateRegistrationReason', null).size() > 0
-            && session.get('lateRegistrationReason', null).size() <= 500))
+
         ;
     }
 
@@ -2980,6 +3015,16 @@ service cloud.firestore {
       return terminalVoid || draftVoid || finishVoid;
     }
 
+    function attendanceRestoreTransition(courseId, occurrenceId, before, after) {
+      return after.diff(before).affectedKeys().hasOnly(['status','version','updatedAt','updatedBy','lastMutationKind','lastEventId','lastMutationRosterEntryId'])
+        && before.get('finalizedAt', null) is timestamp
+        && after.lastMutationKind == 'restore' && after.lastMutationRosterEntryId == null
+        && ((before.status == 'voided' && after.status == 'restoring'
+          && attendanceEventMatchesSession(courseId, occurrenceId, after.lastEventId, after))
+          || (before.status == 'restoring' && after.status == 'finalized'
+            && after.lastEventId == before.lastEventId));
+    }
+
     function canUpdateAttendanceSession(courseId, occurrenceId) {
       let before = resource.data;
       let after = request.resource.data;
@@ -3008,7 +3053,7 @@ service cloud.firestore {
             && before.get('lateRegistrationReason', null) == null
             && attendanceStartHasPassed(before)
             && after.get('lateRegistrationReason', null) is string
-            && after.lateRegistrationReason.size() > 0
+            && after.lateRegistrationReason.size() >= 0
             && after.lateRegistrationReason.size() <= 500))
         && (after.unmarkedConfirmed == before.unmarkedConfirmed
           ? (after.get('unmarkedConfirmedAt', null)
@@ -3026,12 +3071,14 @@ service cloud.firestore {
           'lastMutationKind', 'lastEventId', 'finalizedAt', 'voidedAt', 'reason',
           'lateRegistrationReason'
         ])
-        && ((after.status in ['voiding', 'voided']
+        && (after.lastMutationKind == 'restore'
+          ? attendanceRestoreTransition(courseId, occurrenceId, before, after)
+          : ((after.status in ['voiding', 'voided']
             || before.status == 'voiding')
           ? isAttendanceVoidTransition(courseId, occurrenceId, before, after)
           : (before.status == 'preparing'
             ? isAttendancePreparationTransition(before, after)
-            : isAttendanceActiveTransition(courseId, occurrenceId, before, after)));
+            : isAttendanceActiveTransition(courseId, occurrenceId, before, after))));
     }
 
     function canCreateAttendanceSegment(courseId, occurrenceId, segmentId) {
@@ -3237,6 +3284,50 @@ service cloud.firestore {
       allow delete: if ownsUser(resource.data.uid);
     }
 
+    function ownAttendanceRequestId(courseId, requestId) {
+      let pieces = requestId.split('[|]');
+      return verifiedStudent() && get(enrollmentPath(courseId, request.auth.uid)).data.status == 'active'
+        && get(enrollmentPath(courseId, request.auth.uid)).data.studentUid == request.auth.uid
+        && pieces.size() >= 3
+        && pieces[pieces.size() - 2] == studentAttendanceRosterId(courseId);
+    }
+    function validAttendanceRequest(courseId, requestId, data) {
+      let source = get(attendanceRecordPath(courseId, data.sessionId + '|' + data.rosterEntryId)).data;
+      let session = get(attendanceSessionPath(courseId, data.sessionId)).data;
+      return data.keys().hasAll(['sessionId','rosterEntryId','studentUid','segmentId','text','status','createdAt','decidedAt','decidedBy','eventId'])
+        && data.keys().hasOnly(['sessionId','rosterEntryId','studentUid','segmentId','text','status','createdAt','decidedAt','decidedBy','eventId'])
+        && data.studentUid == request.auth.uid && data.rosterEntryId == studentAttendanceRosterId(courseId)
+        && requestId == data.sessionId + '|' + data.rosterEntryId + '|' + (data.segmentId == null ? 'meeting' : data.segmentId)
+        && data.text is string && data.text.size() > 0 && data.text.size() <= 500
+        && data.status == 'pending' && data.createdAt == request.time
+        && data.decidedAt == null && data.decidedBy == null && data.eventId == null
+        && session.status == 'finalized' && source.visibility == 'published' && source.result != 'voided'
+        && (source.mode == 'meeting'
+          ? (data.segmentId == null && source.absentUnits > 0 && source.justifiedUnits == 0)
+          : (data.segmentId in session.segmentIds
+            && get(attendanceRosterPath(courseId, data.sessionId, data.rosterEntryId)).data.segments[data.segmentId].mark == 'absent'
+            && get(attendanceRosterPath(courseId, data.sessionId, data.rosterEntryId)).data.segments[data.segmentId].absentUnits > 0
+            && get(attendanceRosterPath(courseId, data.sessionId, data.rosterEntryId)).data.segments[data.segmentId].justifiedUnits == 0));
+    }
+    function canDecideAttendanceRequest(courseId, before, after) {
+      let session = getAfter(attendanceSessionPath(courseId, before.sessionId)).data;
+      let mark = getAfter(attendanceRosterPath(courseId, before.sessionId, before.rosterEntryId)).data;
+      let units = before.segmentId == null ? mark : mark.segments[before.segmentId];
+      return ownsExistingCourse(courseId) && before.status == 'pending'
+        && after.status in ['approved','rejected']
+        && after.decidedAt == request.time && after.decidedBy == request.auth.uid
+        && after.diff(before).affectedKeys().hasOnly(['status','decidedAt','decidedBy','eventId'])
+        && session.status == 'finalized' && session.updatedAt == request.time
+        && session.version == get(attendanceSessionPath(courseId, before.sessionId)).data.version + 1
+        && session.lastEventId == after.eventId
+        && session.lastMutationKind == 'justification' && session.lastMutationRosterEntryId == before.rosterEntryId
+        && getAfter(attendanceEventPath(courseId, before.sessionId, after.eventId)).data.newValue.requestStatus == after.status
+        && (after.status == 'approved'
+          ? (units.justificationStatus == 'justified' && units.justifiedUnits == (before.segmentId == null ? 1 : units.absentUnits))
+          : (units.justifiedUnits == 0 && (units.justificationStatus == 'notAccepted'
+            || (before.segmentId == null ? units.meetingMark == 'present' : units.mark == 'present'))));
+    }
+
     match /courses/{courseId} {
       allow get: if canGetCourse(courseId);
       allow list: if verifiedTeacher()
@@ -3262,6 +3353,14 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
+      match /attendance_requests/{requestId} {
+        allow get: if ownAttendanceRequestId(courseId, requestId) || ownsExistingCourse(courseId);
+        allow list: if ownsExistingCourse(courseId);
+        allow create: if ownAttendanceRequestId(courseId, requestId) && validAttendanceRequest(courseId, requestId, request.resource.data);
+        allow update: if canDecideAttendanceRequest(courseId, resource.data, request.resource.data);
+        allow delete: if false;
+      }
+
       match /attendance_config/{configId} {
         allow get: if configId == 'current'
           && canGetAttendanceConfig(courseId);
@@ -3284,6 +3383,19 @@ service cloud.firestore {
         allow create: if canCreateAttendanceCalendarChange(courseId, occurrenceId);
         allow update: if canUpdateAttendanceCalendarChange(courseId, occurrenceId);
         allow delete: if false;
+        match /events/{versionId} {
+          allow get, list: if ownsExistingCourse(courseId);
+          allow create: if ownsExistingCourse(courseId)
+            && request.resource.data.keys().hasOnly(['oldValue','newValue','changedAt','changedBy'])
+            && request.resource.data.changedAt == request.time && request.resource.data.changedBy == request.auth.uid
+            && getAfter(/databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId)).data == request.resource.data.newValue
+            && getAfter(/databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId)).data.updatedAt == request.time
+            && (exists(/databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId))
+              ? request.resource.data.oldValue == get(/databases/$(database)/documents/courses/$(courseId)/attendance_calendar/$(occurrenceId)).data
+              : request.resource.data.oldValue == {});
+          allow update, delete: if false;
+        }
+
       }
 
       match /attendance_sessions/{occurrenceId} {

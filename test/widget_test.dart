@@ -1,3 +1,4 @@
+import 'package:aula_presente/features/attendance/domain/attendance_justification_request.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -231,7 +232,11 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
 
 class _FakeAttendanceRepository implements AttendanceRepository {
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #listJustificationRequests) return Future<List<AttendanceJustificationRequest>>.value([]);
+    if (invocation.memberName == #getMyJustification) return Future<AttendanceJustificationRequest?>.value(null);
+    return super.noSuchMethod(invocation);
+  }
 }
 
 class _FakeCourseEntryRepository implements CourseEntryRepository {
@@ -372,7 +377,11 @@ class _FakeEnrollmentRepository implements EnrollmentRepository {
       throw UnimplementedError();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #listJustificationRequests) return Future<List<AttendanceJustificationRequest>>.value([]);
+    if (invocation.memberName == #getMyJustification) return Future<AttendanceJustificationRequest?>.value(null);
+    return super.noSuchMethod(invocation);
+  }
 }
 
 class _FakeCourseRepository implements CourseRepository {

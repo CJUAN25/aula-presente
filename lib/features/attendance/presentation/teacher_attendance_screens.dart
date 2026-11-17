@@ -161,7 +161,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
           )) {
             reason = await _askReason(
               title: 'Registro posterior a la clase',
-              label: 'Motivo del registro posterior',
+              label: 'Motivo opcional del registro posterior',
               confirmLabel: 'Completar lista',
             );
             if (reason == null || !mounted) return;
@@ -179,7 +179,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         final reason = pastStart
             ? await _askReason(
                 title: 'Registro posterior a la clase',
-                label: 'Motivo del registro posterior',
+                label: 'Motivo opcional del registro posterior',
                 confirmLabel: 'Registrar asistencia',
               )
             : null;
@@ -259,7 +259,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         ? session.reason
         : await _askReason(
             title: 'Anular asistencia',
-            label: 'Motivo de la anulación',
+            label: 'Motivo opcional de la anulación',
             confirmLabel: 'Anular asistencia',
           );
     if (!mounted || reason == null) return;
@@ -328,7 +328,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         AttendanceCalendarChangeKind.rescheduled => 'Reprogramar clase',
         AttendanceCalendarChangeKind.additional => 'Agregar clase',
       },
-      label: 'Motivo',
+      label: 'Motivo (opcional)',
       confirmLabel: 'Continuar',
     );
     if (reason == null || !mounted) return;
@@ -652,6 +652,7 @@ class _OccurrenceCard extends StatelessWidget {
         AttendanceSessionStatus.finalized => 'Finalizada',
         AttendanceSessionStatus.voiding => 'Anulación en curso',
         AttendanceSessionStatus.voided => 'Anulada',
+        AttendanceSessionStatus.restoring => 'Restaurando',
       };
     }
     final now = DateTime.now().toUtc().subtract(const Duration(hours: 5));
@@ -678,6 +679,7 @@ class _OccurrenceCard extends StatelessWidget {
       AttendanceSessionStatus.closing => 'Continuar cierre',
       AttendanceSessionStatus.finalized => 'Ver asistencia',
       AttendanceSessionStatus.voiding => 'Completar anulación',
+      AttendanceSessionStatus.restoring => 'Continuar restauración',
       AttendanceSessionStatus.voided => 'Ver asistencia anulada',
     };
   }

@@ -316,11 +316,12 @@ class AttendanceFirestoreCodec {
     final status = _sessionStatus(_string(data, 'status'));
     if ((status == AttendanceSessionStatus.finalized &&
             data['finalizedAt'] is! Timestamp) ||
-        (status == AttendanceSessionStatus.voided) !=
-            (data['voidedAt'] is Timestamp) ||
-        ((status == AttendanceSessionStatus.voiding ||
-                status == AttendanceSessionStatus.voided) !=
-            (data['reason'] is String))) {
+        (status == AttendanceSessionStatus.voided &&
+            data['voidedAt'] is! Timestamp) ||
+        (data['reason'] != null && data['reason'] is! String) ||
+        (status == AttendanceSessionStatus.restoring &&
+            (data['finalizedAt'] is! Timestamp ||
+                data['voidedAt'] is! Timestamp))) {
       throw const FormatException('Invalid terminal session metadata.');
     }
     final lastMutationKind = data['lastMutationKind'] == null
@@ -338,6 +339,7 @@ class AttendanceFirestoreCodec {
         (lastMutationKind != null &&
             lastMutationKind != AttendanceMutationKind.mark &&
             lastMutationKind != AttendanceMutationKind.voidSession &&
+            lastMutationKind != AttendanceMutationKind.restore &&
             (data['lastMutationRosterEntryId'] == null ||
                 data['lastEventId'] == null))) {
       throw const FormatException('Invalid attendance mutation markers.');
@@ -801,6 +803,7 @@ class AttendanceFirestoreCodec {
         'closing' => AttendanceSessionStatus.closing,
         'finalized' => AttendanceSessionStatus.finalized,
         'voiding' => AttendanceSessionStatus.voiding,
+        'restoring' => AttendanceSessionStatus.restoring,
         'voided' => AttendanceSessionStatus.voided,
         _ => throw FormatException('Unsupported session status: $value'),
       };
@@ -811,6 +814,7 @@ class AttendanceFirestoreCodec {
     'justification' => AttendanceMutationKind.justification,
     'rosterCorrection' => AttendanceMutationKind.rosterCorrection,
     'void' => AttendanceMutationKind.voidSession,
+    'restore' => AttendanceMutationKind.restore,
     _ => throw FormatException('Unsupported attendance mutation: $value'),
   };
 

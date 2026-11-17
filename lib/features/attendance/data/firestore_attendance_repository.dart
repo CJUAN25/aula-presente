@@ -14,6 +14,7 @@ import '../application/attendance_roster_resolver.dart';
 import '../application/attendance_segment_factory.dart';
 import '../application/attendance_validator.dart';
 import '../domain/attendance_calendar_change.dart';
+import '../domain/attendance_justification_request.dart';
 import '../domain/attendance_config.dart';
 import '../domain/attendance_failure.dart';
 import '../domain/attendance_mode.dart';
@@ -304,6 +305,29 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         final currentSnapshot = await transaction.get(calendarRef);
         _requireSameUser(actor.uid);
         _verifyCourseOwnerSnapshot(courseSnapshot, actor.uid);
+        final previous = currentSnapshot.data();
+        final nextVersion = currentSnapshot.exists
+            ? (previous!['version'] as int) + 1
+            : 1;
+        transaction.set(calendarRef.collection('events').doc('$nextVersion'), {
+          'oldValue': previous == null
+              ? <String, dynamic>{}
+              : Map<String, dynamic>.from(previous),
+          'newValue': previous == null
+              ? AttendanceFirestoreCodec.calendarChangeForCreate(
+                  change: change,
+                  uid: actor.uid,
+                )
+              : {
+                  ...previous,
+                  ...AttendanceFirestoreCodec.calendarChangeForUpdate(
+                    change: change,
+                    uid: actor.uid,
+                  ),
+                },
+          'changedAt': FieldValue.serverTimestamp(),
+          'changedBy': actor.uid,
+        });
         if (currentSnapshot.exists) {
           final current = AttendanceFirestoreCodec.calendarChangeFromMap(
             currentSnapshot.data() ??
@@ -3029,7 +3053,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       _validateId(occurrenceId);
       _validateId(operationId);
       final normalizedReason = reason.trim();
-      if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      if (normalizedReason.length > 500) {
         throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
       }
       final actor = await _requireTeacher();
@@ -3321,7 +3345,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       _validateId(occurrenceId);
       _validateEventId(operationId);
       final normalizedReason = reason.trim();
-      if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      if (normalizedReason.length > 500) {
         throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
       }
       final actor = await _requireTeacher();
@@ -3514,6 +3538,27 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     required AttendanceJustificationStatus status,
     required int justifiedUnits,
     required String reason,
+  }) => _decideJustification(
+    courseId: courseId,
+    occurrenceId: occurrenceId,
+    rosterEntryId: rosterEntryId,
+    segmentId: segmentId,
+    operationId: operationId,
+    status: status,
+    justifiedUnits: justifiedUnits,
+    reason: reason,
+  );
+
+  Future<AttendanceRosterMutationResult> _decideJustification({
+    required String courseId,
+    required String occurrenceId,
+    required String rosterEntryId,
+    required String? segmentId,
+    required String operationId,
+    required AttendanceJustificationStatus status,
+    required int justifiedUnits,
+    AttendanceJustificationRequest? submission,
+    required String reason,
   }) async {
     try {
       _validateId(courseId);
@@ -3521,7 +3566,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       _validateId(rosterEntryId);
       _validateEventId(operationId);
       final normalizedReason = reason.trim();
-      if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      if (normalizedReason.length > 500) {
         throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
       }
       final actor = await _requireTeacher();
@@ -3534,6 +3579,45 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         final rowSnapshot = await transaction.get(rowRef);
         final recordSnapshot = await transaction.get(recordRef);
         final eventSnapshot = await transaction.get(eventRef);
+        final requestRef = submission == null
+            ? null
+            : _course(courseId)
+                  .collection('attendance_requests')
+                  .doc(submission.id);
+        final requestSnapshot = requestRef == null
+            ? null
+            : await transaction.get(requestRef);
+        if (submission != null && requestSnapshot != null) {
+          final currentRequest = _parseRequest(requestSnapshot);
+          if (currentRequest.status != AttendanceRequestStatus.pending) {
+            if ((currentRequest.status == AttendanceRequestStatus.approved) !=
+                (status == AttendanceJustificationStatus.justified)) {
+              throw const AttendanceFailure(AttendanceFailureKind.conflict);
+            }
+            return AttendanceRosterMutationResult(
+              session: _parseSessionSnapshot(
+                sessionSnapshot,
+                courseId: courseId,
+                occurrenceId: occurrenceId,
+              ),
+              entry: _parseRosterSnapshot(
+                rowSnapshot,
+                _parseSessionSnapshot(
+                  sessionSnapshot,
+                  courseId: courseId,
+                  occurrenceId: occurrenceId,
+                ),
+                rosterEntryId,
+              ),
+              alreadyApplied: true,
+            );
+          }
+          if (currentRequest.sessionId != occurrenceId ||
+              currentRequest.rosterEntryId != rosterEntryId ||
+              currentRequest.segmentId != segmentId) {
+            throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
+          }
+        }
         _requireSameUser(actor.uid);
         final session = _parseSessionSnapshot(
           sessionSnapshot,
@@ -3555,10 +3639,19 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           rosterEntryId,
         );
         final oldMark = _markForEntry(previous, session.mode, segmentId);
-        if (oldMark.mark != AttendanceMark.absent || oldMark.absentUnits <= 0) {
+        if ((oldMark.mark != AttendanceMark.absent ||
+                oldMark.absentUnits <= 0) &&
+            !(submission != null &&
+                oldMark.mark == AttendanceMark.present &&
+                status == AttendanceJustificationStatus.notAccepted)) {
           throw const AttendanceFailure(
             AttendanceFailureKind.invalidTransition,
           );
+        }
+        if (submission != null) {
+          justifiedUnits = status == AttendanceJustificationStatus.justified
+              ? oldMark.absentUnits
+              : 0;
         }
         if (status == AttendanceJustificationStatus.none ||
             justifiedUnits < 0 ||
@@ -3569,16 +3662,27 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
                 justifiedUnits != 0) {
           throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
         }
-        final nextMark = AttendanceRosterMark(
-          mark: oldMark.mark,
-          absentUnits: oldMark.absentUnits,
-          justificationStatus: status,
-          justifiedUnits: justifiedUnits,
-        );
+        final nextMark = oldMark.mark == AttendanceMark.present
+            ? oldMark
+            : AttendanceRosterMark(
+                mark: oldMark.mark,
+                absentUnits: oldMark.absentUnits,
+                justificationStatus: status,
+                justifiedUnits: justifiedUnits,
+              );
         final currentValue = _markValue(oldMark);
         final nextValue = _markValue(nextMark);
-        final oldValue = {'mark': currentValue};
-        final newValue = {'mark': nextValue};
+        final oldValue = {
+          'mark': currentValue,
+          if (submission != null) 'requestStatus': 'pending',
+        };
+        final newValue = {
+          'mark': nextValue,
+          if (submission != null)
+            'requestStatus': status == AttendanceJustificationStatus.justified
+                ? 'approved'
+                : 'rejected',
+        };
         final segments = await _readSegmentsInTransaction(
           transaction,
           session,
@@ -3624,7 +3728,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           }
           throw const AttendanceFailure(AttendanceFailureKind.conflict);
         }
-        if (_sameMark(oldMark, nextMark)) {
+        if (submission == null && _sameMark(oldMark, nextMark)) {
           return AttendanceRosterMutationResult(
             session: session,
             entry: previous,
@@ -3656,6 +3760,16 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           changedAt: null,
           changedBy: actor.uid,
         );
+        if (requestRef != null) {
+          transaction.update(requestRef, {
+            'status': status == AttendanceJustificationStatus.justified
+                ? 'approved'
+                : 'rejected',
+            'decidedAt': FieldValue.serverTimestamp(),
+            'decidedBy': actor.uid,
+            'eventId': operationId,
+          });
+        }
         transaction.update(
           rowRef,
           AttendanceFirestoreCodec.rosterDocument(
@@ -3784,6 +3898,387 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     }
   }
 
+  CollectionReference<Map<String, dynamic>> _requests(String courseId) =>
+      _course(courseId).collection('attendance_requests');
+
+  AttendanceJustificationRequest _parseRequest(
+    DocumentSnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final data = snapshot.data();
+    if (data == null ||
+        data.keys.toSet().difference({
+          'sessionId',
+          'rosterEntryId',
+          'studentUid',
+          'segmentId',
+          'text',
+          'status',
+          'createdAt',
+          'decidedAt',
+          'decidedBy',
+          'eventId',
+        }).isNotEmpty ||
+        data['sessionId'] is! String ||
+        data['rosterEntryId'] is! String ||
+        data['studentUid'] is! String ||
+        data['text'] is! String ||
+        !['pending', 'approved', 'rejected'].contains(data['status']) ||
+        (data['segmentId'] != null && data['segmentId'] is! String)) {
+      throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    }
+    return AttendanceJustificationRequest(
+      id: snapshot.id,
+      sessionId: data['sessionId'],
+      rosterEntryId: data['rosterEntryId'],
+      studentUid: data['studentUid'],
+      segmentId: data['segmentId'],
+      text: data['text'],
+      status: AttendanceRequestStatus.values.byName(data['status']),
+      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      decidedAt: (data['decidedAt'] as Timestamp?)?.toDate(),
+      decidedBy: data['decidedBy'],
+    );
+  }
+
+  Future<String> _ownRequestIdentity(AttendanceRecord record) async {
+    final actor = await _requireStudent();
+    final enrollment = await _enrollments.getCourseEnrollment(
+      courseId: record.courseId,
+      studentUid: actor.uid,
+    );
+    _requireSameUser(actor.uid);
+    final identity = enrollment.rosterEntryId ?? 'legacy:${actor.uid}';
+    if (enrollment.status != 'active' || identity != record.rosterEntryId) {
+      throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
+    }
+    return actor.uid;
+  }
+
+  @override
+  Future<AttendanceJustificationRequest?> getMyJustification({
+    required AttendanceRecord record,
+    required String? segmentId,
+  }) async {
+    try {
+      await _ownRequestIdentity(record);
+      final ref = _requests(record.courseId).doc(
+        AttendanceJustificationRequest.documentId(
+          record.sessionId,
+          record.rosterEntryId,
+          segmentId,
+        ),
+      );
+      final result = await ref.get(const GetOptions(source: Source.server));
+      return result.exists ? _parseRequest(result) : null;
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    }
+  }
+
+  @override
+  Future<AttendanceJustificationRequest> submitJustification({
+    required AttendanceRecord record,
+    required String? segmentId,
+    required String text,
+  }) async {
+    try {
+      final uid = await _ownRequestIdentity(record);
+      final message = text.trim();
+      if (message.isEmpty || message.length > 500) {
+        throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
+      }
+      final ref = _requests(record.courseId).doc(
+        AttendanceJustificationRequest.documentId(
+          record.sessionId,
+          record.rosterEntryId,
+          segmentId,
+        ),
+      );
+      return await _firestore.runTransaction((tx) async {
+        final existing = await tx.get(ref);
+        final source = await tx.get(
+          _records(record.courseId).doc(record.recordId),
+        );
+        _requireSameUser(uid);
+        if (existing.exists) return _parseRequest(existing);
+        final actual = _parseRecordSnapshot(
+          source,
+          courseId: record.courseId,
+          recordId: record.recordId,
+        );
+        final validAbsence = actual.mode == AttendanceMode.meeting
+            ? segmentId == null &&
+                  actual.absentUnits > 0 &&
+                  actual.justifiedUnits == 0
+            : actual.segments.any(
+                (s) =>
+                    s.segmentId == segmentId &&
+                    s.mark == AttendanceMark.absent &&
+                    s.absentMinutes > 0 &&
+                    s.justifiedMinutes == 0,
+              );
+        if (!validAbsence ||
+            actual.result == AttendanceSessionResult.voided ||
+            actual.visibility != AttendanceRecordVisibility.published) {
+          throw const AttendanceFailure(
+            AttendanceFailureKind.invalidTransition,
+          );
+        }
+        tx.set(ref, {
+          'sessionId': actual.sessionId,
+          'rosterEntryId': actual.rosterEntryId,
+          'studentUid': uid,
+          'segmentId': segmentId,
+          'text': message,
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+          'decidedAt': null,
+          'decidedBy': null,
+          'eventId': null,
+        });
+        return AttendanceJustificationRequest(
+          id: ref.id,
+          sessionId: actual.sessionId,
+          rosterEntryId: actual.rosterEntryId,
+          studentUid: uid,
+          segmentId: segmentId,
+          text: message,
+          status: AttendanceRequestStatus.pending,
+        );
+      });
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    }
+  }
+
+  @override
+  Future<List<AttendanceJustificationRequest>> listJustificationRequests({
+    required String courseId,
+    required String occurrenceId,
+  }) async {
+    try {
+      final actor = await _requireTeacher();
+      await _requireOwnedCourse(courseId, actor.uid);
+      final result = <AttendanceJustificationRequest>[];
+      String? cursor;
+      while (true) {
+        Query<Map<String, dynamic>> query = _requests(courseId)
+            .where('sessionId', isEqualTo: occurrenceId)
+            .orderBy(FieldPath.documentId)
+            .limit(100);
+        if (cursor != null) query = query.startAfter([cursor]);
+        final page = await query.get(const GetOptions(source: Source.server));
+        _requireSameUser(actor.uid);
+        result.addAll(page.docs.map(_parseRequest));
+        if (page.docs.length < 100) break;
+        cursor = page.docs.last.id;
+      }
+      return result;
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    }
+  }
+
+  @override
+  Future<void> decideJustificationRequest({
+    required String courseId,
+    required AttendanceJustificationRequest request,
+    required bool approve,
+  }) async {
+    await _decideJustification(
+      courseId: courseId,
+      occurrenceId: request.sessionId,
+      rosterEntryId: request.rosterEntryId,
+      segmentId: request.segmentId,
+      operationId: _events(courseId, request.sessionId).doc().id,
+      status: approve
+          ? AttendanceJustificationStatus.justified
+          : AttendanceJustificationStatus.notAccepted,
+      justifiedUnits: 0,
+      reason: '',
+      submission: request,
+    );
+  }
+
+  @override
+  Future<AttendanceSession> restoreSession({
+    required String courseId,
+    required String occurrenceId,
+  }) async {
+    final trace = AttendanceOperationTrace(
+      'restaurar asistencia',
+      onTiming: onTiming,
+    )..start('comprobar cuenta y sesión');
+    try {
+      final actor = await _requireTeacher();
+      final ref = _session(courseId, occurrenceId);
+      var session = await _getOwnedSession(courseId, occurrenceId, actor.uid);
+      if (session.status == AttendanceSessionStatus.finalized &&
+          session.lastMutationKind == AttendanceMutationKind.restore) {
+        return session;
+      }
+      if (session.finalizedAt == null ||
+          ![
+            AttendanceSessionStatus.voided,
+            AttendanceSessionStatus.restoring,
+          ].contains(session.status)) {
+        throw const AttendanceFailure(AttendanceFailureKind.invalidTransition);
+      }
+      if (session.status == AttendanceSessionStatus.voided) {
+        final eventRef = _events(courseId, occurrenceId).doc();
+        session = await _firestore.runTransaction((tx) async {
+          final snapshot = await tx.get(ref);
+          final current = _parseSessionSnapshot(
+            snapshot,
+            courseId: courseId,
+            occurrenceId: occurrenceId,
+          );
+          if (current.status == AttendanceSessionStatus.restoring) {
+            return current;
+          }
+          if (current.status != AttendanceSessionStatus.voided ||
+              current.finalizedAt == null) {
+            throw const AttendanceFailure(
+              AttendanceFailureKind.invalidTransition,
+            );
+          }
+          tx.set(
+            eventRef,
+            AttendanceFirestoreCodec.eventForCreate(
+              event: AttendanceSessionEvent(
+                eventId: eventRef.id,
+                kind: AttendanceEventKind.restore,
+                changedAt: null,
+                changedBy: actor.uid,
+                reason: '',
+                oldValue: {'status': 'voided'},
+                newValue: {'status': 'finalized'},
+              ),
+              uid: actor.uid,
+            ),
+          );
+          tx.update(ref, {
+            'status': 'restoring',
+            'lastMutationKind': 'restore',
+            'lastEventId': eventRef.id,
+            'lastMutationRosterEntryId': null,
+            ..._versionUpdate(actor.uid, current.version),
+          });
+          return _copySession(
+            current,
+            status: AttendanceSessionStatus.restoring,
+            version: current.version + 1,
+            updatedBy: actor.uid,
+            lastMutationKind: AttendanceMutationKind.restore,
+            lastEventId: eventRef.id,
+            lastMutationRosterEntryId: null,
+          );
+        });
+      }
+      trace.start('leer marcas conservadas');
+      final roster = await _loadAllRoster(session, actor.uid);
+      final segments = await _loadAllSegments(session, actor.uid);
+      if (roster.length != session.rosterCount ||
+          roster.any(
+            (e) => session.mode == AttendanceMode.meeting
+                ? e.meetingMark!.mark == AttendanceMark.unmarked
+                : e.segmentMarks.values.any(
+                    (m) => m.mark == AttendanceMark.unmarked,
+                  ),
+          )) {
+        throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
+      }
+      final expected = roster
+          .map(
+            (entry) => AttendanceRecordCalculator.fromRosterEntry(
+              session: session,
+              entry: entry,
+              segments: segments,
+            ),
+          )
+          .toList();
+      trace.start('restaurar resultados');
+      for (
+        var offset = 0;
+        offset < expected.length;
+        offset += _writeChunkSize
+      ) {
+        final chunk = expected.skip(offset).take(_writeChunkSize).toList();
+        await _firestore.runTransaction((tx) async {
+          final current = _parseSessionSnapshot(
+            await tx.get(ref),
+            courseId: courseId,
+            occurrenceId: occurrenceId,
+          );
+          final snapshots = await Future.wait(
+            chunk.map((r) => tx.get(_records(courseId).doc(r.recordId))),
+          );
+          _requireSameUser(actor.uid);
+          if (current.status != AttendanceSessionStatus.restoring ||
+              current.version != session.version ||
+              current.lastEventId != session.lastEventId) {
+            throw const AttendanceFailure(AttendanceFailureKind.staleSession);
+          }
+          for (var i = 0; i < chunk.length; i++) {
+            final actual = _parseRecordSnapshot(
+              snapshots[i],
+              courseId: courseId,
+              recordId: chunk[i].recordId,
+            );
+            if (_sameRecordContent(actual, chunk[i])) continue;
+            final data = AttendanceFirestoreCodec.stagedRecord(chunk[i]);
+            data['visibility'] = 'published';
+            data['publishedAt'] = snapshots[i].data()!['publishedAt'];
+            data['updatedAt'] = FieldValue.serverTimestamp();
+            tx.set(_records(courseId).doc(chunk[i].recordId), data);
+          }
+        });
+      }
+      trace.start('verificar resultados restaurados');
+      await _verifyRecordSet(
+        session: session,
+        records: expected,
+        uid: actor.uid,
+        allowStaged: false,
+        allowPublished: true,
+      );
+      return await _firestore.runTransaction((tx) async {
+        final current = _parseSessionSnapshot(
+          await tx.get(ref),
+          courseId: courseId,
+          occurrenceId: occurrenceId,
+        );
+        _requireSameUser(actor.uid);
+        if (current.status == AttendanceSessionStatus.finalized &&
+            current.lastEventId == session.lastEventId) {
+          return current;
+        }
+        if (current.status != AttendanceSessionStatus.restoring ||
+            current.version != session.version ||
+            current.lastEventId != session.lastEventId) {
+          throw const AttendanceFailure(AttendanceFailureKind.staleSession);
+        }
+        tx.update(ref, {
+          'status': 'finalized',
+          ..._versionUpdate(actor.uid, current.version),
+        });
+        return _copySession(
+          current,
+          status: AttendanceSessionStatus.finalized,
+          version: current.version + 1,
+          updatedBy: actor.uid,
+          lastMutationKind: AttendanceMutationKind.restore,
+          lastEventId: current.lastEventId,
+          lastMutationRosterEntryId: null,
+        );
+      });
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    } finally {
+      trace.finish();
+    }
+  }
+
   Future<_Actor> _requireTeacher() async {
     final user = _auth.currentUser;
     if (user == null) {
@@ -3890,21 +4385,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
   }
 
   void _validateLateReason(AttendanceOccurrence occurrence, String? reason) {
-    if (reason != null && (reason.isEmpty || reason.length > 500)) {
+    if (reason != null && reason.length > 500) {
       throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
-    }
-    final startUtc = occurrence.effectiveDate.toUtcTimestamp().add(
-      Duration(
-        hours: 5 + occurrence.startMinute ~/ 60,
-        minutes: occurrence.startMinute % 60,
-      ),
-    );
-    final nowUtc = DateTime.now().toUtc();
-    if (!nowUtc.isBefore(startUtc) && (reason == null || reason.isEmpty)) {
-      throw const AttendanceFailure(
-        AttendanceFailureKind.invalidInput,
-        message: 'Indica el motivo para registrar asistencia después de la hora prevista.',
-      );
     }
   }
 

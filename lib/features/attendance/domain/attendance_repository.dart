@@ -7,11 +7,34 @@ import 'attendance_occurrence.dart';
 import 'attendance_record.dart';
 import 'attendance_session.dart';
 import 'attendance_session_event.dart';
+import 'attendance_justification_request.dart';
 
 /// Persistence boundary for course attendance. Implementations must derive
 /// authenticated identities from Firebase Auth and enforce the published
 /// Firestore rules; presentation code never passes a student UID.
 abstract interface class AttendanceRepository {
+  Future<AttendanceSession> restoreSession({
+    required String courseId,
+    required String occurrenceId,
+  });
+  Future<AttendanceJustificationRequest?> getMyJustification({
+    required AttendanceRecord record,
+    required String? segmentId,
+  });
+  Future<AttendanceJustificationRequest> submitJustification({
+    required AttendanceRecord record,
+    required String? segmentId,
+    required String text,
+  });
+  Future<List<AttendanceJustificationRequest>> listJustificationRequests({
+    required String courseId,
+    required String occurrenceId,
+  });
+  Future<void> decideJustificationRequest({
+    required String courseId,
+    required AttendanceJustificationRequest request,
+    required bool approve,
+  });
   Future<AttendanceConfig?> getConfig({required String courseId});
 
   Future<AttendanceConfig> setMode({

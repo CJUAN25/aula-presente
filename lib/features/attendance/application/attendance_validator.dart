@@ -57,7 +57,6 @@ class AttendanceValidator {
   static void validateCalendarChange(AttendanceCalendarChange change) {
     final reason = change.reason.trim();
     if (change.occurrenceId.trim().isEmpty ||
-        reason.isEmpty ||
         reason.length > 500 ||
         change.version < 1 ||
         change.startMinute < 0 ||
@@ -91,7 +90,7 @@ class AttendanceValidator {
 
   static String validateVoidReason(String value) {
     final reason = value.trim();
-    if (reason.isEmpty || reason.length > 500) {
+    if (reason.length > 500) {
       throw const AttendanceValidationFailure(
         AttendanceValidationIssue.invalidReason,
       );
@@ -104,11 +103,6 @@ class AttendanceValidator {
     required bool isPastOccurrence,
   }) {
     final reason = value?.trim() ?? '';
-    if (isPastOccurrence && reason.isEmpty) {
-      throw const AttendanceValidationFailure(
-        AttendanceValidationIssue.invalidReason,
-      );
-    }
     if (reason.length > 500) {
       throw const AttendanceValidationFailure(
         AttendanceValidationIssue.invalidReason,

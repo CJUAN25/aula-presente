@@ -1,5 +1,7 @@
 # Pruebas locales de reglas de Firestore
 
+Revisión del 17/11/2026: **109/109**. Se conservaron las dos regresiones del parche de corrección de la segunda hora finalizada (normal/reprogramada), y se añadieron solicitudes por encuentro/horas con decisiones idempotentes, matrícula/roles, restauración interrumpida y privacidad/inmutabilidad del historial de calendario. No se consultó ni publicó Firebase real para estas pruebas. La APK y guía del propietario están en `docs/seguimiento_conjunto_8.md`.
+
 Estas pruebas usan exclusivamente el emulador local y el proyecto ficticio
 `demo-aula-presente-firestore-rules-tests`. No autentican contra Firebase ni
 publican reglas. Las reglas probadas se leen directamente de `../../firestore.rules`.

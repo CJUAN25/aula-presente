@@ -10,6 +10,7 @@ enum AttendanceSessionStatus {
   closing,
   finalized,
   voiding,
+  restoring,
   voided;
 
   String get value => name;
@@ -20,6 +21,7 @@ enum AttendanceSessionStatus {
     'closing' => AttendanceSessionStatus.closing,
     'finalized' => AttendanceSessionStatus.finalized,
     'voiding' => AttendanceSessionStatus.voiding,
+    'restoring' => AttendanceSessionStatus.restoring,
     'voided' => AttendanceSessionStatus.voided,
     _ => throw FormatException('Unsupported attendance session status: $value'),
   };
@@ -99,6 +101,7 @@ enum AttendanceMutationKind {
   correction,
   justification,
   rosterCorrection,
+  restore,
   voidSession;
 
   String get value => switch (this) {
@@ -111,6 +114,7 @@ enum AttendanceMutationKind {
     'correction' => AttendanceMutationKind.correction,
     'justification' => AttendanceMutationKind.justification,
     'rosterCorrection' => AttendanceMutationKind.rosterCorrection,
+    'restore' => AttendanceMutationKind.restore,
     'void' => AttendanceMutationKind.voidSession,
     _ => throw FormatException('Unsupported attendance mutation: $value'),
   };
