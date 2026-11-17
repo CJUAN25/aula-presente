@@ -39,6 +39,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
   Object? _error;
   bool _loading = true;
   bool _saving = false;
+  String? _openingMessage;
   int _epoch = 0;
 
   @override
@@ -135,9 +136,18 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
       _showMessage('Elige primero cómo se contarán las faltas de este curso.');
       return;
     }
+    Object? openingError;
     try {
       AttendanceSession session;
-      setState(() => _saving = true);
+      setState(() {
+        _saving = true;
+        _error = null;
+        _openingMessage =
+            existing == null ||
+                existing.rosterState == AttendanceRosterState.building
+            ? 'Preparando la lista y comprobando la matrícula…'
+            : 'Abriendo la asistencia guardada…';
+      });
       if (existing != null) {
         session = existing;
         if (existing.status == AttendanceSessionStatus.preparing &&
@@ -202,6 +212,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         ),
       );
     } catch (error) {
+      openingError = error;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -228,8 +239,16 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         );
       }
     } finally {
-      if (mounted && _saving) setState(() => _saving = false);
-      if (mounted) _load();
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _openingMessage = null;
+        });
+        await _load();
+        if (mounted && openingError != null) {
+          setState(() => _error = openingError);
+        }
+      }
     }
   }
 
@@ -490,6 +509,8 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
             description: 'Elige una clase, registra Presente o Ausente y finaliza la asistencia.',
           ),
           const SizedBox(height: 18),
+          if (_openingMessage != null)
+            AttendanceWaitStatus(message: _openingMessage!),
           if (_loading && config == null)
             const CourseLoading(
               message: 'Cargando calendario y configuración…',

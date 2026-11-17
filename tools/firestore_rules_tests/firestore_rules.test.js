@@ -4999,6 +4999,159 @@ test("conjunto 8: justificación y corrección actualizan fila, proyección y ev
   await assertPermissionDenied(updateDoc(correctionRef, { reason: "Reescrito" }));
 });
 
+for (const size of [2, 12]) {
+test(`C8 closing rescheduled minutes: resume stage finalize publish without losing marks (${size})`, async () => {
+  await seedProfile("owner", "owner@example.test", ["student", "teacher"]);
+  await seedProfile("student", "student@example.test", ["student"]);
+  await seedProfile("other", "other@example.test", ["student", "teacher"]);
+  await seedCourse("owner", "course");
+  await seedAttendanceEnrollment("course", "student", "owner", "student@example.test");
+  const id = "course|block|2026-11-05";
+  const scheduledDate = Timestamp.fromDate(new Date("2026-11-05T00:00:00Z"));
+  const effectiveDate = Timestamp.fromDate(new Date("2026-11-16T00:00:00Z"));
+  const segmentData = [360, 420].map((start, index) => ({
+    segmentId: `seg-${index + 1}`, order: index, startMinute: start,
+    endMinute: start + 60, durationMinutes: 60, createdAt: effectiveDate,
+  }));
+  await seedAttendanceSession("course", "owner", id, {
+    occurrenceKind: "rescheduled", status: "closing", rosterState: "ready",
+    mode: "minutes", scheduledDate, effectiveDate, startMinute: 360, endMinute: 480,
+    segmentIds: segmentData.map(s => s.segmentId), rosterCount: size, markedCount: size, unmarkedCount: 0,
+    lastMutationKind: "mark", lastMutationRosterEntryId: "other@example.test",
+  });
+  const owner = userContext("owner", "owner@example.test", true);
+  const student = userContext("student", "student@example.test", true);
+  const other = userContext("other", "other@example.test", true);
+  const parent = doc(owner, "courses", "course", "attendance_sessions", id);
+  const identities = ["student@example.test", "other@example.test", ...Array.from({length: size - 2}, (_, i) => `synthetic-${i}@example.test`)];
+  const records = identities.map(rosterEntryId => attendanceRecordData("course", id, rosterEntryId, {
+    mode: "minutes", scheduledDate, effectiveDate, startMinute: 360, endMinute: 480,
+    unitCount: 120, absentUnits: 60, result: "partial", visibility: "staged", publishedAt: null,
+    segments: segmentData.map((s, index) => ({
+      segmentId: s.segmentId, startMinute: s.startMinute, endMinute: s.endMinute,
+      durationMinutes: 60, mark: index === 0 ? "absent" : "present", absentUnits: index === 0 ? 60 : 0,
+      justificationStatus: "none", justifiedUnits: 0,
+    })), updatedAt: serverTimestamp(),
+  }));
+  await testEnvironment.withSecurityRulesDisabled(async context => {
+    const db = context.firestore();
+    for (const s of segmentData) await setDoc(doc(db, parent.path, "segments", s.segmentId), s);
+    for (const record of records) await setDoc(doc(db, parent.path, "roster", record.rosterEntryId), {
+      rosterEntryId: record.rosterEntryId, displayName: "Estudiante sintético",
+      segments: Object.fromEntries(record.segments.map(s => [s.segmentId, {
+        mark: s.mark, absentUnits: s.absentUnits, justificationStatus: s.justificationStatus, justifiedUnits: s.justifiedUnits,
+      }])), version: 2, updatedAt: effectiveDate, updatedBy: "owner",
+    });
+  });
+  const rosterBefore = (await getDocs(collection(parent, "roster"))).docs.map(d => d.data());
+  if (size === 2) {
+    // Separate in-progress control: the verified owner can mark both hours.
+    // The recovery fixture above remains already closing throughout the test.
+    const controlId = `${id}-mark-control`;
+    await seedAttendanceSession("course", "owner", controlId, {
+      occurrenceKind: "rescheduled", status: "inProgress", rosterState: "ready",
+      mode: "minutes", scheduledDate, effectiveDate, startMinute: 360, endMinute: 480,
+      segmentIds: segmentData.map(s => s.segmentId), rosterCount: 1, markedCount: 1, unmarkedCount: 0,
+    });
+    const control = doc(owner, "courses", "course", "attendance_sessions", controlId);
+    const row = doc(control, "roster", identities[0]);
+    await testEnvironment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), row.path), rosterBefore.find(r => r.rosterEntryId === identities[0]));
+      for (const s of segmentData) await setDoc(doc(context.firestore(), control.path, "segments", s.segmentId), s);
+    });
+    const mark = (actor, segmentId, value) => runTransaction(actor, async tx => {
+      const p = doc(actor, control.path);
+      const r = doc(actor, row.path);
+      const session = await tx.get(p);
+      const entry = await tx.get(r);
+      await tx.get(doc(actor, control.path, "segments", segmentId));
+      tx.update(r, {segments: {...entry.data().segments, [segmentId]: {
+        mark: value, absentUnits: value === "absent" ? 60 : 0, justificationStatus: "none", justifiedUnits: 0,
+      }}, version: entry.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+      tx.update(p, {version: session.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+        lastMutationKind: "mark", lastMutationRosterEntryId: identities[0], lastEventId: null});
+    });
+    await assertSucceeds(mark(owner, "seg-1", "present"));
+    await assertSucceeds(mark(owner, "seg-2", "absent"));
+    await assertPermissionDenied(mark(student, "seg-1", "absent"));
+    await assertPermissionDenied(mark(other, "seg-1", "absent"));
+    const marked = (await getDoc(row)).data();
+    assert.equal(marked.segments["seg-1"].mark, "present");
+    assert.equal(marked.segments["seg-2"].mark, "absent");
+  }
+  const refFor = record => doc(owner, "courses", "course", "attendance_records", `${id}|${record.rosterEntryId}`);
+  // Mirrors _stageRecords: read parent/records, create missing projections and bump parent once.
+  const stage = subset => runTransaction(owner, async tx => {
+    const session = await tx.get(parent);
+    const existing = await Promise.all(subset.map(record => tx.get(refFor(record))));
+    const missing = subset.filter((_, index) => !existing[index].exists());
+    for (const record of missing) tx.set(refFor(record), record);
+    if (missing.length) tx.update(parent, {version: session.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+  });
+  // Invalid second segment/shape and immutable schedule changes remain denied.
+  if (size === 2) {
+    for (const patch of [
+      {segments: records[0].segments.map((s, i) => i === 1 ? {...s, mark: "invalid"} : s)},
+      {segments: records[0].segments.map((s, i) => i === 1 ? {...s, absentUnits: 61} : s)},
+      {segments: records[0].segments.map((s, i) => i === 1 ? {...s, unexpected: true} : s)},
+      {segments: records[0].segments.map((s, i) => {const copy = {...s}; if (i === 1) delete copy.mark; return copy;})},
+      {unexpected: true}, {unitCount: -1}, {effectiveDate: scheduledDate},
+    ]) await assertPermissionDenied(stage([{...records[0], ...patch}]));
+    await assertPermissionDenied(setDoc(refFor(records[0]), records[0])); // No paired parent version.
+    await assertPermissionDenied(setDoc(doc(other, refFor(records[0]).path), records[0]));
+  }
+  await assertSucceeds(stage(records.slice(0, 1))); // Interrupted after first student.
+  assert.equal((await getDoc(parent)).data().status, "closing");
+  await assertPermissionDenied(getDoc(doc(student, refFor(records[0]).path)));
+  await assertPermissionDenied(updateDoc(doc(other, parent.path), {status: "finalized"}));
+  const stageAll = async () => {
+    for (let offset = 0; offset < records.length; offset += 10) await stage(records.slice(offset, offset + 10));
+  };
+  await assertSucceeds(stageAll());
+  const stagedVersion = (await getDoc(parent)).data().version;
+  await assertSucceeds(stageAll()); // Repeat same session; no extra projection/version.
+  assert.equal((await getDoc(parent)).data().version, stagedVersion);
+  for (const record of records) assert.equal((await getDoc(refFor(record))).data().visibility, "staged");
+  await assertPermissionDenied(updateDoc(refFor(records[0]), {visibility: "published", publishedAt: serverTimestamp(), updatedAt: serverTimestamp()}));
+  await assertSucceeds(runTransaction(owner, async tx => {
+    const current = await tx.get(parent);
+    tx.update(parent, {status: "finalized", finalizedAt: serverTimestamp(), version: current.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+  }));
+  for (const patch of [{effectiveDate: scheduledDate}, {rosterEntryId: "foreign"}, {startMinute: 361}]) {
+    await assertPermissionDenied(updateDoc(refFor(records[0]), {...patch, visibility: "published", publishedAt: serverTimestamp(), updatedAt: serverTimestamp()}));
+  }
+  const publishChunk = subset => runTransaction(owner, async tx => {
+    await tx.get(parent);
+    const snapshots = await Promise.all(subset.map(record => tx.get(refFor(record))));
+    subset.forEach((record, index) => {
+      if (snapshots[index].data().visibility === "staged") tx.update(refFor(record), {
+        visibility: "published", publishedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      });
+    });
+  });
+  const publish = async () => {
+    for (let offset = 0; offset < records.length; offset += 10) await publishChunk(records.slice(offset, offset + 10));
+  };
+  await assertSucceeds(publish());
+  const publishedAt = (await getDoc(refFor(records[0]))).data().publishedAt;
+  await assertSucceeds(publish());
+  assert.deepEqual((await getDoc(refFor(records[0]))).data().publishedAt, publishedAt);
+  assert.deepEqual((await getDocs(collection(parent, "roster"))).docs.map(d => d.data()), rosterBefore);
+  assert.equal((await getDocs(collection(owner, "courses", "course", "attendance_records"))).size, size);
+  const own = query(collection(student, "courses", "course", "attendance_records"),
+    where("rosterEntryId", "==", "student@example.test"), where("visibility", "==", "published"),
+    orderBy("effectiveDate", "desc"), orderBy(documentId(), "desc"));
+  const visible = await assertSucceeds(getDocs(own));
+  assert.equal(visible.size, 1);
+  assert.equal(visible.docs[0].data().absentUnits, 60);
+  await assertSucceeds(getDoc(doc(student, refFor(records[0]).path)));
+  await assertPermissionDenied(getDoc(doc(student, refFor(records[1]).path)));
+  await assertPermissionDenied(getDocs(collection(student, parent.path, "roster")));
+  await assertPermissionDenied(getDocs(collection(student, parent.path, "events")));
+  await assertPermissionDenied(updateDoc(doc(student, refFor(records[0]).path), {absentUnits: 0}));
+});
+}
+
 test("conjunto 8: staged solo se publica después de finalized y la consulta propia funciona", async () => {
   await seedProfile("owner", "owner@example.test", ["teacher"]);
   await seedProfile("student", "student@example.test", ["student"]);

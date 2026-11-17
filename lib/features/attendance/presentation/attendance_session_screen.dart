@@ -88,39 +88,53 @@ class _TeacherAttendanceSessionScreenState
         }
       }
       final roster = <AttendanceRosterEntry>[];
-      AttendanceRosterCursor? rosterCursor;
-      do {
-        final page = await widget.repository.listRoster(
-          session: loadedSession,
-          cursor: rosterCursor,
-        );
-        roster.addAll(page.items);
-        rosterCursor = page.nextCursor;
-      } while (rosterCursor != null);
       final segments = <AttendanceSegment>[];
-      AttendanceSegmentCursor? segmentCursor;
-      do {
-        final page = await widget.repository.listSegments(
-          session: loadedSession,
-          cursor: segmentCursor,
-        );
-        segments.addAll(page.items);
-        segmentCursor = page.nextCursor;
-      } while (segmentCursor != null);
       final events = <AttendanceSessionEvent>[];
-      if (loadedSession.status == AttendanceSessionStatus.finalized ||
-          loadedSession.status == AttendanceSessionStatus.voided ||
-          loadedSession.status == AttendanceSessionStatus.voiding) {
-        AttendanceSessionEventCursor? eventCursor;
+      Future<void> loadRoster() async {
+        AttendanceRosterCursor? cursor;
         do {
-          final page = await widget.repository.listSessionEvents(
+          final page = await widget.repository.listRoster(
             session: loadedSession,
-            cursor: eventCursor,
+            cursor: cursor,
+            pageSize: 100,
           );
-          events.addAll(page.items);
-          eventCursor = page.nextCursor;
-        } while (eventCursor != null);
+          roster.addAll(page.items);
+          cursor = page.nextCursor;
+        } while (cursor != null);
       }
+
+      Future<void> loadSegments() async {
+        if (loadedSession.mode == AttendanceMode.meeting) return;
+        AttendanceSegmentCursor? cursor;
+        do {
+          final page = await widget.repository.listSegments(
+            session: loadedSession,
+            cursor: cursor,
+            pageSize: 100,
+          );
+          segments.addAll(page.items);
+          cursor = page.nextCursor;
+        } while (cursor != null);
+      }
+
+      Future<void> loadEvents() async {
+        if (loadedSession.status == AttendanceSessionStatus.finalized ||
+            loadedSession.status == AttendanceSessionStatus.voided ||
+            loadedSession.status == AttendanceSessionStatus.voiding) {
+          AttendanceSessionEventCursor? eventCursor;
+          do {
+            final page = await widget.repository.listSessionEvents(
+              session: loadedSession,
+              cursor: eventCursor,
+            );
+            events.addAll(page.items);
+            eventCursor = page.nextCursor;
+          } while (eventCursor != null);
+        }
+      }
+
+      // The collections are independent; each collection still pages in order.
+      await Future.wait([loadRoster(), loadSegments(), loadEvents()]);
       if (!mounted || epoch != _epoch) return;
       setState(() {
         _session = loadedSession;
@@ -754,8 +768,12 @@ class _TeacherAttendanceSessionScreenState
             ),
           ],
           const SizedBox(height: 16),
-          if (_loading && _roster.isEmpty)
-            const CourseLoading(message: 'Cargando la nómina completa…'),
+          if (_loading)
+            const AttendanceWaitStatus(message: 'Cargando la nómina completa…'),
+          if (_processing && !_loading)
+            const AttendanceWaitStatus(
+              message: 'Guardando los cambios de asistencia…',
+            ),
           if (_error != null) ...[
             AttendanceErrorCard(error: _error!, onRetry: _load),
             const SizedBox(height: 12),

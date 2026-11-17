@@ -1,6 +1,12 @@
 # Activación y prueba manual — conjunto 8
 
-Esta guía es para el propietario. El índice `attendance_records` está **Habilitado** según su reporte y ya comprobó flujos C8 en TECNO con Firebase real. El `503` y la lectura inicial de C7 pertenecen al historial previo, no describen el estado actual reportado. Codex no desplegó reglas ni índices. El ajuste local del 16/11 requiere publicar únicamente las reglas revisadas e instalar la nueva APK para comprobar la recuperación de listas incompletas. No se deben usar datos sensibles de excusas.
+Esta guía es para el propietario. El índice `attendance_records` está **Habilitado** según su reporte y ya comprobó flujos C8 en TECNO con Firebase real. También reportó una publicación manual de reglas desde VS Code; la versión exacta y la APK anterior siguen por confirmar. El cierre por horas de Lógica reprogramada al 16/11 06:00–08:00 falló en **Continuar finalización**. El nuevo ajuste se probó localmente con una sesión ya `closing`, y necesita publicar **solo las reglas revisadas** e instalar la **APK recompilada**. Codex no desplegó reglas ni índices ni operó el teléfono. No se deben usar datos sensibles de excusas.
+
+## Recuperar primero Lógica en Finalizando
+
+Las huellas SHA-256 de los archivos nuevos y los pasos completos están en [seguimiento C8: APK, reglas y TECNO](seguimiento_conjunto_8.md#apk-reglas-y-repetición-exacta-en-el-tecno). Tras publicar el único `firestore.rules` e instalar `build/app/outputs/flutter-apk/app-debug.apk`, abre **Lógica → Asistencia → Gestionar → 05/11 reprogramada al 16/11/2026 06:00–08:00 → Continuar cierre → Continuar finalización**. Conserva la misma sesión. Comprueba ambos tramos, marcas previas, estado Finalizada y consulta propia publicada del estudiante. Reabrir/reintentar no debe duplicar resultados ni cambiar las marcas. Si queda publicación pendiente, reanúdala ahí mismo.
+
+Mide también Preparar lista, Completar lista y Ver asistencia en un encuentro de ensayo. La interfaz avisa si tarda más de ocho segundos y conserva el error de apertura; Diagnóstico muestra etapa/código. En debug, `[C8]` registra duración por etapa sin datos personales. Registra APK, reglas, acción, cantidad de estudiantes, segundos y resultado. Los tiempos del seguimiento son ensayos locales con demora artificial, no tiempos prometidos para el TECNO. Los apartados siguientes conservan los recorridos generales y antecedentes.
 
 ## Corrección tras prueba real
 

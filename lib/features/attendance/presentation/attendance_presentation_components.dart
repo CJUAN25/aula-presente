@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../app/theme/app_theme.dart';
@@ -5,6 +7,40 @@ import '../../courses/presentation/course_presentation_components.dart';
 import '../../schedule/domain/academic_date.dart';
 import '../domain/attendance_failure.dart';
 import '../domain/attendance_mode.dart';
+
+class AttendanceWaitStatus extends StatefulWidget {
+  const AttendanceWaitStatus({super.key, required this.message});
+  final String message;
+
+  @override
+  State<AttendanceWaitStatus> createState() => _AttendanceWaitStatusState();
+}
+
+class _AttendanceWaitStatusState extends State<AttendanceWaitStatus> {
+  Timer? _timer;
+  int _seconds = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _seconds++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CourseLoading(
+    message: _seconds < 8
+        ? widget.message
+        : '${widget.message} Está tardando más de lo habitual ($_seconds s). El avance guardado se conserva; espera la confirmación o el error.',
+  );
+}
 
 String attendanceErrorMessage(Object error) {
   if (error is AttendanceFailure) {

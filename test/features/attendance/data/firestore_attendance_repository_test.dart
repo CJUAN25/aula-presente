@@ -14,12 +14,305 @@ import 'package:aula_presente/features/attendance/data/firestore_attendance_repo
 import 'package:aula_presente/features/attendance/domain/attendance_failure.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_session.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
+import 'package:aula_presente/features/enrollments/domain/enrollment_failure.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_repository.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('C8 latency profile prepare complete view', () async {
+    final date = AcademicDate(year: 2026, month: 11, day: 16);
+    final occurrence = AttendanceOccurrence(
+      id: 'occurrence-1',
+      courseId: 'course-1',
+      kind: AttendanceOccurrenceKind.rescheduled,
+      scheduledDate: AcademicDate(year: 2026, month: 11, day: 5),
+      effectiveDate: date,
+      startMinute: 360,
+      endMinute: 480,
+    );
+    final course = Course(
+      id: 'course-1',
+      ownerUid: 'teacher-1',
+      subject: 'Sintético',
+      group: '01',
+      period: '2026',
+      program: 'Programa',
+      schedule: CourseSchedule(
+        startDate: occurrence.scheduledDate,
+        endDate: date,
+        weeklyBlocks: const [
+          WeeklyBlock(
+            id: 'block',
+            weekday: 1,
+            startTime: '06:00',
+            endTime: '08:00',
+          ),
+        ],
+      ),
+    );
+    final source = _PreparationEnrollments(
+      count: 12,
+      delay: const Duration(milliseconds: 5),
+    );
+    final store = _Store()
+      ..ioDelay = const Duration(milliseconds: 5)
+      ..documents['users/teacher-1'] = _teacherProfile()
+      ..documents['courses/course-1'] = {'ownerUid': 'teacher-1'}
+      ..documents['courses/course-1/attendance_config/current'] = {
+        'schemaVersion': 1,
+        'mode': 'minutes',
+        'sessionCount': 0,
+        'lastSessionId': null,
+        'createdAt': null,
+        'createdBy': 'teacher-1',
+        'updatedAt': null,
+        'updatedBy': 'teacher-1',
+      }
+      ..documents['courses/course-1/attendance_calendar/occurrence-1'] = {
+        'occurrenceId': occurrence.id,
+        'kind': 'rescheduled',
+        'originalDate': Timestamp.fromDate(
+          occurrence.scheduledDate.toUtcTimestamp(),
+        ),
+        'effectiveDate': Timestamp.fromDate(date.toUtcTimestamp()),
+        'startMinute': 360,
+        'endMinute': 480,
+        'reason': 'Cambio sintético',
+        'version': 1,
+        'createdAt': null,
+        'createdBy': 'teacher-1',
+        'updatedAt': null,
+        'updatedBy': 'teacher-1',
+      };
+    final timings = <String, int>{};
+    var operation = 'preparar';
+    final repository = FirestoreAttendanceRepository(
+      auth: _Auth(_User('teacher-1', 'teacher@example.invalid')),
+      firestore: store,
+      enrollments: source,
+      onTiming: (name, phase, duration) {
+        timings['$operation/$name/$phase'] = duration.inMilliseconds;
+      },
+    );
+    final watch = Stopwatch()..start();
+    var session = await repository.prepareSession(
+      course: course,
+      occurrence: occurrence,
+      lateRegistrationReason: 'Prueba local',
+    );
+    timings['preparar/total'] = watch.elapsedMilliseconds;
+    expect(session.rosterCount, 12);
+    operation = 'completar';
+    store.documents['courses/course-1/attendance_sessions/occurrence-1']!['rosterState'] =
+        'building';
+    watch.reset();
+    session = await repository.prepareSession(
+      course: course,
+      occurrence: occurrence,
+    );
+    timings['completar/total'] = watch.elapsedMilliseconds;
+    expect(session.rosterState, AttendanceRosterState.ready);
+    expect(
+      store
+          .documents['courses/course-1/attendance_config/current']!['sessionCount'],
+      1,
+    );
+    operation = 'ver';
+    watch.reset();
+    await Future.wait<Object>([
+      repository.listRoster(session: session, pageSize: 100),
+      repository.listSegments(session: session, pageSize: 100),
+    ]);
+    timings['ver/total'] = watch.elapsedMilliseconds;
+    // Timings are evidence, not assertions tied to the host's scheduling speed.
+    // ignore: avoid_print
+    print(
+      'C8_LATENCY $timings reads=${store.directReads.length} queries=${store.queryLogs.length} source=${source.calls}',
+    );
+    expect(source.calls['history'], 24);
+    expect(source.calls['snapshot'], 6);
+    expect(source.calls['linked'], 72);
+    expect(source.maxInFlight, inInclusiveRange(2, 6));
+    // Any failed historical source still blocks ready, even with concurrent reads.
+    source.failHistoryUid = 'student-2';
+    store.documents['courses/course-1/attendance_sessions/occurrence-1']!['rosterState'] =
+        'building';
+    await expectLater(
+      repository.prepareSession(course: course, occurrence: occurrence),
+      throwsA(
+        isA<AttendanceFailure>().having(
+          (e) => e.kind,
+          'kind',
+          AttendanceFailureKind.unavailable,
+        ),
+      ),
+    );
+    expect(
+      store
+          .documents['courses/course-1/attendance_sessions/occurrence-1']!['rosterState'],
+      'building',
+    );
+    expect(
+      store
+          .documents['courses/course-1/attendance_config/current']!['sessionCount'],
+      1,
+    );
+  });
+
+  test('C8 latency profile finalized view publication check', () async {
+    const parent = 'courses/course-1/attendance_sessions/occurrence-1';
+    final store = _Store()
+      ..ioDelay = const Duration(milliseconds: 5)
+      ..documents['users/teacher-1'] = _teacherProfile()
+      ..documents[parent] = _session(
+        status: 'finalized',
+        rosterCount: 12,
+        markedCount: 12,
+        unmarkedCount: 0,
+      );
+    for (var index = 0; index < 12; index++) {
+      final id = 'student-$index';
+      store.documents['$parent/roster/$id'] = _entry(
+        rosterEntryId: id,
+        mark: 'present',
+        version: 1,
+      );
+      store.documents['courses/course-1/attendance_records/occurrence-1|$id'] =
+          _record(rosterEntryId: id, mark: 'present');
+    }
+    final timings = <String, int>{};
+    final repository = FirestoreAttendanceRepository(
+      auth: _Auth(_User('teacher-1', 'teacher@example.invalid')),
+      firestore: store,
+      enrollments: _UnusedEnrollments(),
+      onTiming: (operation, phase, elapsed) =>
+          timings[phase] = elapsed.inMilliseconds,
+    );
+    final watch = Stopwatch()..start();
+    final result = await repository.finalizeSession(
+      courseId: 'course-1',
+      occurrenceId: 'occurrence-1',
+      confirmUnmarked: false,
+    );
+    timings['total'] = watch.elapsedMilliseconds;
+    expect(result.status, AttendanceFinalizeStatus.confirmed);
+    expect(store.transactionWrites, isEmpty);
+    // ignore: avoid_print
+    print('C8_FINALIZED_VIEW $timings');
+  });
+
+  test(
+    'resumes the same closing rescheduled hours session after a denied stage',
+    () async {
+      const parent = 'courses/course-1/attendance_sessions/occurrence-1';
+      final occurrence = AttendanceOccurrence(
+        id: 'occurrence-1',
+        courseId: 'course-1',
+        kind: AttendanceOccurrenceKind.rescheduled,
+        scheduledDate: AcademicDate(year: 2026, month: 11, day: 5),
+        effectiveDate: AcademicDate(year: 2026, month: 11, day: 16),
+        startMinute: 360,
+        endMinute: 480,
+      );
+      final segments = AttendanceSegmentFactory.forOccurrence(occurrence);
+      final store = _Store()
+        ..documents['users/teacher-1'] = _teacherProfile()
+        ..documents['courses/course-1'] = {'ownerUid': 'teacher-1'}
+        ..documents[parent] = {
+          ..._session(status: 'closing', markedCount: 2, unmarkedCount: 0),
+          'occurrenceKind': 'rescheduled',
+          'mode': 'minutes',
+          'scheduledDate': Timestamp.fromDate(
+            occurrence.scheduledDate.toUtcTimestamp(),
+          ),
+          'effectiveDate': Timestamp.fromDate(
+            occurrence.effectiveDate.toUtcTimestamp(),
+          ),
+          'startMinute': 360,
+          'endMinute': 480,
+          'segmentIds': segments.map((s) => s.id).toList(),
+        };
+      for (final segment in segments) {
+        store.documents['$parent/segments/${segment.id}'] = {
+          ...AttendanceFirestoreCodec.segmentForCreate(segment: segment),
+          'createdAt': Timestamp.fromDate(DateTime.utc(2026, 11, 16)),
+        };
+      }
+      for (final student in ['student-1', 'student-2']) {
+        store.documents['$parent/roster/$student'] = {
+          'rosterEntryId': student,
+          'displayName': 'Sintético',
+          'version': 2,
+          'updatedAt': Timestamp.fromDate(DateTime.utc(2026, 11, 16)),
+          'updatedBy': 'teacher-1',
+          'segments': {
+            for (final segment in segments)
+              segment.id: {
+                'mark': segment == segments.first ? 'absent' : 'present',
+                'absentUnits': segment == segments.first ? 60 : 0,
+                'justificationStatus': 'none',
+                'justifiedUnits': 0,
+              },
+          },
+        };
+      }
+      final marks = [
+        for (final student in ['student-1', 'student-2'])
+          store.documents['$parent/roster/$student'],
+      ];
+      store.failStagePathOnce =
+          'courses/course-1/attendance_records/occurrence-1|student-2';
+      await expectLater(
+        _repository(store).finalizeSession(
+          courseId: 'course-1',
+          occurrenceId: 'occurrence-1',
+          confirmUnmarked: false,
+        ),
+        throwsA(
+          isA<AttendanceFailure>().having(
+            (e) => e.message,
+            'phase',
+            contains('preparar resultados privados (permission-denied)'),
+          ),
+        ),
+      );
+      expect(store.documents[parent]!['status'], 'closing');
+      final result = await _repository(store).finalizeSession(
+        courseId: 'course-1',
+        occurrenceId: 'occurrence-1',
+        confirmUnmarked: false,
+      );
+      expect(result.status, AttendanceFinalizeStatus.confirmed);
+      final records = store.documents.entries
+          .where(
+            (e) => e.key.startsWith('courses/course-1/attendance_records/'),
+          )
+          .map((e) => e.value!)
+          .toList();
+      expect(records, hasLength(2));
+      for (final record in records) {
+        expect(record['visibility'], 'published');
+        expect(record['unitCount'], 120);
+        expect(record['absentUnits'], 60);
+      }
+      expect([
+        for (final student in ['student-1', 'student-2'])
+          store.documents['$parent/roster/$student'],
+      ], marks);
+      final publishedAt = records.map((r) => r['publishedAt']).toList();
+      final writes = store.transactionWrites.length;
+      await _repository(store).finalizeSession(
+        courseId: 'course-1',
+        occurrenceId: 'occurrence-1',
+        confirmUnmarked: false,
+      );
+      expect(store.transactionWrites.length, writes);
+      expect(records.map((r) => r['publishedAt']).toList(), publishedAt);
+    },
+  );
+
   test('future and rescheduled preparation materialize roster using effective date without starting', () async {
     for (final rescheduled in [false, true]) {
       final tomorrow = AcademicDate.fromDateTime(
@@ -1022,6 +1315,7 @@ class _StudentEnrollmentRepository implements EnrollmentRepository {
 }
 
 class _Store implements FirebaseFirestore {
+  Duration ioDelay = Duration.zero;
   final documents = <String, Map<String, dynamic>?>{};
   final transactionWrites = <_Write>[];
   final transactionGroups = <List<_Write>>[];
@@ -1031,6 +1325,7 @@ class _Store implements FirebaseFirestore {
   String? failReadPathOnce;
   String? failPublicationPathOnce;
   String? failVoidPathOnce;
+  String? failStagePathOnce;
   int _commitNumber = 0;
 
   @override
@@ -1151,6 +1446,9 @@ class _Reference implements DocumentReference<Map<String, dynamic>> {
   Future<DocumentSnapshot<Map<String, dynamic>>> get([
     GetOptions? options,
   ]) async {
+    if (store.ioDelay != Duration.zero) {
+      await Future<void>.delayed(store.ioDelay);
+    }
     if (store.failReadPathOnce == path) {
       store.failReadPathOnce = null;
       throw FirebaseException(plugin: 'cloud_firestore', code: 'unavailable');
@@ -1183,6 +1481,9 @@ class _Transaction implements Transaction {
   Future<DocumentSnapshot<T>> get<T extends Object?>(
     DocumentReference<T> reference,
   ) async {
+    if (store.ioDelay != Duration.zero) {
+      await Future<void>.delayed(store.ioDelay);
+    }
     reads.add(reference.path);
     final value = store.documents[reference.path];
     return (value == null
@@ -1214,6 +1515,14 @@ class _Transaction implements Transaction {
     SetOptions? options,
   ]) {
     final values = Map<String, dynamic>.from(data as Map);
+    if (store.failStagePathOnce == reference.path &&
+        values['visibility'] == 'staged') {
+      store.failStagePathOnce = null;
+      throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'permission-denied',
+      );
+    }
     if (store.failVoidPathOnce == reference.path &&
         values['result'] == 'voided') {
       store.failVoidPathOnce = null;
@@ -1349,6 +1658,9 @@ class _Query implements Query<Map<String, dynamic>> {
 
   @override
   Future<QuerySnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
+    if (store.ioDelay != Duration.zero) {
+      await Future<void>.delayed(store.ioDelay);
+    }
     return store._query(
       path,
       filters: filters,
@@ -1371,42 +1683,79 @@ class _QuerySnapshot implements QuerySnapshot<Map<String, dynamic>> {
 }
 
 class _PreparationEnrollments extends _UnusedEnrollments {
+  _PreparationEnrollments({this.count = 1, this.delay = Duration.zero});
+  final int count;
+  final Duration delay;
+  final calls = <String, int>{};
+  String? failHistoryUid;
+  int inFlight = 0;
+  int maxInFlight = 0;
+  Future<void> _read(String kind) async {
+    calls.update(kind, (n) => n + 1, ifAbsent: () => 1);
+    inFlight++;
+    if (inFlight > maxInFlight) maxInFlight = inFlight;
+    try {
+      if (delay != Duration.zero) await Future<void>.delayed(delay);
+    } finally {
+      inFlight--;
+    }
+  }
+
   @override
   Future<CourseRosterSnapshot> loadCourseRosterSnapshot({
     required String courseId,
-  }) async => CourseRosterSnapshot(
-    activeEnrollments: [
-      Enrollment(
-        courseId: courseId,
-        studentUid: 'student-1',
-        ownerUid: 'teacher-1',
-        name: 'Synthetic student',
-        email: 'student@example.invalid',
-        studentCode: 'S-1',
-        subject: 'Curso',
-        group: '01',
-        period: '2026',
-        status: 'active',
-        createdAt: DateTime.utc(2026, 11, 14, 15),
-        rosterEntryId: 'student@example.invalid',
-        effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 14),
-      ),
-    ],
-    withdrawnEnrollments: const [],
-    pendingEnrollments: const [],
-    withdrawnPendingEnrollments: const [],
-    complete: true,
-  );
+  }) async {
+    await _read('snapshot');
+    return CourseRosterSnapshot(
+      activeEnrollments: [
+        for (var index = 0; index < count; index++)
+          Enrollment(
+            courseId: courseId,
+            studentUid: 'student-${index + 1}',
+            ownerUid: 'teacher-1',
+            name: 'Synthetic student',
+            email: index == 0
+                ? 'student@example.invalid'
+                : 'student-${index + 1}@example.invalid',
+            studentCode: 'S-1',
+            subject: 'Curso',
+            group: '01',
+            period: '2026',
+            status: 'active',
+            createdAt: DateTime.utc(2026, 11, 14, 15),
+            rosterEntryId: index == 0
+                ? 'student@example.invalid'
+                : 'student-${index + 1}@example.invalid',
+            effectiveStartDate: AcademicDate(year: 2026, month: 11, day: 14),
+          ),
+      ],
+      withdrawnEnrollments: const [],
+      pendingEnrollments: const [],
+      withdrawnPendingEnrollments: const [],
+      complete: true,
+    );
+  }
+
   @override
   Future<PendingEnrollment?> getCoursePendingEnrollment({
     required String courseId,
     required String email,
-  }) async => null;
+  }) async {
+    await _read('linked');
+    return null;
+  }
+
   @override
   Future<EnrollmentHistoryPage> listEnrollmentHistory({
     required String courseId,
     required String studentUid,
     EnrollmentHistoryCursor? cursor,
     int pageSize = 25,
-  }) async => EnrollmentHistoryPage(items: [], nextCursor: null);
+  }) async {
+    await _read('history');
+    if (failHistoryUid == studentUid) {
+      throw const EnrollmentFailure(EnrollmentFailureKind.network);
+    }
+    return EnrollmentHistoryPage(items: [], nextCursor: null);
+  }
 }

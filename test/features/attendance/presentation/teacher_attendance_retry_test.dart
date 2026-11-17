@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:aula_presente/app/theme/app_theme.dart';
 import 'package:aula_presente/features/attendance/application/attendance_validator.dart';
 import 'package:aula_presente/features/attendance/data/attendance_firestore_codec.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_calendar_change.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_config.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_failure.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_mode.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_occurrence.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_repository.dart';
@@ -19,6 +22,43 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'slow completion shows progress then preserves the failure on screen',
+    (tester) async {
+      final gate = Completer<void>();
+      final repo = _Repository()..preparationGate = gate;
+      await _pump(tester, repo);
+      await tester.ensureVisible(find.text('Completar lista').first);
+      await tester.tap(find.text('Completar lista').first);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 9));
+      expect(
+        find.textContaining('Está tardando más de lo habitual'),
+        findsOneWidget,
+      );
+      gate.completeError(
+        const AttendanceFailure(
+          AttendanceFailureKind.permissionDenied,
+          message:
+              'No se pudo leer matrículas e historial (permission-denied).',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Está tardando más de lo habitual'),
+        findsNothing,
+      );
+      expect(
+        find.text(
+          'No se pudo leer matrículas e historial (permission-denied).',
+        ),
+        findsOneWidget,
+      );
+      expect(repo.startedIds, isEmpty);
+      expect(find.text('Completar lista'), findsNWidgets(3));
+    },
+  );
+
   test(
     'late reason uses effective time and preserves an on-time preparation',
     () {
@@ -257,6 +297,7 @@ class _Repository implements AttendanceRepository {
   final preparedIds = <String>[];
   final startedIds = <String>[];
   final reasons = <String?>[];
+  Completer<void>? preparationGate;
   @override
   Future<AttendanceConfig?> getConfig({required String courseId}) async =>
       const AttendanceConfig(
@@ -295,6 +336,7 @@ class _Repository implements AttendanceRepository {
     required AttendanceOccurrence occurrence,
     String? lateRegistrationReason,
   }) async {
+    if (preparationGate != null) await preparationGate!.future;
     preparedIds.add(occurrence.id);
     reasons.add(lateRegistrationReason);
     return sessions[occurrence.id] = _session(

@@ -268,10 +268,12 @@ service cloud.firestore {
     function validCourseTeacherProfile(uid) {
       let profilePath = /databases/$(database)/documents/users/$(uid);
       let profile = get(profilePath).data;
-      return validProfileShape(profile)
-        && profile.email == request.auth.token.email
-        && profile.roles is list
-        && profile.roles.hasAny(['teacher']);
+      // Reject a student-only profile before paying for the full teacher
+      // shape. The same shape/email checks still gate every teacher access.
+      return profile.roles is list
+        && profile.roles.hasAny(['teacher'])
+        && validProfileShape(profile)
+        && profile.email == request.auth.token.email;
     }
 
     function verifiedTeacher() {
@@ -2024,10 +2026,10 @@ service cloud.firestore {
         && exists(enrollmentDocPath)
         && get(enrollmentDocPath).data.studentUid == request.auth.uid
         && get(enrollmentDocPath).data.status == 'active'
-        && validAttendanceRecord(courseId, recordId, record)
         && record.sessionId is string
         && record.visibility == 'published'
         && record.rosterEntryId == studentAttendanceRosterId(courseId)
+        && validAttendanceRecord(courseId, recordId, record)
         && studentAttendanceSessionAllowsRecord(courseId, record);
     }
 
@@ -2043,13 +2045,15 @@ service cloud.firestore {
     }
 
     function validAttendanceRecord(courseId, recordId, record) {
-      return record.keys().hasAll([
-          'schemaVersion', 'courseId', 'sessionId', 'rosterEntryId',
-          'visibility', 'mode', 'scheduledDate', 'effectiveDate',
-          'startMinute', 'endMinute', 'unitCount', 'absentUnits',
-          'inReviewUnits', 'justifiedUnits', 'result', 'publishedAt', 'updatedAt'
-        ])
-        && record.keys().hasOnly([
+      let start = record.startMinute;
+      let end = record.endMinute;
+      let units = record.unitCount;
+      let absent = record.absentUnits;
+      let inReview = record.inReviewUnits;
+      let justified = record.justifiedUnits;
+      // Every required field is accessed below (a missing key denies access).
+      // Keep the exact allowlist without evaluating the same key list twice.
+      return record.keys().hasOnly([
           'schemaVersion', 'courseId', 'sessionId', 'rosterEntryId',
           'visibility', 'mode', 'scheduledDate', 'effectiveDate',
           'startMinute', 'endMinute', 'unitCount', 'absentUnits',
@@ -2065,34 +2069,25 @@ service cloud.firestore {
         && record.mode in ['meeting', 'minutes']
         && validAcademicTimestamp(record.scheduledDate)
         && validAcademicTimestamp(record.effectiveDate)
-        && record.startMinute is int
-        && record.startMinute >= 0
-        && record.startMinute < 1440
-        && record.endMinute is int
-        && record.endMinute > record.startMinute
-        && record.endMinute <= 1440
-        && record.unitCount is int
-        && record.unitCount >= 0
-        && record.absentUnits is int
-        && record.absentUnits >= 0
-        && record.inReviewUnits is int
-        && record.inReviewUnits >= 0
-        && record.justifiedUnits is int
-        && record.justifiedUnits >= 0
-        && record.absentUnits <= record.unitCount
-        && record.inReviewUnits <= record.absentUnits
-        && record.justifiedUnits <= record.absentUnits
+        && start is int && start >= 0 && start < 1440
+        && end is int && end > start && end <= 1440
+        && units is int && units >= 0
+        && absent is int && absent >= 0
+        && inReview is int && inReview >= 0
+        && justified is int && justified >= 0
+        && absent <= units
+        && inReview <= absent
+        && justified <= absent
         && record.result in ['unmarked', 'present', 'absent', 'partial', 'justified', 'voided']
         && (record.result == 'voided'
-          ? (record.unitCount == 0 && record.absentUnits == 0
-            && record.inReviewUnits == 0 && record.justifiedUnits == 0)
-          : record.unitCount > 0)
+          ? (units == 0 && absent == 0 && inReview == 0 && justified == 0)
+          : units > 0)
         && (record.visibility == 'staged'
           ? record.publishedAt == null
           : (record.publishedAt is timestamp && record.result != 'unmarked'))
         && record.updatedAt is timestamp
         && (record.mode == 'meeting'
-          ? ((record.unitCount == 1 || record.result == 'voided')
+          ? ((units == 1 || record.result == 'voided')
             && !record.keys().hasAny(['segments']))
           : (record.result == 'voided'
             ? !record.keys().hasAny(['segments'])
@@ -2681,20 +2676,13 @@ service cloud.firestore {
       let sessionBefore = get(sessionPath).data;
       let sessionAfter = getAfter(sessionPath).data;
       return ownsExistingCourse(courseId)
-        && validAttendanceRecord(courseId, recordId, after)
         && exists(sessionPath)
         && existsAfter(sessionPath)
         && sessionBefore.ownerUid == request.auth.uid
         && sessionAfter.ownerUid == request.auth.uid
         && sessionAndRecordMatch(sessionAfter, courseId, after)
-        && after.courseId == before.courseId
-        && after.sessionId == before.sessionId
-        && after.rosterEntryId == before.rosterEntryId
-        && after.mode == before.mode
-        && after.scheduledDate == before.scheduledDate
-        && after.effectiveDate == before.effectiveDate
-        && after.startMinute == before.startMinute
-        && after.endMinute == before.endMinute
+        // Every permitted branch below restricts affectedKeys and excludes
+        // all identity/schedule fields. Do not compare those eight fields twice.
         && after.updatedAt == request.time
         && (before.visibility == 'staged'
           ? (after.visibility == 'published'
@@ -2732,42 +2720,30 @@ service cloud.firestore {
                   'segments', 'updatedAt'
                 ]))
               )
-            : false));
+            : false))
+        && validAttendanceRecord(courseId, recordId, after);
     }
 
     function validAttendanceRecordSegment(segment) {
+      let start = segment.startMinute;
+      let end = segment.endMinute;
+      let segmentMinutes = segment.durationMinutes;
+      let absent = segment.absentUnits;
+      let justified = segment.justifiedUnits;
       return segment is map
-        && segment.keys().hasAll([
-          'segmentId', 'startMinute', 'endMinute', 'durationMinutes', 'mark',
-          'absentUnits', 'justificationStatus', 'justifiedUnits'
-        ])
         && segment.keys().hasOnly([
           'segmentId', 'startMinute', 'endMinute', 'durationMinutes', 'mark',
           'absentUnits', 'justificationStatus', 'justifiedUnits'
         ])
         && segment.segmentId is string
         && segment.segmentId.size() > 0
-        && segment.startMinute is int
-        && segment.startMinute >= 0
-        && segment.startMinute < 1440
-        && segment.endMinute is int
-        && segment.endMinute > segment.startMinute
-        && segment.endMinute <= 1440
-        && segment.durationMinutes == segment.endMinute - segment.startMinute
+        && start is int && start >= 0 && start < 1440
+        && end is int && end > start && end <= 1440
+        && segmentMinutes == end - start
         && segment.mark in ['unmarked', 'present', 'absent']
-        && segment.absentUnits is int
-        && segment.absentUnits >= 0
-        && segment.absentUnits <= segment.durationMinutes
+        && absent is int && absent >= 0 && absent <= segmentMinutes
         && segment.justificationStatus in ['none', 'inReview', 'justified', 'notAccepted']
-        && segment.justifiedUnits is int
-        && segment.justifiedUnits >= 0
-        && segment.justifiedUnits <= segment.absentUnits;
-    }
-
-    function validAttendanceRecordSegmentAt(segments, count, index) {
-      return count <= index
-        ? true
-        : validAttendanceRecordSegment(segments[index]);
+        && justified is int && justified >= 0 && justified <= absent;
     }
 
     function validAttendanceRecordSegments(segments) {
@@ -2775,30 +2751,31 @@ service cloud.firestore {
       return segments is list
         && count >= 1
         && count <= 24
-        && validAttendanceRecordSegmentAt(segments, count, 0)
-        && validAttendanceRecordSegmentAt(segments, count, 1)
-        && validAttendanceRecordSegmentAt(segments, count, 2)
-        && validAttendanceRecordSegmentAt(segments, count, 3)
-        && validAttendanceRecordSegmentAt(segments, count, 4)
-        && validAttendanceRecordSegmentAt(segments, count, 5)
-        && validAttendanceRecordSegmentAt(segments, count, 6)
-        && validAttendanceRecordSegmentAt(segments, count, 7)
-        && validAttendanceRecordSegmentAt(segments, count, 8)
-        && validAttendanceRecordSegmentAt(segments, count, 9)
-        && validAttendanceRecordSegmentAt(segments, count, 10)
-        && validAttendanceRecordSegmentAt(segments, count, 11)
-        && validAttendanceRecordSegmentAt(segments, count, 12)
-        && validAttendanceRecordSegmentAt(segments, count, 13)
-        && validAttendanceRecordSegmentAt(segments, count, 14)
-        && validAttendanceRecordSegmentAt(segments, count, 15)
-        && validAttendanceRecordSegmentAt(segments, count, 16)
-        && validAttendanceRecordSegmentAt(segments, count, 17)
-        && validAttendanceRecordSegmentAt(segments, count, 18)
-        && validAttendanceRecordSegmentAt(segments, count, 19)
-        && validAttendanceRecordSegmentAt(segments, count, 20)
-        && validAttendanceRecordSegmentAt(segments, count, 21)
-        && validAttendanceRecordSegmentAt(segments, count, 22)
-        && validAttendanceRecordSegmentAt(segments, count, 23);
+        // Stop at the actual length; keep every segment's original validation.
+        && (count <= 0 || validAttendanceRecordSegment(segments[0])
+          && (count <= 1 || validAttendanceRecordSegment(segments[1])
+          && (count <= 2 || validAttendanceRecordSegment(segments[2])
+          && (count <= 3 || validAttendanceRecordSegment(segments[3])
+          && (count <= 4 || validAttendanceRecordSegment(segments[4])
+          && (count <= 5 || validAttendanceRecordSegment(segments[5])
+          && (count <= 6 || validAttendanceRecordSegment(segments[6])
+          && (count <= 7 || validAttendanceRecordSegment(segments[7])
+          && (count <= 8 || validAttendanceRecordSegment(segments[8])
+          && (count <= 9 || validAttendanceRecordSegment(segments[9])
+          && (count <= 10 || validAttendanceRecordSegment(segments[10])
+          && (count <= 11 || validAttendanceRecordSegment(segments[11])
+          && (count <= 12 || validAttendanceRecordSegment(segments[12])
+          && (count <= 13 || validAttendanceRecordSegment(segments[13])
+          && (count <= 14 || validAttendanceRecordSegment(segments[14])
+          && (count <= 15 || validAttendanceRecordSegment(segments[15])
+          && (count <= 16 || validAttendanceRecordSegment(segments[16])
+          && (count <= 17 || validAttendanceRecordSegment(segments[17])
+          && (count <= 18 || validAttendanceRecordSegment(segments[18])
+          && (count <= 19 || validAttendanceRecordSegment(segments[19])
+          && (count <= 20 || validAttendanceRecordSegment(segments[20])
+          && (count <= 21 || validAttendanceRecordSegment(segments[21])
+          && (count <= 22 || validAttendanceRecordSegment(segments[22])
+          && (count <= 23 || validAttendanceRecordSegment(segments[23])))))))))))))))))))))))));
     }
 
     function validAttendanceEvent(event, eventId) {

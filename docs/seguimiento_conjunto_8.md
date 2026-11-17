@@ -1,6 +1,103 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
-## Estado de entrega — 16 de noviembre de 2026
+## Incidente de cierre — punto de partida del 16/11/2026
+
+Verificados antes de editar: rama `feature/conjunto-8-asistencia-manual`, HEAD `bed4ac83fd1d82b53080df0af1d2dc467208d4e4`, remoto `https://github.com/CJUAN25/aula-presente.git` y `git status --short` vacío.
+
+El propietario publicó manualmente las reglas de su VS Code en `aula-presente-movil-juan-2026`, base `(default)`. La versión exacta publicada y la APK instalada siguen por confirmar. En Lógica reprogramada al **16/11/2026 06:00–08:00**, **Por horas**, pudo entrar y alcanzar **Finalizando**, pero **Continuar finalización** devuelve `permission-denied`. También hay esperas largas en **Preparar lista**, **Completar lista** y **Ver lista**. Codex no ejecutó esos recorridos ni inspeccionó datos reales. No se presupone que sea el mismo fallo de preparación documentado abajo.
+
+Esta revisión reprodujo y corrigió el cierre y midió las etapas antes de optimizar, como se detalla a continuación. La publicación y la prueba en TECNO quedan a cargo del propietario. Los apartados posteriores a esta revisión conservan resultados históricos.
+
+### Causa comprobada del cierre
+
+La prueba nueva `C8 closing rescheduled minutes` parte de una sesión **ya `closing/ready`**, reprogramada del 05/11 al **16/11/2026 06:00–08:00**, con dos tramos de 60 minutos y marcas existentes. Usa exclusivamente identidades sintéticas y Firestore Emulator con proyecto `demo-aula-presente-firestore-rules-tests`.
+
+Con las reglas del HEAD inicial, la primera llamada equivalente a `_stageRecords` falla con `permission-denied`: el `create` de **`courses/course/attendance_records/course|block|2026-11-05|student@example.test`**, junto con el incremento de versión de **`courses/course/attendance_sessions/course|block|2026-11-05`**, supera **1.000 expresiones**. El log señala `validAttendanceRecordSegmentAt` (línea 2768 del archivo inicial) y el `allow create` de `attendance_records` (3363). No era un rechazo de la fecha reprogramada ni faltaba permiso docente en esa reproducción. El padre queda en `closing`, sin publicar resultados. Evidencia local ignorada por Git: `build/c8-closing-before.log`.
+
+El validador de **proyecciones** seguía evaluando 24 posiciones aunque solo hubiera dos tramos; era distinto del validador de **nómina** corregido previamente. La publicación `staged → published` y el `get` propio del estudiante también necesitaban margen de evaluación. El ajuste conserva un único `firestore.rules`:
+
+- Corta la cola al tamaño real de segmentos y valida directamente cada segmento presente.
+- Reutiliza valores de unidades/horas y evita listas de claves duplicadas. Todos los campos obligatorios se acceden y validan; una clave faltante deniega, y la lista exacta de claves permitidas se conserva.
+- Evita ocho comparaciones de identidad/horario ya garantizadas por `diff().affectedKeys().hasOnly(...)` en **cada** rama permitida. Publicar solo cambia visibilidad, fecha de publicación y actualización.
+- Evalúa primero las condiciones que rechazan borradores, identidades ajenas o transiciones inválidas. El chequeo docente descarta primero perfiles sin `teacher`, conservando la misma validación completa de perfil/correo para quien sí tiene el rol. Esto evita que el `get` estudiantil gaste el presupuesto en una rama docente que no le corresponde.
+
+La regresión cubre **2 y 12 estudiantes**, lotes de hasta 10, interrupción después de preparar la primera proyección, reintento sin incrementar versión cuando no faltan filas, cierre del mismo padre y publicación repetida sin duplicados ni cambio de `publishedAt`. Compara la nómina y las marcas antes/después. Un control separado en `inProgress` prueba las dos marcas del propietario verificado; el fixture de recuperación permanece ya en `closing`. Estudiante y docente ajeno no pueden registrar. El estudiante consulta y obtiene solo su fila publicada; no lee otra identidad, nómina, eventos o borradores ni escribe resultados. También se rechazan claves faltantes/extra, marcas inválidas, exceso de unidades, horario/identidad alterados y creación sin versión atómica del padre.
+
+La prueba Dart `resumes the same closing rescheduled hours session after a denied stage` ejecuta el repositorio real sobre un adaptador controlado: fuerza el rechazo al preparar resultados, verifica el diagnóstico de etapa, reabre el repositorio, finaliza y conserva las dos marcas y un resultado por persona. No equivale a ejecutar FlutterFire en Android contra el emulador. La causa está probada localmente; su correspondencia exacta con los documentos y reglas publicados en Firebase real sigue pendiente.
+
+### Medición de esperas y cambios del cliente
+
+Se añadió `AttendanceOperationTrace`: cronometra etapas con `Stopwatch`, emite `[C8] operación / etapa: N ms` solo en debug y admite un observador en pruebas. Las etiquetas no contienen IDs, nombres, correos, marcas ni motivos. Se registran también las etapas que fallan. Un rechazo al cerrar identifica ahora, por ejemplo, **preparar resultados privados (permission-denied)**.
+
+Medición reproducible del **repositorio Dart**, con 12 estudiantes sintéticos, dos tramos y **5 ms de latencia artificial por lectura**, antes/después en esta sesión:
+
+| Acción/etapa | Antes (ms) | Después (ms) |
+| --- | ---: | ---: |
+| Preparar: cuenta / borrador / modalidad | 18 / 7 / 9 | 11 / 7 / 7 |
+| Preparar: matrículas e historial | 268 | 65 |
+| Preparar: transacción inicial | 56 | 34 |
+| Preparar: tramos / nómina | 23 / 110 | 16 / 45 |
+| Preparar: revalidación de fuentes / confirmar lista | 84 / 37 | 21 / 33 |
+| **Preparar total** | **622** | **247** |
+| Completar: matrículas e historial | 246 | 54 |
+| Completar: nómina / revalidación de fuentes | 101 / 80 | 35 / 20 |
+| **Completar total** | **520** | **199** |
+| **Ver lista y tramos** | **43** | **23** |
+| Comprobar publicación al abrir una finalizada (12 filas publicadas, por encuentro) | **300** | **102** |
+
+Son muestras locales, no promedios, garantías de tiempo ni mediciones de Internet/Firebase real/TECNO. Las pequeñas etapas varían con el equipo; las diferencias grandes se explican por las esperas seriales eliminadas. Logs: `build/c8-latency-before.log`, `build/c8-latency-after.log`, `build/c8-finalized-latency-before.log`, `build/c8-finalized-latency-after.log` (ignorados por Git).
+
+Los historiales y vínculos de personas distintas ahora se leen en ventanas de **hasta seis**, con todas sus páginas en orden. Las lecturas independientes dentro de una transacción se lanzan juntas, siempre antes de escribir; los chunks de escritura siguen ordenados y limitados a 10. Las verificaciones de resultados se hacen en ventanas de seis. La pantalla consulta nómina/tramos/eventos en paralelo, omite tramos en modo por encuentro y solicita hasta 100 filas por página para evitar repetir cuenta/sesión cada 25 personas.
+
+**Se conserva** la resolución por fecha efectiva, las tres comprobaciones del snapshot por preparación, los chequeos posteriores de vínculos, la revisión completa de marcas/resultados y las barreras de versión. En el ensayo de preparar+completar permanecen **6 snapshots, 24 consultas de historial y 72 lecturas de vínculos**; no se presenta como una reducción de lecturas en ese caso. Se reutiliza un historial de autorización exacta si ya fue leído en la misma operación, sin caché entre reintentos. Un error de historial sigue bloqueando `ready`; la prueba comprueba ese bloqueo y la concurrencia máxima. No se abren consultas estudiantiles adicionales ni cambia el índice.
+
+Preparar/Completar y la carga/guardado del detalle muestran progreso; después de ocho segundos indican que la operación tarda y cuentan el tiempo. El avance confirmado se conserva y el error al abrir queda visible en pantalla, además del diagnóstico. No se abandona una escritura por un timeout de interfaz ni se anuncia éxito por una lectura parcial.
+
+### Verificación de esta revisión
+
+Resultados nuevos de esta sesión:
+
+| Comprobación | Resultado y alcance |
+| --- | --- |
+| `flutter analyze` | Sin problemas. |
+| Pruebas Flutter dirigidas | **57/57**, incluyendo recuperación de cierre por horas, fallo de historial concurrente, demora/error visible y presentación a 320/390/430 px con texto ampliado. No se repitió toda la suite Flutter. |
+| Suite completa Firestore Emulator | **101/101**; incluye los dos casos nuevos de cierre de 2/12 estudiantes, control de marcas del dueño y permisos previos. **0** diagnósticos `maximum of 1000 expressions` en `firestore-debug.log` de esta ejecución final. Los `permission-denied` de casos negativos son esperados. |
+| JavaScript y diff | `node --check` y `git diff --check` aprobados; Git avisa de normalización LF/CRLF sin errores de whitespace. |
+| `flutter build apk --debug` | Aprobado; APK local recompilada, sin instalar. Gradle conserva un aviso de compatibilidad futura de plugins con Built-in Kotlin; no impidió la compilación. |
+
+La suite usa el SDK JS contra el emulador y transacciones equivalentes a Dart. Las pruebas Dart ejecutan el repositorio con adaptadores controlados; las mediciones con 5 ms artificiales no usan red ni constituyen FlutterFire en Android contra el emulador. No se contactó Firebase real ni se operó el TECNO. Evidencia local: `build/c8-rules-full.log`, `build/c8-flutter-tests.log`, `build/c8-analyze.log` y `build/c8-apk.log`.
+
+Comandos desde la raíz:
+
+```powershell
+flutter analyze
+flutter test test/features/attendance test/features/courses/presentation/student_course_access_test.dart --reporter expanded
+flutter test test/features/attendance/data/firestore_attendance_repository_test.dart --plain-name 'C8 latency profile' --reporter expanded
+$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "npm test --prefix tools/firestore_rules_tests"
+# Solo la regresión del cierre:
+firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "node --test --test-concurrency=1 --test-name-pattern=C8.closing.rescheduled tools/firestore_rules_tests/firestore_rules.test.js"
+node --check tools/firestore_rules_tests/firestore_rules.test.js
+git diff --check
+flutter build apk --debug
+```
+
+### APK, reglas y repetición exacta en el TECNO
+
+**Hace falta publicar las reglas nuevas e instalar la APK recompilada**, porque cambiaron tanto Rules como el cliente. Esta sesión ya compiló `build/app/outputs/flutter-apk/app-debug.apk`: **218.911.055 bytes**, SHA-256 **`2605B40076B58E6BFA7BD090BC76A8204168CA9A1626C61BEC2ABA5C98F4AC62`**. El único `firestore.rules` local tiene SHA-256 **`F8C9C9E7557DA55739F5884582DA342F16B7C9D200E5538657157ACF877DF6E5`**. Son huellas de los archivos locales de esta revisión, no de los artefactos anteriores usados por el propietario. `HEAD` sigue siendo la base inicial: estos cambios están en el árbol de trabajo, sin commit/push.
+
+1. Como propietario, publica **solo** este `firestore.rules` revisado en `aula-presente-movil-juan-2026`, base `(default)`. Registra la hora/versión de la publicación y confirma que corresponde al archivo completo de esta revisión. No se modificaron índices; conserva `attendance_records` habilitado.
+2. Instala la APK indicada sobre la app existente y registra su huella/versión. No borres datos, anules ni recrees sesiones para esta recuperación.
+3. Con el docente verificado dueño de Lógica: **Mis cursos → Lógica → Asistencia → Gestionar**. Selecciona la ocurrencia original **05/11**, reprogramada al **16/11/2026 06:00–08:00**, **Por horas**. No elijas la otra clase del 16/11.
+4. En la tarjeta **Finalizando**, pulsa **Continuar cierre** y, dentro, **Continuar finalización**. Comprueba que las marcas de 06:00–07:00 y 07:00–08:00 se conservan y que termina en **Finalizada**. Si había pendientes, revisa la confirmación explícita antes de convertirlas en ausencias. Si la publicación queda pendiente, reinténtala en la misma sesión.
+5. Sal y vuelve a **Ver asistencia**: debe seguir siendo el mismo encuentro, con las mismas marcas y una sola proyección por estudiante. Comprueba por separado que la clase normal del 16/11 sigue distinta.
+6. Con una cuenta estudiante ya verificada y con matrícula activa, abre **Mis materias → Lógica → Consultar asistencia**. Debe aparecer solo su resultado publicado y coincidir con sus marcas. En el caso sintético ausente/presente serían 60 minutos ausentes de 120; en el curso real compara con las marcas que realmente tenía. Otra cuenta solo ve su propio resultado, si lo tiene.
+7. Mide desde cada pulsación hasta el resultado: **Preparar lista**, **Completar lista** y **Ver asistencia/lista**; usa un encuentro de ensayo para preparación, sin alterar la nómina cerrada de Lógica. Anota tamaño de lista, modalidad, acción, segundos, resultado y versión de APK/reglas. El mensaje de demora debe mantenerse hasta terminar o mostrar el error. Si falla, comparte etapa y código de **Diagnóstico**, sin datos personales; los logs `[C8]` permiten separar las etapas en la APK debug.
+
+La publicación y todos estos pasos manuales son del propietario y continúan pendientes. No se ejecutó `firebase deploy`, no se crearon cuentas reales ni se enviaron correos.
+
+## Antecedente de entrega — 16 de noviembre de 2026
 
 La rama `feature/conjunto-8-asistencia-manual`, basada en el cierre C7 `55b9336bb39ea157345a2f659e4876bfbf5f938f`, contiene el módulo de asistencia, la integración con cursos y matrícula, las reglas de C8, las pruebas y esta documentación. Está preparada para revisión de código. La corrección de reintento pasó las verificaciones locales, pero falta probar esta APK concreta en el TECNO; por eso no se declara terminada la validación real del conjunto.
 

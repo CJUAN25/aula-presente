@@ -25,6 +25,7 @@ import '../domain/attendance_segment.dart';
 import '../domain/attendance_session.dart';
 import '../domain/attendance_session_event.dart';
 import 'attendance_firestore_codec.dart';
+import 'attendance_operation_trace.dart';
 
 /// Firestore adapter for manual attendance.
 ///
@@ -35,16 +36,31 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
   FirestoreAttendanceRepository({
     FirebaseAuth? auth,
     FirebaseFirestore? firestore,
+    this.onTiming,
     required this._enrollments,
   }) : _auth = auth ?? FirebaseAuth.instance,
        _firestore = firestore ?? FirebaseFirestore.instance;
 
   static const int _pageSize = 100;
   static const int _writeChunkSize = 10;
+  static const int _parallelReads = 6;
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
   final EnrollmentRepository _enrollments;
+  final AttendanceTiming? onTiming;
+
+  // Only independent reads share a window. Pages and validation barriers
+  // remain ordered, and a failed read prevents the roster from becoming ready.
+  Future<void> _readInParallel<T>(
+    Iterable<T> values,
+    Future<void> Function(T) read,
+  ) async {
+    final items = values.toList(growable: false);
+    for (var offset = 0; offset < items.length; offset += _parallelReads) {
+      await Future.wait(items.skip(offset).take(_parallelReads).map(read));
+    }
+  }
 
   CollectionReference<Map<String, dynamic>> get _courses =>
       _firestore.collection('courses');
@@ -471,7 +487,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     required AttendanceOccurrence occurrence,
     String? lateRegistrationReason,
   }) async {
-    var phase = 'comprobar la cuenta docente';
+    final trace = AttendanceOperationTrace('preparar lista', onTiming: onTiming)
+      ..start('comprobar la cuenta docente');
     try {
       _validateId(course.id);
       _validateId(occurrence.id);
@@ -486,7 +503,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       final sessionRef = _session(course.id, occurrence.id);
       final calendarRef = _calendar(course.id).doc(occurrence.id);
 
-      phase = 'leer el borrador';
+      trace.start('leer el borrador');
       final existing = await sessionRef.get(
         const GetOptions(source: Source.server),
       );
@@ -517,7 +534,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         _validateLateReason(occurrence, reason);
       }
 
-      phase = 'leer la modalidad';
+      trace.start('leer la modalidad');
       final configSnapshot = await configRef.get(
         const GetOptions(source: Source.server),
       );
@@ -532,7 +549,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         configSnapshot.data() ??
             (throw const FormatException('Missing attendance config data.')),
       );
-      phase = 'leer matrículas e historial';
+      trace.start('leer matrículas e historial');
       final source = await _loadRosterInputs(course.id, actor.uid);
       final resolution = AttendanceRosterResolver.resolveForDate(
         snapshot: source.snapshot,
@@ -562,7 +579,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           ),
       ];
 
-      phase = 'crear la sesión y actualizar el contador';
+      trace.start('crear la sesión y actualizar el contador');
       final committed = await _firestore.runTransaction((transaction) async {
         final courseSnapshot = await transaction.get(courseRef);
         final currentConfigSnapshot = await transaction.get(configRef);
@@ -641,21 +658,21 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         return committed;
       }
 
-      phase = 'guardar los tramos';
+      trace.start('guardar los tramos');
       await _materializeSegments(
         session: committed,
         expectedSegments: segments,
         uid: actor.uid,
       );
-      phase = 'guardar la nómina';
+      trace.start('guardar la nómina');
       await _reconcileRoster(
         session: committed,
         expectedEntries: entries,
         uid: actor.uid,
       );
-      phase = 'comprobar que la matrícula no cambi?';
+      trace.start('comprobar que la matrícula no cambió');
       await _verifyRosterSourceUnchanged(course.id, actor.uid, source);
-      phase = 'confirmar la nómina preparada';
+      trace.start('confirmar la nómina preparada');
       final ready = await _markRosterReady(
         courseId: course.id,
         occurrenceId: occurrence.id,
@@ -678,19 +695,21 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       throw AttendanceFailure(
         failure.kind,
         message:
-            'No se pudo $phase (${failure.kind.name}). Reintenta; el borrador confirmado se conserva.',
+            'No se pudo ${trace.phase} (${failure.kind.name}). Reintenta; el borrador confirmado se conserva.',
       );
     } on FirebaseException catch (error) {
       final failure = _translateFirebase(error);
       throw AttendanceFailure(
         failure.kind,
         message:
-            'No se pudo $phase (${error.code}). Puedes reintentar la misma clase.',
+            'No se pudo ${trace.phase} (${error.code}). Puedes reintentar la misma clase.',
       );
     } on FormatException {
       throw const AttendanceFailure(AttendanceFailureKind.invalidData);
     } on ArgumentError {
       throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
+    } finally {
+      trace.finish();
     }
   }
 
@@ -732,37 +751,40 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     }
 
     final enrollmentEvents = <String, List<EnrollmentStatusEvent>>{};
-    for (final row in enrollmentRows) {
+    await _readInParallel(enrollmentRows, (row) async {
       enrollmentEvents[row.studentUid] = await _allEnrollmentEvents(
         courseId: courseId,
         studentUid: row.studentUid,
         uid: uid,
       );
-    }
+    });
 
     final linkedByUid = <String, PendingEnrollment>{};
     final pendingEvents = <String, List<PendingEnrollmentStatusEvent>>{};
+    final pendingEmails = <String>{};
     for (final row in pendingRows) {
-      if (pendingEvents.containsKey(row.email)) {
+      if (!pendingEmails.add(row.email)) {
         throw const AttendanceFailure(
           AttendanceFailureKind.rosterHistoryNeedsReview,
           message: 'La nómina contiene una identidad de correo duplicada.',
         );
       }
+    }
+    await _readInParallel(pendingRows, (row) async {
       pendingEvents[row.email] = await _allPendingEvents(
         courseId: courseId,
         email: row.email,
         uid: uid,
       );
-    }
+    });
 
-    for (final enrollment in enrollmentRows) {
+    await _readInParallel(enrollmentRows, (enrollment) async {
       final linked = await _enrollments.getCoursePendingEnrollment(
         courseId: courseId,
         email: enrollment.email,
       );
       _requireSameUser(uid);
-      if (linked == null || linked.status != 'linked') continue;
+      if (linked == null || linked.status != 'linked') return;
       if (linked.courseId != courseId ||
           linked.ownerUid != uid ||
           linked.email != enrollment.email ||
@@ -792,12 +814,14 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         );
       }
       linkedByUid[enrollment.studentUid] = linked;
-      pendingEvents[linked.email] = await _allPendingEvents(
+      // Reuse history already loaded for this exact authorization in this
+      // operation. No cache survives a preparation/retry or revalidation.
+      pendingEvents[linked.email] ??= await _allPendingEvents(
         courseId: courseId,
         email: linked.email,
         uid: uid,
       );
-    }
+    });
 
     final latestSnapshot = await _enrollments.loadCourseRosterSnapshot(
       courseId: courseId,
@@ -810,7 +834,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         message: 'La nómina cambió mientras se preparaba la sesión.',
       );
     }
-    for (final enrollment in enrollmentRows) {
+    await _readInParallel(enrollmentRows, (enrollment) async {
       final latestLinked = await _enrollments.getCoursePendingEnrollment(
         courseId: courseId,
         email: enrollment.email,
@@ -825,7 +849,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           message: 'La vinculación cambió mientras se preparaba la sesión.',
         );
       }
-    }
+    });
 
     return _RosterBuildInput(
       snapshot: snapshot,
@@ -898,10 +922,9 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       ];
       await _firestore.runTransaction((transaction) async {
         final sessionSnapshot = await transaction.get(sessionRef);
-        final segmentSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
-        for (final reference in references) {
-          segmentSnapshots.add(await transaction.get(reference));
-        }
+        final segmentSnapshots = await Future.wait(
+          references.map(transaction.get),
+        );
         _requireSameUser(uid);
         final current = AttendanceFirestoreCodec.sessionFromMap(
           sessionSnapshot.data() ??
@@ -975,10 +998,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       ];
       await _firestore.runTransaction((transaction) async {
         final sessionSnapshot = await transaction.get(sessionRef);
-        final rowSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
-        for (final reference in references) {
-          rowSnapshots.add(await transaction.get(reference));
-        }
+        final rowSnapshots = await Future.wait(references.map(transaction.get));
         _requireSameUser(uid);
         final current = AttendanceFirestoreCodec.sessionFromMap(
           sessionSnapshot.data() ??
@@ -1054,10 +1074,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       ];
       await _firestore.runTransaction((transaction) async {
         final sessionSnapshot = await transaction.get(sessionRef);
-        final rowSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
-        for (final reference in references) {
-          rowSnapshots.add(await transaction.get(reference));
-        }
+        final rowSnapshots = await Future.wait(references.map(transaction.get));
         _requireSameUser(uid);
         final current = AttendanceFirestoreCodec.sessionFromMap(
           sessionSnapshot.data() ??
@@ -1109,27 +1126,27 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         message: 'La nómina cambió mientras se materializaba la sesión.',
       );
     }
-    for (final enrollment in [
-      ...latest.activeEnrollments,
-      ...latest.withdrawnEnrollments,
-    ]) {
-      final linked = await _enrollments.getCoursePendingEnrollment(
-        courseId: courseId,
-        email: enrollment.email,
-      );
-      _requireSameUser(uid);
-      final expected =
-          original.linkedAuthorizationsByStudentUid[enrollment.studentUid];
-      if (!_sameLinkedAuthorization(
-        expected,
-        linked?.status == 'linked' ? linked : null,
-      )) {
-        throw const AttendanceFailure(
-          AttendanceFailureKind.staleSession,
-          message: 'Cambió el historial de una vinculación del curso.',
+    await _readInParallel(
+      [...latest.activeEnrollments, ...latest.withdrawnEnrollments],
+      (enrollment) async {
+        final linked = await _enrollments.getCoursePendingEnrollment(
+          courseId: courseId,
+          email: enrollment.email,
         );
-      }
-    }
+        _requireSameUser(uid);
+        final expected =
+            original.linkedAuthorizationsByStudentUid[enrollment.studentUid];
+        if (!_sameLinkedAuthorization(
+          expected,
+          linked?.status == 'linked' ? linked : null,
+        )) {
+          throw const AttendanceFailure(
+            AttendanceFailureKind.staleSession,
+            message: 'Cambió el historial de una vinculación del curso.',
+          );
+        }
+      },
+    );
   }
 
   Future<AttendanceSession> _markRosterReady({
@@ -1772,6 +1789,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     AttendanceRosterCursor? cursor,
     int pageSize = 25,
   }) async {
+    final trace = AttendanceOperationTrace('ver lista', onTiming: onTiming)
+      ..start('comprobar cuenta y sesión');
     try {
       _validatePageSize(pageSize);
       final actor = await _requireTeacher();
@@ -1785,6 +1804,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         current.occurrenceId,
       ).orderBy(FieldPath.documentId);
       if (cursor != null) query = query.startAfter([cursor.rosterEntryId]);
+      trace.start('leer página de nómina');
       final snapshot = await query
           .limit(pageSize + 1)
           .get(const GetOptions(source: Source.server));
@@ -1812,6 +1832,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       throw _translateFirebase(error);
     } on FormatException {
       throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    } finally {
+      trace.finish();
     }
   }
 
@@ -1855,6 +1877,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     AttendanceSegmentCursor? cursor,
     int pageSize = 25,
   }) async {
+    final trace = AttendanceOperationTrace('ver tramos', onTiming: onTiming)
+      ..start('comprobar cuenta y sesión');
     try {
       _validatePageSize(pageSize);
       final actor = await _requireTeacher();
@@ -1871,6 +1895,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         current.occurrenceId,
       ).orderBy('order');
       if (cursor != null) query = query.startAfter([cursor.order]);
+      trace.start('leer página de tramos');
       final snapshot = await query
           .limit(pageSize + 1)
           .get(const GetOptions(source: Source.server));
@@ -1897,6 +1922,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       throw _translateFirebase(error);
     } on FormatException {
       throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    } finally {
+      trace.finish();
     }
   }
 
@@ -2219,6 +2246,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
   }) async {
     var writeConfirmed = false;
     AttendanceSession? knownSession;
+    final trace = AttendanceOperationTrace('finalizar', onTiming: onTiming)
+      ..start('comprobar cuenta y sesión');
     try {
       _validateId(courseId);
       _validateId(occurrenceId);
@@ -2238,6 +2267,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
       }
 
+      trace.start('leer nómina y tramos');
       var entries = await _loadAllRoster(session, actor.uid);
       var segments = await _loadAllSegments(session, actor.uid);
       var unmarkedEntries = entries
@@ -2271,6 +2301,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         );
       }
 
+      trace.start('confirmar cierre y marcas pendientes');
       final sessionRef = _session(courseId, occurrenceId);
       if (!alreadyFinalized &&
           session.status == AttendanceSessionStatus.inProgress &&
@@ -2362,6 +2393,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       }
 
       if (!alreadyFinalized) {
+        trace.start('revalidar nómina y marcas');
         session = await _getOwnedSession(courseId, occurrenceId, actor.uid);
         knownSession = session;
         entries = await _loadAllRoster(session, actor.uid);
@@ -2388,9 +2420,11 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           ),
       ];
       if (!alreadyFinalized) {
+        trace.start('preparar resultados privados');
         session = await _stageRecords(session, records, actor.uid);
         knownSession = session;
         writeConfirmed = true;
+        trace.start('verificar resultados privados');
         await _verifyRecordSet(
           session: session,
           records: records,
@@ -2399,6 +2433,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           allowPublished: false,
         );
 
+        trace.start('finalizar sesión');
         final closingSession = await _getOwnedSession(
           courseId,
           occurrenceId,
@@ -2442,6 +2477,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         knownSession = session;
         writeConfirmed = true;
       } else {
+        trace.start('verificar resultados existentes');
         await _verifyRecordSet(
           session: session,
           records: records,
@@ -2451,8 +2487,10 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         );
       }
 
+      trace.start('publicar resultados');
       session = await _publishRecords(session, records, actor.uid);
       knownSession = session;
+      trace.start('verificar publicación');
       await _verifyRecordSet(
         session: session,
         records: records,
@@ -2514,7 +2552,11 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       }
       if (translated.kind == AttendanceFailureKind.permissionDenied ||
           translated.kind == AttendanceFailureKind.unauthenticated) {
-        throw translated;
+        throw AttendanceFailure(
+          translated.kind,
+          message:
+              'No se pudo ${trace.phase} (${error.code}). Reintenta la misma sesión; las marcas guardadas se conservan.',
+        );
       }
       return AttendanceFinalizeResult(
         status: writeConfirmed
@@ -2544,6 +2586,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         );
       }
       rethrow;
+    } finally {
+      trace.finish();
     }
   }
 
@@ -2799,7 +2843,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     if (records.length != session.rosterCount) {
       throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
     }
-    for (final expected in records) {
+    await _readInParallel(records, (expected) async {
       final snapshot = await _records(session.courseId)
           .doc(expected.recordId)
           .get(const GetOptions(source: Source.server));
@@ -2827,7 +2871,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       } else {
         throw const AttendanceFailure(AttendanceFailureKind.invalidData);
       }
-    }
+    });
   }
 
   Future<AttendanceSession> _stageRecords(
@@ -2850,10 +2894,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       ];
       session = await _firestore.runTransaction((transaction) async {
         final sessionSnapshot = await transaction.get(sessionRef);
-        final recordSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
-        for (final reference in refs) {
-          recordSnapshots.add(await transaction.get(reference));
-        }
+        final recordSnapshots = await Future.wait(refs.map(transaction.get));
         _requireSameUser(uid);
         final current = _parseSessionSnapshot(
           sessionSnapshot,
@@ -2921,10 +2962,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       ];
       session = await _firestore.runTransaction((transaction) async {
         final sessionSnapshot = await transaction.get(sessionRef);
-        final recordSnapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
-        for (final reference in refs) {
-          recordSnapshots.add(await transaction.get(reference));
-        }
+        final recordSnapshots = await Future.wait(refs.map(transaction.get));
         _requireSameUser(uid);
         final current = _parseSessionSnapshot(
           sessionSnapshot,

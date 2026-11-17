@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-Esta entrega se comparte en la rama [`feature/conjunto-8-asistencia-manual`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual). El conjunto 8 está listo para revisión de código. La nueva corrección de reintento ya pasó las pruebas locales, pero todavía falta instalar esta APK y repetir los encuentros indicados en el seguimiento desde el TECNO. Para usar esa corrección con Firebase real también debe estar publicada la versión actual de las reglas de Firestore.
+Esta entrega se comparte en la rama [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). La revisión local del 16/11 corrige un cierre por horas atascado en **Finalizando**, conservando la sesión y sus marcas, y reduce esperas entre lecturas independientes. El propietario reportó una publicación manual de reglas; su versión exacta y la APK anterior siguen por confirmar. Para probar este ajuste debe publicar las reglas nuevas e instalar la APK recompilada, según el [seguimiento C8](docs/seguimiento_conjunto_8.md). Codex no publicó Firebase ni ejecutó la app en el TECNO.
 
 ## Qué se puede hacer
 
@@ -74,7 +74,7 @@ La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Co
 
 La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-La rama contiene cambios en `firestore.rules` para C8 y para recuperar nóminas incompletas. La versión actual de esas reglas todavía debe publicarse en el proyecto existente antes de probar la corrección con Firebase real. El índice compuesto de `attendance_records` está declarado en `firestore.indexes.json`; el propietario reportó que ya aparece **Habilitado**, así que no se solicita volver a desplegar índices. En esta entrega no se desplegó Firebase ni se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento; solo una persona autorizada debe publicar reglas.
+La rama contiene un solo `firestore.rules`, con la corrección del cierre por horas y los permisos existentes. El propietario publicó manualmente una versión anterior no identificada; debe publicar el archivo completo de esta revisión antes de repetir el cierre. El índice compuesto de `attendance_records` está declarado en `firestore.indexes.json`; el propietario reportó que ya aparece **Habilitado**, así que no se solicita volver a desplegar índices. En esta entrega no se desplegó Firebase ni se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento; solo una persona autorizada debe publicar reglas.
 
 ## Documentación
 
@@ -85,4 +85,4 @@ La rama contiene cambios en `firestore.rules` para C8 y para recuperar nóminas 
 - [Guías de acceso docente](docs/activacion_acceso_docente.md), [cursos](docs/activacion_conjunto_2.md), [matrícula por código](docs/activacion_conjunto_4.md), [retiro y reincorporación](docs/activacion_conjunto_5.md) e [importación de Excel](docs/activacion_conjunto_6.md)
 - [Pruebas de reglas con el emulador](tools/firestore_rules_tests/README.md)
 
-En la rama C8, las verificaciones locales dirigidas pasaron: `flutter analyze`, **53/53** pruebas Flutter afectadas y **99/99** pruebas de reglas en el emulador. La APK debug también compiló. El seguimiento explica qué se verificó localmente, qué pruebas reales ya reportó el propietario y qué queda pendiente en el TECNO.
+En esta revisión pasaron `flutter analyze`, **57/57** pruebas Flutter dirigidas y **101/101** pruebas de reglas en emulador; la APK debug compiló. El [seguimiento](docs/seguimiento_conjunto_8.md) registra las mediciones locales, las huellas de APK/reglas y los pasos para el propietario. La prueba de esta corrección en Firebase real y TECNO sigue pendiente.
