@@ -22,7 +22,7 @@ Los marcos nuevos incluyen home/resúmenes, agenda, ayuda/notificaciones, inform
 | 2 | Estudiante: inicio, agenda, resúmenes y ayuda | 19–36, 126, 134–143, 148, 150, 153–155, 157 | Contenido, vacío/error y acciones locales | Implementado; 5/5 pruebas y análisis limpios. |
 | 3 | Docente: home, agenda, informes y estados | 37–58, 67, 126–128, 149 | Recorrido por módulos y prueba adaptable | Implementado; 8/8 pruebas y análisis limpios. |
 | 4 | Métodos de sesión y estados de prototipo | 6, 9–10, 13, 111–125, 128, 133, 135, 143, 147, 155–156 | Interacción local, datos ficticios, carga→resultado y errores | Implementado; 12/12 pruebas y análisis limpios. |
-| 5 | Revisión de pantallas conectadas e inventario final | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Confirmar rutas/contratos conservados, registrar cobertura por marco | En revisión de código; inspección Android pendiente por falta de AVD. |
+| 5 | Revisión de pantallas conectadas e inventario final | 1–5, 7–8, 11–18, 23–26, 29, 31, 39–56, 59–66, 73–110, 129–131 | Confirmar rutas/contratos conservados, registrar cobertura por marco | Auditoría de rutas/tema completada; 158 filas; prueba integrada 371/371. Revisión nativa Android pendiente por falta de AVD. |
 
 ### Siguiente acción
 
@@ -82,3 +82,22 @@ Se mantienen los datos completamente ficticios. En P27 y P35 los métodos no act
 **Siguiente acción exacta:** módulo 5, revisar la implementación de las rutas conectadas contra sus contratos, no sustituir repositorios ni permisos y completar en `docs/inventario_mockups_conjunto_9.md` el resultado final por página y su condición de pantalla conectada o demo local.
 
 Cada módulo probado tendrá un commit y push propio. La compilación Android y revisión integrada quedan para el cierre C9.
+
+### Módulo 5 — rutas productivas e inventario final
+
+**Resultado:** se revisaron por grupo las rutas de autenticación/perfil, acceso docente, entrada a cursos, cursos y calendario, matrículas/Excel, asistencia C8 y revisión administrativa. Las pantallas productivas conservan navegación, repositorios, datos y controles de rol. Auth usa `AuthPage`/`PrimaryButton`; cursos y matrículas reutilizan `CoursePage`, `CourseContent`, `CoursePanel` y `AppColors`; el tema común define Manrope, fondo verde oscuro, superficies pino y acento menta. `AdminTeacherRequestsScreen` vuelve a comprobar el rol administrador antes de mostrar solicitudes. La galería debug permanece aislada y no altera reglas ni flujos C8.
+
+Las rutas productivas no tienen una pantalla nueva para home/resumen completo, notificaciones/ayuda, estadísticas ni métodos de proximidad. Esas páginas se muestran como demostraciones locales. QR/Bluetooth/NFC no se integraron con sensores; el PDF de justificación no se adjunta porque C8 solo recibe texto. Esta es la adaptación explícita para no cambiar el contrato funcional ni crear permisos/configuración de Firebase no acordados. El inventario final registra las 158 páginas, con 101 rutas existentes y 57 vistas demo; no significa que existan 158 pantallas productivas distintas.
+
+La fuente tampoco ofrece marcos propios para la recuperación `closing` de una sesión manual, la publicación pendiente por estudiante, la restauración de una asistencia anulada ni el error `permission-denied` del cierre. Se conserva para esos casos el progreso, error/reintento y recuperación ya implementados en C8; el mockup de confirmación del cierre no representa que los resultados ya estén publicados. No se creó otra pantalla de producto ni se cambió el esquema para cubrir esa falta visual.
+
+| Verificación final | Resultado |
+| --- | --- |
+| `flutter test --reporter compact` | **371/371 aprobadas**, incluidas las 12 pruebas de la galería y regresiones de los conjuntos existentes. |
+| `flutter analyze` | Sin problemas. |
+| `flutter build apk --debug` | Compiló. APK C9 en `build/app/outputs/flutter-apk/app-debug.apk`; SHA-256 `3FDC302D8AA1E2A1B8AFD397CCFF4BA3D541F215B452728016E49C507A198022`. C8 se conservó en `build/artifacts/app-c8-1.0.1+2-debug.apk`. |
+| `git diff --check` | Sin errores de espacios; Git solo informó conversiones habituales de LF/CRLF. |
+| Firestore Rules Emulator | C9 no cambió reglas. Se conserva la verificación C8 del mismo commit base: 109/109; ruleset activo ya comprobado, sin índice adicional para C9. |
+| Inspección en móvil | No completada: `flutter emulators` informó que no hay AVD. El intento web previo quedó en lienzo gris y se detuvo; queda por revisar la APK en Android/TECNO y comprobar dimensiones/teclado en el dispositivo. |
+
+**Siguiente acción para la validación visual:** instalar la APK de C9 en un emulador Android configurado o dispositivo, abrir en debug el logo de bienvenida con pulsación larga, elegir **C09 · Recorridos de diseño** y recorrer Estudiante, Docente, Compartido y Administración. Las acciones de esos recorridos son ficticias. Para datos y permisos reales, salir del catálogo e iniciar sesión por las rutas normales. No se requiere publicar reglas ni índices por C9.
