@@ -2,11 +2,11 @@
 
 ## Versión vigente para la próxima prueba: 1.0.1+2 (17/11)
 
-Publica **el `firestore.rules` completo nuevo** en `aula-presente-movil-juan-2026`, base `(default)`, e instala la APK recompilada `build/app/outputs/flutter-apk/app-debug.apk`, versión **1.0.1+2**. No hay índices nuevos. Esta revisión corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias finalizadas anuladas y añade solicitudes estudiantiles de texto. La publicación y prueba física las hace el propietario. Los pasos exactos para cada flujo y las huellas están en el [inicio del seguimiento C8](seguimiento_conjunto_8.md#ampliación-y-corrección-de-c8--17112026--apk-1012).
+Las reglas completas de **1.0.1+2** ya están publicadas en `aula-presente-movil-juan-2026`, base `(default)`, y su contenido coincide con `firestore.rules` de la rama. El ruleset activo es `projects/aula-presente-movil-juan-2026/rulesets/7f545ef7-bcf8-4fb8-ab62-63f1134a7042`, activado el **17/11/2026 a las 01:55:52 (Colombia)**. No hay índices nuevos. Instala `build/app/outputs/flutter-apk/app-debug.apk`, versión **1.0.1+2**. Esta revisión corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias finalizadas anuladas y añade solicitudes estudiantiles de texto. Solo queda la prueba física del propietario. Los pasos exactos para cada flujo y las huellas están en el [inicio del seguimiento C8](seguimiento_conjunto_8.md#ampliación-y-corrección-de-c8--17112026--apk-1012).
 
 Los recorridos inferiores son antecedentes: donde indiquen motivo obligatorio para asistencia/calendario, ahora puede dejarse vacío. **Cancelar** no aplica cambios. La justificación puede iniciarla el estudiante desde su propia ausencia; el docente propietario decide Aprobar/Rechazar. Para una sesión ya finalizada y anulada, usa **Restaurar asistencia**, o **Continuar restauración** después de una interrupción; nunca recrees la sesión.
 
-Esta guía es para el propietario. El índice `attendance_records` está **Habilitado** según su reporte y ya comprobó flujos C8 en TECNO con Firebase real. También reportó una publicación manual de reglas desde VS Code; la versión exacta y la APK anterior siguen por confirmar. El cierre por horas de Lógica reprogramada al 16/11 06:00–08:00 falló en **Continuar finalización**. El nuevo ajuste se probó localmente con una sesión ya `closing`, y necesita publicar **solo las reglas revisadas** e instalar la **APK recompilada**. Codex no desplegó reglas ni índices ni operó el teléfono. No se deben usar datos sensibles de excusas.
+Esta guía es para el propietario. El índice `attendance_records` está **Habilitado** y la regla activa recién verificada contiene la corrección del cierre, restauración y solicitudes. El propietario ya comprobó flujos anteriores en TECNO; Codex no operó el teléfono ni modificó los datos reales. El cierre por horas de Lógica reprogramada al 16/11 06:00–08:00 falló en **Continuar finalización**. El ajuste se probó localmente con una sesión ya `closing`; instala la **APK recompilada 1.0.1+2** y verifica los recorridos descritos aquí. No se deben usar datos sensibles de excusas.
 
 ## Recuperar primero Lógica en Finalizando
 
@@ -27,15 +27,15 @@ El reintento de nómina parcial por horas se reprodujo el 16/11 en el emulador y
 ## Antes de probar
 
 1. Usa el proyecto Firebase correcto: `aula-presente-movil-juan-2026` y confirma que la app Android sigue registrada como `com.juanceron.aulapresente`.
-2. Revisa la rama `feature/conjunto-8-asistencia-manual`, el diff completo de `firestore.rules` y `firestore.indexes.json`, y la guía de esquema en [arquitectura](arquitectura.md#conjunto-funcional-8-asistencia-manual). Esta rama conserva las reglas e índices de C7 y añade asistencia; no reemplaces la configuración de Firebase por la de otro proyecto.
+2. Revisa la rama `feature/conjunto-8-asistencia-manual-v2`, el diff completo de `firestore.rules` y `firestore.indexes.json`, y la guía de esquema en [arquitectura](arquitectura.md#conjunto-funcional-8-asistencia-manual). La regla activa ya coincide con el archivo completo de C8; no reemplaces la configuración de Firebase por la de otro proyecto.
 3. Verifica que las cuentas de prueba tengan correo verificado y perfil válido. El docente debe tener el rol `teacher` otorgado por el flujo confiable existente y ser propietario del curso. El estudiante debe tener rol `student` y matrícula canónica activa o pertenencia histórica correspondiente. No escribas roles manualmente desde el cliente.
-4. Después de revisar las reglas, cuando decidas activar, publica únicamente las reglas. El índice se conserva y no debe redesplegarse para este paso:
+4. La consulta de solo lectura confirmó que `cloud.firestore` apunta al ruleset vigente indicado arriba y que el contenido coincide. No necesitas volver a desplegar reglas para probar esta APK. Si al revisar la consola la release ya no apunta a ese ruleset, vuelve a publicar únicamente las reglas de la rama; no despliegues índices:
 
    ```powershell
    firebase deploy --only firestore:rules --project aula-presente-movil-juan-2026
    ```
 
-   El intento previo del propietario devolvió `503` en la API de reglas. Codex no repitió el despliegue. Después de una publicación exitosa, confirma que `cloud.firestore` contiene el ruleset esperado; el propietario reporta el índice `attendance_records` **Habilitado** y no hace falta volver a desplegar índices para esta revisión.
+   El índice `attendance_records` sigue siendo el requisito ya habilitado; esta ampliación no añade índices compuestos ni configuración adicional.
 
 5. Compila/instala la APK debug de esta rama en el TECNO. La ruta local será `build/app/outputs/flutter-apk/app-debug.apk`. La compilación no crea cuentas, envía correos ni despliega Firebase.
 

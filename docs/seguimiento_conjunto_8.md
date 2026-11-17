@@ -1,5 +1,28 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
+## Estado final de C8 — listo para TECNO — 17/11/2026
+
+**Código:** `feature/conjunto-8-asistencia-manual-v2`, commit de implementación `ee031927a7189dc024d12c23d5fc0d58dcb92645`; `origin` confirmó el mismo SHA. El commit incluye solo la corrección de C8, reglas, pruebas y documentación indicada en su diff. Un commit documental posterior registra la activación verificada. La rama original se conserva sin modificar.
+
+**Pruebas locales de cierre:** `flutter test --reporter expanded` **359/359**; `flutter analyze` sin problemas; `firebase emulators:exec --only firestore --project demo-aula-presente-firestore-rules-tests "npm test --prefix tools/firestore_rules_tests"` **109/109** con Java **21.0.13**; `flutter build apk --debug` correcto; `git diff --check` correcto. Los avisos/rechazos registrados en el log del emulador pertenecen a intentos negativos esperados; la suite terminó con 0 fallos. No hay emulador Android disponible y Codex no instaló/ejecutó la app en TECNO.
+
+**APK que debe probarse:** `build/app/outputs/flutter-apk/app-debug.apk`, paquete `com.juanceron.aulapresente`, `versionName=1.0.1`, `versionCode=2`, **193.529.327 bytes**, SHA-256 **`6D1FB39B44B73D1F4608D7972C55391E5B2B8F6C327BB410BE7B2126259E3CC9`**. La ruta completa en este equipo es `C:\Users\juand\OneDrive\Documentos\UNIVERSIDAD\TRABAJOS U\8. SEMESTRE\MOVIL\proyecto_movil\build\app\outputs\flutter-apk\app-debug.apk`.
+
+**Rules activas:** se confirmó por Firebase CLI que el proyecto `aula-presente-movil-juan-2026` está activo y es el único proyecto de esta cuenta; el despliegue usó `--only firestore:rules`. Antes, `cloud.firestore` apuntaba a `dde0d939-bf83-4950-9323-d37dfce705e6`; después apunta a **`projects/aula-presente-movil-juan-2026/rulesets/7f545ef7-bcf8-4fb8-ab62-63f1134a7042`**. `updateTime=2026-11-17T06:55:52.591420Z`, o **17/11/2026 01:55:52 (Colombia)**. Se descargó el ruleset, contenía un solo `firestore.rules` de 155.764 bytes, y coincidió exactamente con el archivo local tras normalizar saltos CRLF/LF. SHA-256 del archivo local en Windows: **`69BC301EDDC9B4C61E3FC790E87F607E90B99B014243904264FFD3DD188BEAAE`**. No se desplegaron índices ni configuración, no se modificaron datos reales y no hay índice nuevo requerido.
+
+### Orden recomendado para validar en el TECNO
+
+Usa el proyecto publicado y cuentas autorizadas existentes; evita alterar las sesiones reales que reportaron el incidente. Registra la versión de APK y usa un encuentro de ensayo para los casos destructivos.
+
+1. Instala la APK anterior conservando datos. En un curso por horas de ensayo, cambia **Ausente → Presente** en el segundo tramo de una sesión finalizada. Verifica que el primer tramo no cambie y que la vista del estudiante refleje el resultado actualizado. Repite para una clase normal y una reprogramada si están disponibles; no vuelvas a crear sesiones.
+2. Abre **Anular asistencia** y pulsa **Cancelar**: la sesión debe conservar estado, marcas y proyección. En otra sesión de ensayo ya finalizada, confirma la anulación; restaura la misma sesión y confirma que recupera las marcas/cálculo, conserva el historial y no duplica filas. Interrumpe la restauración después de un lote solo en datos de ensayo; reabre y pulsa **Continuar restauración**.
+3. Desde una ausencia propia, envía una justificación breve. Comprueba que **Pendiente** no descuenta la falta ni los minutos y que el botón evita reenvío. Como docente propietario, aprueba esa solicitud; como estudiante, verifica que solo esa falta/minutos bajen y que el total de clases/horas se mantenga.
+4. Para otra ausencia de ensayo, envía una solicitud y haz que el propietario la rechace. Confirma que la falta sigue contando, la decisión aparece, no se puede reenviar y se muestra «Si tienes dudas, comunícate con tu docente».
+5. Repite una decisión/doble pulsación con dos clientes si puedes: debe quedar una sola solicitud y un solo descuento. Confirma que una cuenta docente ajena no puede leer ni decidir solicitudes, y que cada estudiante solo puede consultar su propia solicitud/resultado publicado.
+6. Mide **Preparar lista**, **Completar lista** y **Ver asistencia** en un encuentro de ensayo, junto con conteo de estudiantes y conectividad. La lista debe aparecer cuando los datos requeridos estén listos; historial/publicación secundarios pueden seguir cargando. Comprueba que demora/fallo muestre progreso o error y que matrícula efectiva y publicación sigan verificándose.
+
+La hora y hash anteriores demuestran el estado de Firebase y la APK local al compilar. No prueban el comportamiento de esa APK con FlutterFire/red real ni sustituyen esta validación manual del TECNO.
+
 ## Ampliación y corrección de C8 — 17/11/2026 — APK 1.0.1+2
 
 **Punto de partida:** rama local `feature/conjunto-8-asistencia-manual-v2`, HEAD `46a8893d518c87b6337d73b194ac4aa801f568c7`. Se conservaron los cinco archivos con cambios/alta local de la revisión visual previa. El propietario confirmó en el TECNO que puede registrar, finalizar y consultar asistencia. Reportó rechazo al corregir **Ausente → Presente** después de finalizar, en la clase normal del 16/11 10:00–12:00 y la reprogramada 06:00–08:00. Esas pruebas físicas son del propietario. Codex no operó el teléfono.

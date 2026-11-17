@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-La rama de trabajo es [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). La revisión local del 17/11 entrega **1.0.1+2**: corrección de la segunda hora finalizada, motivos opcionales, restauración de asistencias anuladas y solicitudes de justificación de texto con decisión docente. Conserva el cierre recuperable y los ajustes visuales de v2; la lista aparece antes de cargar historial/publicación. Estos cambios nuevos siguen locales, sin otro commit/push. Para probarlos debe publicarse el `firestore.rules` completo nuevo e instalarse la APK indicada en el [seguimiento C8](docs/seguimiento_conjunto_8.md). Codex no publicó Firebase ni ejecutó la app en el TECNO.
+La rama de trabajo es [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2). C8 **1.0.1+2** corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias anuladas y tramita solicitudes de justificación de texto con decisión docente. Conserva el cierre recuperable y carga la lista antes del historial/publicación secundaria. El commit de C8 está en GitHub y las reglas completas ya están publicadas y comparadas con el archivo de esa rama. Instala la APK indicada en el [seguimiento C8](docs/seguimiento_conjunto_8.md); la validación de estos cambios en el TECNO sigue pendiente. Codex no ejecutó la app en el teléfono.
 
 ## Qué se puede hacer
 
@@ -74,7 +74,7 @@ La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Co
 
 La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-La rama mantiene un solo `firestore.rules`. Aunque ya se confirmó la publicación de la corrección inicial del cierre, **1.0.1+2 requiere publicar nuevamente el archivo completo local**, con la corrección de registros finalizados, solicitudes y restauración. No hay índices nuevos; se conserva `attendance_records` habilitado. No se desplegó Firebase ni se modificaron datos reales en esta ampliación. La [guía de activación](docs/activacion_conjunto_8.md) explica el procedimiento para el propietario.
+La rama mantiene un solo `firestore.rules`. La versión completa **1.0.1+2** está activa en `aula-presente-movil-juan-2026`, base `(default)`, ruleset `projects/aula-presente-movil-juan-2026/rulesets/7f545ef7-bcf8-4fb8-ab62-63f1134a7042`; se comprobó que su contenido coincide con el archivo local. Se activó el 17/11/2026 a las **01:55:52 (Colombia)**. No hacen falta índices nuevos; el proyecto conserva el índice `attendance_records`. El despliegue solo cambió reglas: no se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica la prueba manual.
 
 ## Documentación
 
@@ -85,4 +85,4 @@ La rama mantiene un solo `firestore.rules`. Aunque ya se confirmó la publicaci�
 - [Guías de acceso docente](docs/activacion_acceso_docente.md), [cursos](docs/activacion_conjunto_2.md), [matrícula por código](docs/activacion_conjunto_4.md), [retiro y reincorporación](docs/activacion_conjunto_5.md) e [importación de Excel](docs/activacion_conjunto_6.md)
 - [Pruebas de reglas con el emulador](tools/firestore_rules_tests/README.md)
 
-En la ampliación del 17/11 pasaron `flutter analyze`, **359/359** pruebas Flutter completas y **109/109** pruebas de reglas en emulador; compiló la APK debug **1.0.1+2**. El [seguimiento](docs/seguimiento_conjunto_8.md) registra mediciones, huellas y pasos por flujo. La publicación nueva y la prueba de esta versión en el TECNO siguen pendientes del propietario.
+En la ampliación del 17/11 pasaron `flutter analyze`, **359/359** pruebas Flutter completas y **109/109** pruebas de reglas en emulador; compiló la APK debug **1.0.1+2**. El [seguimiento](docs/seguimiento_conjunto_8.md) registra SHA, ruleset, mediciones y pasos por flujo. Solo falta que el propietario valide la APK y los recorridos en el TECNO.

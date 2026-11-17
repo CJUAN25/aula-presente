@@ -1,10 +1,10 @@
 # Estado actual — 17 de noviembre de 2026
 
-## C8 ampliado — versión local 1.0.1+2
+## C8 ampliado y publicado — versión 1.0.1+2
 
 El propietario confirmó en TECNO registro, finalización y consulta, y reportó el fallo Ausente → Presente en la segunda hora de sesiones finalizadas normales/reprogramadas. Se verificó e integró `aula-presente-c8-correccion-finalizada.patch` sin conflictos, conservando los ajustes locales de v2 y las dos regresiones. Se añadieron motivos opcionales, Cancelar anulación, restauración `voided → restoring → finalized` desde marcas conservadas y solicitudes de texto del estudiante por encuentro/tramo con decisión docente atómica e idempotente. Los eventos conservan valores, actor y hora; la aprobación mantiene el denominador y descuenta solo la cobertura de esa ausencia. El historial/publicación se cargan después de los datos necesarios para mostrar la lista, conservando validaciones y errores.
 
-Verificación local: **359/359** Flutter completos, **80/80** dirigidos, **109/109** reglas en emulador, análisis limpio y APK debug **1.0.1+2** compilada. Repositorio y pantallas se probaron con datos sintéticos; no equivale a FlutterFire en Android ni a la prueba física. **Hay que publicar el `firestore.rules` nuevo antes de instalar/probar esta APK; no hay índices nuevos.** La guía, evidencia y huellas están al inicio del [seguimiento C8](seguimiento_conjunto_8.md). No hubo publicación en Firebase, instalación en TECNO ni nuevo commit/push. Los apartados siguientes conservan el historial anterior.
+Verificación local de esta sesión: **359/359** Flutter completos, **109/109** reglas en Firestore Emulator con JDK 21, análisis limpio y APK debug **1.0.1+2** compilada. Repositorio y pantallas se probaron con datos sintéticos; no equivale a FlutterFire en Android ni a la prueba física. El commit C8 se subió a `feature/conjunto-8-asistencia-manual-v2`. Se publicó solo `firestore.rules` y se leyó el `rulesetName` activo; el contenido coincide con la rama. Se activó el **17/11/2026 01:55:52 (Colombia)**. No hay índices nuevos ni se modificaron datos reales. **Ya se pueden instalar APK y reglas; la prueba en el TECNO sigue pendiente.** La guía y las huellas están al inicio del [seguimiento C8](seguimiento_conjunto_8.md). Los apartados siguientes conservan el historial anterior.
 
 ## Revisión visual local de C8
 
