@@ -6,6 +6,10 @@ El propietario confirmó en TECNO registro, finalización y consulta, y reportó
 
 Verificación local de esta sesión: **359/359** Flutter completos, **109/109** reglas en Firestore Emulator con JDK 21, análisis limpio y APK debug **1.0.1+2** compilada. Repositorio y pantallas se probaron con datos sintéticos; no equivale a FlutterFire en Android ni a la prueba física. El commit C8 se subió a `feature/conjunto-8-asistencia-manual-v2`. Se publicó solo `firestore.rules` y se leyó el `rulesetName` activo; el contenido coincide con la rama. Se activó el **17/11/2026 01:55:52 (Colombia)**. No hay índices nuevos ni se modificaron datos reales. **Ya se pueden instalar APK y reglas; la prueba en el TECNO sigue pendiente.** La guía y las huellas están al inicio del [seguimiento C8](seguimiento_conjunto_8.md). Los apartados siguientes conservan el historial anterior.
 
+## C9 — inventario y punto de partida
+
+La rama local `feature/conjunto-9-maquetacion-completa` parte exactamente de C8 final `605ac9f3b8017f7c212c99ae53df65fdff34267e`. El conector Figma pidió reautenticación; como respaldo se inspeccionó el PDF exportado completo (158 páginas). El inventario por página cruza rol, ruta Flutter y trabajo pendiente en [docs/inventario_mockups_conjunto_9.md](inventario_mockups_conjunto_9.md); el plan por módulos y próximo paso están en [docs/seguimiento_conjunto_9.md](seguimiento_conjunto_9.md). Todavía no se han modificado pantallas de C9.
+
 ## Revisión visual local de C8
 
 Sobre `feature/conjunto-8-asistencia-manual-v2`, base `46a8893`, se revisaron las páginas docentes relevantes de `../FIGMA/NUEVA CORRECCION.pdf`; el conector Figma requiere reconexión. Se añadieron búsqueda local y contadores por tramo, selección de ambas horas también después de finalizar, acciones de guardar/finalizar después de la lista y estado de publicación al inicio. Carga/error bloquean las acciones hasta recargar; el error de escritura permanece visible. El selector se adapta a 320 px con texto ampliado. La lógica de asistencia, repositorio y reglas del arreglo anterior se conservan.
