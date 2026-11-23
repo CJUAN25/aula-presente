@@ -6,6 +6,10 @@ C9 integra el commit C8 `3014c4b28c7bd0749414c8cccce8ea4f3977c61e` mediante una 
 
 Para la prueba física, usa las reglas publicadas para C8 1.0.2+3 y abre una sesión por horas desde el curso real en la APK C9. Guarda una corrección, reabre la fila y consulta el resultado desde estudiante. Abre luego la galería desde el logotipo de bienvenida y verifica los filtros de estudiante y docente. Los pasos anteriores de justificación y restauración están en el [seguimiento C8](seguimiento_conjunto_8.md).
 
+**Verificación local:** fusión `22001a7d8e4b3d0630560c0437d52c82f258306a`. Pasaron **99/99** pruebas dirigidas de asistencia/galería, **383/383** pruebas Flutter integradas, **111/111** reglas en Firestore Emulator y el análisis está limpio. Una prueba de widget abre el menú C09 desde la bienvenida y filtra el recorrido estudiante. `git diff` confirma que la galería conserva su implementación y que asistencia y reglas coinciden con C8.
+
+**APK C9:** `build/artifacts/aula-presente-c9-1.0.2+3-debug.apk`, versión `1.0.2+3`, **193.654.674 bytes**, SHA-256 `C36BCD7AF24D714188C0E9595918B2D3F699B7F2C37060FC6D4253BCFC8B6020`. Se compiló con `flutter build apk --debug`. El TECNO queda para la validación física. Firebase requiere solo el mismo `firestore.rules` de C8.
+
 ## Punto de partida y recuperación de la rama — 17/11/2026
 
 Rama feature/conjunto-9-maquetacion-completa, creada desde el commit C8 exacto 605ac9f3b8017f7c212c99ae53df65fdff34267e. No existía rama local ni remota C9. Este commit agrega el primer módulo visual y conserva C8 como padre.
