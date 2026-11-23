@@ -230,7 +230,7 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
   attendanceRepository: _FakeAttendanceRepository(),
 );
 
-class _FakeAttendanceRepository implements AttendanceRepository {
+class _FakeAttendanceRepository extends AttendanceRepository {
   @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #listJustificationRequests) return Future<List<AttendanceJustificationRequest>>.value([]);

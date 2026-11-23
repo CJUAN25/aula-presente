@@ -76,7 +76,7 @@ void main() {
     await tester.tap(find.text('Confirmar ausencias'));
     await tester.pumpAndSettle();
 
-    expect(repository.finalizeCalls, [false, true, false]);
+    expect(repository.finalizeCalls, [false, true]);
     expect(repository.session.status, AttendanceSessionStatus.finalized);
     expect(
       find.text('Asistencia finalizada y publicada para sus estudiantes.'),
@@ -111,7 +111,7 @@ void main() {
 
       expect(find.text('Publicación pendiente'), findsNothing);
       expect(find.text('Registro finalizado'), findsOneWidget);
-      expect(repository.finalizeCalls, [false, false, false]);
+      expect(repository.finalizeCalls, [false, false]);
     },
   );
 
@@ -270,7 +270,7 @@ AttendanceSession _session({
   updatedBy: 'teacher_uid',
 );
 
-class _AttendanceRepository implements AttendanceRepository {
+class _AttendanceRepository extends AttendanceRepository {
   AttendanceSession session = _session();
   AttendanceSessionStatus voidResult = AttendanceSessionStatus.voided;
   final List<bool> finalizeCalls = [];

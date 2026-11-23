@@ -280,7 +280,7 @@ Future<void> _pump(WidgetTester tester, _Repository repo) async {
   await tester.pumpAndSettle();
 }
 
-class _Repository implements AttendanceRepository {
+class _Repository extends AttendanceRepository {
   _Repository({bool late = false}) {
     occurrences = [
       _occurrence('from-12', 15, 600),

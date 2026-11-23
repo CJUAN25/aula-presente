@@ -140,7 +140,7 @@ List<AttendanceRecord> _fiveRecords() => [
     ),
 ];
 
-class _AttendanceRepository implements AttendanceRepository {
+class _AttendanceRepository extends AttendanceRepository {
   _AttendanceRepository(this.records);
 
   final List<AttendanceRecord> records;

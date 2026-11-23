@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 
 import '../../courses/domain/course.dart';
 import '../../enrollments/domain/enrollment.dart';
@@ -33,7 +34,7 @@ import 'attendance_operation_trace.dart';
 /// UIDs always come from Firebase Auth. Roster membership is built from the
 /// complete C7 snapshot and all C7 status-event pages; a read or history error
 /// prevents the session from becoming ready.
-class FirestoreAttendanceRepository implements AttendanceRepository {
+class FirestoreAttendanceRepository extends AttendanceRepository {
   FirestoreAttendanceRepository({
     FirebaseAuth? auth,
     FirebaseFirestore? firestore,
@@ -1808,6 +1809,64 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
   }
 
   @override
+  Future<AttendanceSessionView> loadSessionView({
+    required String courseId,
+    required String occurrenceId,
+  }) async {
+    final trace = AttendanceOperationTrace(
+      'datos de asistencia',
+      onTiming: onTiming,
+    )..start('validar docente y sesión');
+    try {
+      _validateId(courseId);
+      _validateId(occurrenceId);
+      final actor = await _requireTeacher();
+      final session = await _getOwnedSession(courseId, occurrenceId, actor.uid);
+      trace.start('nómina y tramos');
+      final (roster, segments) = await _readSessionLists(session, actor.uid);
+      final current = await _getOwnedSession(courseId, occurrenceId, actor.uid);
+      if (current.version != session.version ||
+          current.status != session.status) {
+        throw const AttendanceFailure(AttendanceFailureKind.staleSession);
+      }
+      if (session.rosterState == AttendanceRosterState.ready &&
+          (roster.length != session.rosterCount ||
+              !_countersMatch(
+                session,
+                roster.length,
+                roster
+                    .where((entry) => !_isEntryFullyMarked(entry, session.mode))
+                    .length,
+              ) ||
+              !listEquals(
+                segments.map((s) => s.id).toList(),
+                session.segmentIds,
+              ))) {
+        throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
+      }
+      return (session: current, roster: roster, segments: segments);
+    } on FirebaseException catch (error) {
+      throw _translateFirebase(error);
+    } on FormatException {
+      throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    } finally {
+      trace.finish();
+    }
+  }
+
+  Future<(List<AttendanceRosterEntry>, List<AttendanceSegment>)>
+  _readSessionLists(AttendanceSession session, String uid) async {
+    final lists = await Future.wait<Object>([
+      _loadAllRoster(session, uid),
+      _loadAllSegments(session, uid),
+    ]);
+    return (
+      lists[0] as List<AttendanceRosterEntry>,
+      lists[1] as List<AttendanceSegment>,
+    );
+  }
+
+  @override
   Future<AttendanceRosterPage> listRoster({
     required AttendanceSession session,
     AttendanceRosterCursor? cursor,
@@ -2292,8 +2351,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
       }
 
       trace.start('leer nómina y tramos');
-      var entries = await _loadAllRoster(session, actor.uid);
-      var segments = await _loadAllSegments(session, actor.uid);
+      var (entries, segments) = await _readSessionLists(session, actor.uid);
       var unmarkedEntries = entries
           .where((entry) => !_isEntryFullyMarked(entry, session.mode))
           .toList(growable: false);
@@ -2443,6 +2501,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
             segments: segments,
           ),
       ];
+      var toPublish = records;
       if (!alreadyFinalized) {
         trace.start('preparar resultados privados');
         session = await _stageRecords(session, records, actor.uid);
@@ -2502,7 +2561,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         writeConfirmed = true;
       } else {
         trace.start('verificar resultados existentes');
-        await _verifyRecordSet(
+        toPublish = await _verifyRecordSet(
           session: session,
           records: records,
           uid: actor.uid,
@@ -2511,17 +2570,28 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         );
       }
 
-      trace.start('publicar resultados');
-      session = await _publishRecords(session, records, actor.uid);
-      knownSession = session;
-      trace.start('verificar publicación');
-      await _verifyRecordSet(
-        session: session,
-        records: records,
-        uid: actor.uid,
-        allowStaged: false,
-        allowPublished: true,
+      if (toPublish.isNotEmpty) {
+        trace.start('publicar resultados');
+        session = await _publishRecords(session, toPublish, actor.uid);
+        knownSession = session;
+        trace.start('verificar publicación');
+        await _verifyRecordSet(
+          session: session,
+          records: records,
+          uid: actor.uid,
+          allowStaged: false,
+          allowPublished: true,
+        );
+      }
+      final verified = await _getOwnedSession(
+        courseId,
+        occurrenceId,
+        actor.uid,
       );
+      if (verified.version != session.version ||
+          verified.status != AttendanceSessionStatus.finalized) {
+        throw const AttendanceFailure(AttendanceFailureKind.staleSession);
+      }
       return AttendanceFinalizeResult(
         status: AttendanceFinalizeStatus.confirmed,
         unmarkedCount: 0,
@@ -2857,7 +2927,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     return true;
   }
 
-  Future<void> _verifyRecordSet({
+  Future<List<AttendanceRecord>> _verifyRecordSet({
     required AttendanceSession session,
     required List<AttendanceRecord> records,
     required String uid,
@@ -2867,6 +2937,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     if (records.length != session.rosterCount) {
       throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
     }
+    final staged = <String>{};
     await _readInParallel(records, (expected) async {
       final snapshot = await _records(session.courseId)
           .doc(expected.recordId)
@@ -2888,6 +2959,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         if (!allowStaged || actual.publishedAt != null) {
           throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
         }
+        staged.add(expected.recordId);
       } else if (actual.visibility == AttendanceRecordVisibility.published) {
         if (!allowPublished || actual.publishedAt == null) {
           throw const AttendanceFailure(AttendanceFailureKind.incompleteRoster);
@@ -2896,6 +2968,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         throw const AttendanceFailure(AttendanceFailureKind.invalidData);
       }
     });
+    return records.where((record) => staged.contains(record.recordId)).toList();
   }
 
   Future<AttendanceSession> _stageRecords(
@@ -2994,7 +3067,8 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
           occurrenceId: session.occurrenceId,
         );
         if (current.ownerUid != uid ||
-            current.status != AttendanceSessionStatus.finalized) {
+            current.status != AttendanceSessionStatus.finalized ||
+            current.version != session.version) {
           throw const AttendanceFailure(AttendanceFailureKind.staleSession);
         }
         for (var index = 0; index < chunk.length; index++) {
@@ -3948,7 +4022,9 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     );
     _requireSameUser(actor.uid);
     final identity = enrollment.rosterEntryId ?? 'legacy:${actor.uid}';
-    if (enrollment.status != 'active' || identity != record.rosterEntryId) {
+    if (enrollment.status != 'active' ||
+        enrollment.studentUid != actor.uid ||
+        identity != record.rosterEntryId) {
       throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
     }
     return actor.uid;

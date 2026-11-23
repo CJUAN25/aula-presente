@@ -19,11 +19,13 @@ class TeacherAttendanceSessionScreen extends StatefulWidget {
     required this.course,
     required this.session,
     required this.repository,
+    this.openingTrace,
   });
 
   final Course course;
   final AttendanceSession session;
   final AttendanceRepository repository;
+  final AttendanceOperationTrace? openingTrace;
 
   @override
   State<TeacherAttendanceSessionScreen> createState() =>
@@ -40,9 +42,13 @@ class _TeacherAttendanceSessionScreenState
   final _searchController = TextEditingController();
   String _studentQuery = '';
   Object? _error;
-  Object? _extrasError;
+  Object? _historyError;
+  Object? _requestsError;
+  int _historyEpoch = 0;
+  int _requestsEpoch = 0;
   List<AttendanceJustificationRequest> _requests = [];
-  bool _extrasLoading = false;
+  bool _historyLoading = false;
+  bool _requestsLoading = false;
   bool _publicationChecking = false;
   AttendanceFailureKind? _publicationFailureKind;
   bool _loading = true;
@@ -61,79 +67,75 @@ class _TeacherAttendanceSessionScreenState
   }
 
   @override
+  void didUpdateWidget(covariant TeacherAttendanceSessionScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.course.id != widget.course.id ||
+        oldWidget.session.occurrenceId != widget.session.occurrenceId ||
+        oldWidget.repository != widget.repository) {
+      _session = widget.session;
+      _selectedSegmentId = null;
+      _load();
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({AttendanceFinalizeResult? knownPublication}) async {
     final epoch = ++_epoch;
-    final trace = AttendanceOperationTrace('abrir pantalla')
-      ..start('leer sesión');
+    final trace = AttendanceOperationTrace('abrir pantalla');
+    final opening = widget.openingTrace ?? trace;
+    trace.start('leer datos necesarios para la lista');
     setState(() {
       _loading = true;
-      _extrasLoading = false;
+      _historyLoading = false;
+      _requestsLoading = false;
       _publicationChecking = false;
       _error = null;
-      _extrasError = null;
+      _historyError = null;
+      _requestsError = null;
       _events = [];
       _requests = [];
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && epoch == _epoch) {
+        opening.milestone('primera respuesta visible');
+      }
+    });
     try {
-      final session = await widget.repository.getSession(
+      final view = await widget.repository.loadSessionView(
         courseId: widget.course.id,
         occurrenceId: widget.session.occurrenceId,
       );
-      if (session == null) throw StateError('La sesión ya no está disponible.');
-      final roster = <AttendanceRosterEntry>[];
-      final segments = <AttendanceSegment>[];
-      Future<void> loadRoster() async {
-        AttendanceRosterCursor? cursor;
-        do {
-          final page = await widget.repository.listRoster(
-            session: session,
-            cursor: cursor,
-            pageSize: 100,
-          );
-          roster.addAll(page.items);
-          cursor = page.nextCursor;
-        } while (cursor != null);
-      }
-
-      Future<void> loadSegments() async {
-        if (session.mode == AttendanceMode.meeting) return;
-        AttendanceSegmentCursor? cursor;
-        do {
-          final page = await widget.repository.listSegments(
-            session: session,
-            cursor: cursor,
-            pageSize: 100,
-          );
-          segments.addAll(page.items);
-          cursor = page.nextCursor;
-        } while (cursor != null);
-      }
-
-      trace.start('leer datos necesarios para la lista');
-      await Future.wait([loadRoster(), loadSegments()]);
       if (!mounted || epoch != _epoch) return;
+      final session = view.session;
+      final segments = view.segments;
+      final publication = knownPublication?.session?.version == session.version
+          ? knownPublication
+          : null;
+      final checkPublication =
+          session.status == AttendanceSessionStatus.finalized &&
+          publication == null;
       setState(() {
         _session = session;
-        _roster = roster;
+        _roster = view.roster;
         _segments = segments;
         _selectedSegmentId = segments.any((s) => s.id == _selectedSegmentId)
             ? _selectedSegmentId
             : segments.firstOrNull?.id;
         _loading = false;
-        _publicationPending = false;
-        _publicationChecking =
-            session.status == AttendanceSessionStatus.finalized;
-        _extrasLoading = true;
+        _publicationPending = publication?.publicationPending ?? false;
+        _publicationFailureKind = publication?.failureKind;
+        _publicationChecking = checkPublication;
       });
-      trace.start('lista disponible');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && epoch == _epoch) opening.milestone('lista utilizable');
+      });
       trace.finish();
-      // Secondary data never delays the roster. Each task keeps its validation and epoch guard.
-      _loadExtras(session, epoch);
+      _loadExtras(session, epoch, opening, checkPublication: checkPublication);
     } catch (error) {
       if (mounted && epoch == _epoch) {
         setState(() {
@@ -146,89 +148,142 @@ class _TeacherAttendanceSessionScreenState
     }
   }
 
-  Future<void> _loadExtras(AttendanceSession session, int epoch) async {
+  Future<void> _loadExtras(
+    AttendanceSession session,
+    int epoch,
+    AttendanceOperationTrace trace, {
+    required bool checkPublication,
+  }) async {
+    await Future.wait([
+      _loadHistory(session),
+      _loadRequests(session),
+      if (checkPublication) _checkPublication(session),
+    ]);
+    if (mounted && epoch == _epoch) {
+      trace.milestone('consultas secundarias terminadas');
+    }
+  }
+
+  Future<void> _loadHistory(AttendanceSession session) async {
+    if (![
+      AttendanceSessionStatus.finalized,
+      AttendanceSessionStatus.voided,
+      AttendanceSessionStatus.voiding,
+      AttendanceSessionStatus.restoring,
+    ].contains(session.status)) {
+      return;
+    }
+    final epoch = _epoch;
+    final attempt = ++_historyEpoch;
+    bool current() => mounted && epoch == _epoch && attempt == _historyEpoch;
+    setState(() {
+      _historyLoading = true;
+      _historyError = null;
+    });
+    final trace = AttendanceOperationTrace('abrir pantalla')
+      ..start('historial secundario');
+    try {
+      final events = <AttendanceSessionEvent>[];
+      AttendanceSessionEventCursor? cursor;
+      do {
+        final page = await widget.repository.listSessionEvents(
+          session: session,
+          cursor: cursor,
+        );
+        if (!current()) return;
+        events.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
+      if (current()) setState(() => _events = events);
+    } catch (error) {
+      if (current()) setState(() => _historyError = error);
+    } finally {
+      if (current()) setState(() => _historyLoading = false);
+      trace.finish();
+    }
+  }
+
+  Future<void> _loadRequests(AttendanceSession session) async {
+    // Only finalized attendance can receive new requests. Historical requests
+    // can still be read while a finalized session is voided or being restored.
+    if (session.status != AttendanceSessionStatus.finalized &&
+        session.finalizedAt == null) {
+      return;
+    }
+    final epoch = _epoch;
+    final attempt = ++_requestsEpoch;
+    bool current() => mounted && epoch == _epoch && attempt == _requestsEpoch;
+    setState(() {
+      _requestsLoading = true;
+      _requestsError = null;
+    });
+    final trace = AttendanceOperationTrace('abrir pantalla')
+      ..start('solicitudes secundarias');
+    try {
+      final data = await widget.repository.listJustificationRequests(
+        courseId: session.courseId,
+        occurrenceId: session.occurrenceId,
+      );
+      if (current()) setState(() => _requests = data);
+    } catch (error) {
+      if (current()) setState(() => _requestsError = error);
+    } finally {
+      if (current()) setState(() => _requestsLoading = false);
+      trace.finish();
+    }
+  }
+
+  Future<void> _checkPublication(
+    AttendanceSession session, {
+    bool notify = false,
+  }) async {
+    final epoch = _epoch;
     bool current() => mounted && epoch == _epoch;
-    Future<void> history() async {
-      final trace = AttendanceOperationTrace('abrir pantalla')
-        ..start('historial secundario');
-      try {
-        final events = <AttendanceSessionEvent>[];
-        if ([
-          AttendanceSessionStatus.finalized,
-          AttendanceSessionStatus.voided,
-          AttendanceSessionStatus.voiding,
-          AttendanceSessionStatus.restoring,
-        ].contains(session.status)) {
-          AttendanceSessionEventCursor? cursor;
-          do {
-            final page = await widget.repository.listSessionEvents(
-              session: session,
-              cursor: cursor,
-            );
-            events.addAll(page.items);
-            cursor = page.nextCursor;
-          } while (cursor != null);
-        }
-        if (current()) setState(() => _events = events);
-      } catch (error) {
-        if (current()) setState(() => _extrasError = error);
-      } finally {
-        trace.finish();
-      }
-    }
-
-    Future<void> requests() async {
-      try {
-        final data = await widget.repository.listJustificationRequests(
-          courseId: widget.course.id,
-          occurrenceId: session.occurrenceId,
-        );
-        if (current()) setState(() => _requests = data);
-      } catch (error) {
-        if (current()) setState(() => _extrasError = error);
-      }
-    }
-
-    Future<void> publication() async {
-      if (session.status != AttendanceSessionStatus.finalized) return;
-      final trace = AttendanceOperationTrace('abrir pantalla')
-        ..start('comprobar publicación secundaria');
-      try {
-        final result = await widget.repository.finalizeSession(
-          courseId: widget.course.id,
-          occurrenceId: session.occurrenceId,
-          confirmUnmarked: false,
-        );
-        if (current()) {
-          setState(() {
-            _publicationPending =
-                result.publicationPending ||
-                result.status != AttendanceFinalizeStatus.confirmed;
-            _publicationFailureKind = result.failureKind;
-          });
-        }
-      } on AttendanceFailure catch (error) {
-        if (current()) {
+    setState(() => _publicationChecking = true);
+    final trace = AttendanceOperationTrace('abrir pantalla')
+      ..start('comprobar publicación secundaria');
+    try {
+      final result = await widget.repository.finalizeSession(
+        courseId: session.courseId,
+        occurrenceId: session.occurrenceId,
+        confirmUnmarked: false,
+      );
+      if (!current()) return;
+      final checkedSession = result.session;
+      final pending =
+          result.publicationPending ||
+          result.status != AttendanceFinalizeStatus.confirmed;
+      if (!pending &&
+          checkedSession != null &&
+          checkedSession.version != session.version) {
+        if (_processing) {
           setState(() {
             _publicationPending = true;
-            _publicationFailureKind = error.kind;
+            _publicationFailureKind = AttendanceFailureKind.staleSession;
           });
+        } else {
+          await _load();
         }
-      } catch (_) {
-        if (current()) {
-          setState(() {
-            _publicationPending = true;
-            _publicationFailureKind = AttendanceFailureKind.unavailable;
-          });
-        }
-      } finally {
-        if (current()) setState(() => _publicationChecking = false);
-        trace.finish();
+        return;
       }
+      setState(() {
+        _publicationPending = pending;
+        _publicationFailureKind = result.failureKind;
+      });
+      if (notify && !pending) _showMessage('Publicación confirmada.');
+    } catch (error) {
+      if (current()) {
+        setState(() {
+          _publicationPending = true;
+          _publicationFailureKind = error is AttendanceFailure
+              ? error.kind
+              : AttendanceFailureKind.unavailable;
+        });
+      }
+    } finally {
+      if (current()) setState(() => _publicationChecking = false);
+      trace.finish();
     }
-
-    await Future.wait([history(), requests(), publication()]);
-    if (current()) setState(() => _extrasLoading = false);
   }
 
   Future<void> _restore() => _run(() async {
@@ -418,13 +473,7 @@ class _TeacherAttendanceSessionScreenState
         confirmUnmarked: false,
       );
       if (result.publicationPending) {
-        if (!mounted) return;
-        setState(() {
-          _session = result.session ?? _current;
-          _publicationPending = true;
-          _publicationFailureKind = result.failureKind;
-        });
-        _showMessage(_publicationPendingMessage(result.failureKind));
+        await _showPendingPublication(result);
         return;
       }
       if (result.status == AttendanceFinalizeStatus.reviewRequired) {
@@ -466,13 +515,7 @@ class _TeacherAttendanceSessionScreenState
           confirmUnmarked: true,
         );
         if (result.publicationPending) {
-          if (!mounted) return;
-          setState(() {
-            _session = result.session ?? _current;
-            _publicationPending = true;
-            _publicationFailureKind = result.failureKind;
-          });
-          _showMessage(_publicationPendingMessage(result.failureKind));
+          await _showPendingPublication(result);
           return;
         }
       }
@@ -491,8 +534,14 @@ class _TeacherAttendanceSessionScreenState
         _publicationFailureKind = null;
       });
       _showMessage('Asistencia finalizada y publicada para sus estudiantes.');
-      await _load();
+      await _load(knownPublication: result);
     });
+  }
+
+  Future<void> _showPendingPublication(AttendanceFinalizeResult result) async {
+    if (!mounted) return;
+    _showMessage(_publicationPendingMessage(result.failureKind));
+    await _load(knownPublication: result);
   }
 
   Future<void> _voidSession() async {
@@ -525,6 +574,7 @@ class _TeacherAttendanceSessionScreenState
 
   Future<void> _correct(AttendanceRosterEntry entry) async {
     if (_correctionOpen || _processing || _publicationPending) return;
+    final epoch = _epoch;
     final session = _current;
     final segment = session.mode == AttendanceMode.minutes
         ? _selectedSegment
@@ -548,7 +598,7 @@ class _TeacherAttendanceSessionScreenState
     } finally {
       _correctionOpen = false;
     }
-    if (selected == null || !mounted) return;
+    if (selected == null || !mounted || epoch != _epoch) return;
     if (selected == current.mark) {
       _showMessage('No hay cambios que guardar.');
       return;
@@ -562,7 +612,7 @@ class _TeacherAttendanceSessionScreenState
         replacement: replacement,
         reason: '',
       );
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       setState(() {
         _session = result.session;
         _replaceEntry(result.entry);
@@ -572,6 +622,7 @@ class _TeacherAttendanceSessionScreenState
             ? 'La marca ya tenía ese valor.'
             : 'Cambios guardados en el registro de asistencia.',
       );
+      if (!result.alreadyApplied) _loadHistory(result.session);
     });
   }
 
@@ -835,7 +886,7 @@ class _TeacherAttendanceSessionScreenState
                 busy: _processing,
                 onPressed: _processing || _publicationChecking
                     ? null
-                    : _finalize,
+                    : () => _checkPublication(session, notify: true),
               ),
             ),
           ],
@@ -1006,7 +1057,8 @@ class _TeacherAttendanceSessionScreenState
                       finalized &&
                       ready &&
                       !_processing &&
-                      !_publicationChecking,
+                      !_publicationChecking &&
+                      !_publicationPending,
                   onPresent: () => _markEntry(entry, AttendanceMark.present),
                   onAbsent: () => _markEntry(entry, AttendanceMark.absent),
                   onCorrect: () => _correct(entry),
@@ -1035,12 +1087,28 @@ class _TeacherAttendanceSessionScreenState
               onPressed: _processing || _publicationChecking ? null : _finalize,
             ),
           ],
-          if (_extrasLoading)
+          if (_historyLoading || _requestsLoading)
             const AttendanceWaitStatus(
-              message: 'Cargando historial y solicitudes?',
+              message: 'Cargando historial y solicitudes…',
             ),
-          if (_extrasError != null)
-            AttendanceErrorCard(error: _extrasError!, onRetry: _load),
+          if (_historyError != null)
+            CourseStateCard(
+              title: 'No pudimos cargar el historial de cambios',
+              message: attendanceErrorMessage(_historyError!),
+              action: TextButton(
+                onPressed: () => _loadHistory(session),
+                child: const Text('Reintentar historial'),
+              ),
+            ),
+          if (_requestsError != null)
+            CourseStateCard(
+              title: 'No pudimos cargar las solicitudes',
+              message: attendanceErrorMessage(_requestsError!),
+              action: TextButton(
+                onPressed: () => _loadRequests(session),
+                child: const Text('Reintentar solicitudes'),
+              ),
+            ),
           if (_requests.isNotEmpty)
             const CourseSectionHeading(
               title: 'Solicitudes de justificaci\u00f3n',

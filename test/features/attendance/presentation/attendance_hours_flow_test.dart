@@ -50,9 +50,11 @@ void main() {
     await tester.tap(find.text('Justificaciones pendientes'));
     await tester.pumpAndSettle();
     expect(find.textContaining('07:00–08:00'), findsOneWidget);
+    await _capture(tester, 'pending-requests');
     await tester.tap(find.text('Estudiante Alfa'));
     await tester.pumpAndSettle();
     expect(find.text('Solicitud de prueba'), findsOneWidget);
+    await _capture(tester, 'pending-detail');
     await tester.tap(find.text('Aprobar'));
     await tester.pumpAndSettle();
     expect(find.text('Sin solicitudes pendientes'), findsOneWidget);
@@ -106,6 +108,26 @@ void main() {
     },
   );
 
+  testWidgets('secondary history retry leaves the loaded roster in place', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized)
+      ..historyFailures = 1;
+    await _pump(tester, repo);
+    final retry = find.text('Reintentar historial');
+    await tester.scrollUntilVisible(
+      retry.hitTestable(),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    final reads = repo.rosterReads;
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    expect(retry, findsNothing);
+    expect(repo.rosterReads, reads);
+    expect(repo.finalizeCalls, 1);
+  });
+
   testWidgets('second hour changes absent to present with an empty reason', (
     tester,
   ) async {
@@ -158,7 +180,7 @@ void main() {
   testWidgets(
     'student submits once and pending text explains the counted absence',
     (tester) async {
-      final repo = _HoursRepository();
+      final repo = _HoursRepository()..requestLookupFailures = 1;
       final record = AttendanceRecord(
         courseId: 'course',
         sessionId: 'session',
@@ -189,6 +211,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.text('No pudimos consultar tu solicitud.'), findsOneWidget);
+      expect(find.textContaining('perfil docente'), findsNothing);
+      await tester.tap(find.text('Volver a consultar'));
+      await tester.pumpAndSettle();
+      expect(find.text('No pudimos consultar tu solicitud.'), findsNothing);
       await tester.tap(find.text('Solicitar justificaci\u00f3n'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Ausencia sint\u00e9tica');
@@ -570,7 +597,7 @@ Course _course() => Course(
   ),
 );
 
-class _HoursRepository implements AttendanceRepository {
+class _HoursRepository extends AttendanceRepository {
   _HoursRepository({
     AttendanceSessionStatus status = AttendanceSessionStatus.inProgress,
   }) {
@@ -597,6 +624,7 @@ class _HoursRepository implements AttendanceRepository {
   int finalizeCalls = 0;
   int voidCalls = 0, restoreCalls = 0, submissions = 0;
   Completer<void>? publicationGate, historyGate;
+  int historyFailures = 0, requestLookupFailures = 0;
   List<AttendanceJustificationRequest> requests = [];
   bool failMark = false;
   String? correctionReason;
@@ -740,6 +768,10 @@ class _HoursRepository implements AttendanceRepository {
     int pageSize = 25,
   }) async {
     await historyGate?.future;
+    if (historyFailures > 0) {
+      historyFailures--;
+      throw const AttendanceFailure(AttendanceFailureKind.unavailable);
+    }
     return AttendanceSessionEventPage(items: [], nextCursor: null);
   }
 
@@ -866,7 +898,14 @@ class _HoursRepository implements AttendanceRepository {
   Future<AttendanceJustificationRequest?> getMyJustification({
     required AttendanceRecord record,
     required String? segmentId,
-  }) async => requests.firstOrNull;
+  }) async {
+    if (requestLookupFailures > 0) {
+      requestLookupFailures--;
+      throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
+    }
+    return requests.firstOrNull;
+  }
+
   @override
   Future<AttendanceJustificationRequest> submitJustification({
     required AttendanceRecord record,

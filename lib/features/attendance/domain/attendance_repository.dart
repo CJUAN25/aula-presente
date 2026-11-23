@@ -5,6 +5,7 @@ import 'attendance_config.dart';
 import 'attendance_mode.dart';
 import 'attendance_occurrence.dart';
 import 'attendance_record.dart';
+import 'attendance_segment.dart';
 import 'attendance_session.dart';
 import 'attendance_session_event.dart';
 import 'attendance_justification_request.dart';
@@ -12,7 +13,55 @@ import 'attendance_justification_request.dart';
 /// Persistence boundary for course attendance. Implementations must derive
 /// authenticated identities from Firebase Auth and enforce the published
 /// Firestore rules; presentation code never passes a student UID.
-abstract interface class AttendanceRepository {
+typedef AttendanceSessionView = ({
+  AttendanceSession session,
+  List<AttendanceRosterEntry> roster,
+  List<AttendanceSegment> segments,
+});
+
+abstract class AttendanceRepository {
+  Future<AttendanceSessionView> loadSessionView({
+    required String courseId,
+    required String occurrenceId,
+  }) async {
+    final session = await getSession(
+      courseId: courseId,
+      occurrenceId: occurrenceId,
+    );
+    if (session == null) throw StateError('La sesión ya no está disponible.');
+    final roster = <AttendanceRosterEntry>[];
+    final segments = <AttendanceSegment>[];
+    Future<void> loadRoster() async {
+      AttendanceRosterCursor? cursor;
+      do {
+        final page = await listRoster(
+          session: session,
+          cursor: cursor,
+          pageSize: 100,
+        );
+        roster.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
+    }
+
+    Future<void> loadSegments() async {
+      if (session.mode == AttendanceMode.meeting) return;
+      AttendanceSegmentCursor? cursor;
+      do {
+        final page = await listSegments(
+          session: session,
+          cursor: cursor,
+          pageSize: 100,
+        );
+        segments.addAll(page.items);
+        cursor = page.nextCursor;
+      } while (cursor != null);
+    }
+
+    await Future.wait([loadRoster(), loadSegments()]);
+    return (session: session, roster: roster, segments: segments);
+  }
+
   Future<AttendanceSession> restoreSession({
     required String courseId,
     required String occurrenceId,

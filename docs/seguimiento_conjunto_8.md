@@ -22,6 +22,30 @@ En **Asistencia → Gestionar → Justificaciones pendientes** una consulta de u
 
 Referencia: páginas 51 y 54 del PDF vigente. Se conservaron las tarjetas de lista y las acciones de decisión. La bandeja solo muestra pendientes y usa el texto breve de C8. La consulta `status == pending` y `__name__ ASC` usa el índice automático de un campo. Pasaron la navegación desde el curso, la actualización del indicador, la paginación, los controles de propietario y la decisión sobre solicitudes de horas. Commit recuperable por el título «Agrega bandeja de justificaciones pendientes por curso». Siguiente módulo: cierre de rendimiento y regresiones integradas.
 
+### Apertura y publicación
+
+Se midió la ruta de sesión con un toque en un botón de prueba, las pantallas y el repositorio Flutter reales, y un adaptador Firestore sintético con 20 ms por consulta o lectura. La primera respuesta fue el primer frame de prueba (0 ms de reloj simulado). La lista requirió una o dos páginas completas. Las trazas `[C8]` de la app marcan las mismas etapas desde el toque en el calendario. Los tiempos son comparativos y el TECNO queda pendiente.
+
+| Flujo y filas | Lista antes → después | Secundarias antes → después | Lecturas directas antes → después | Lecturas en transacciones antes → después |
+| --- | ---: | ---: | ---: | ---: |
+| Continuar, 12 | 120 → 80 ms | 180 → 80 ms | 7 → 3 | 0 → 0 |
+| Continuar, 102 | 180 → 100 ms | 240 → 100 ms | 9 → 3 | 0 → 0 |
+| Ver, 12 | 120 → 80 ms | 340 → 200 ms | 35 → 22 | 14 → 0 |
+| Ver, 102 | 180 → 100 ms | 1380 → 540 ms | 217 → 112 | 113 → 0 |
+
+La lectura principal valida el perfil una vez, lee nómina/tramos en paralelo y comprueba versión, conteos y tramos antes de mostrar la lista. Volver al calendario actualiza solo el encuentro y el indicador. Cada parte secundaria tiene su propio error y reintento. Durante el registro activo no se consultan solicitudes que todavía no pueden existir. Al abrir una sesión finalizada se valida cada proyección. Si todas están publicadas, se conserva la barrera de versión y se omite el ciclo de transacciones/segunda lectura. Si hay proyecciones privadas se publican únicamente esas filas, se verifican todos los resultados y se revalida la versión de la sesión. El comprobante de una finalización recién confirmada evita otra verificación si coincide la versión.
+
+El conjunto de regresiones también reproduce la secuencia 60/120 → 120/120 → 60/120 → 0/120 desde la pantalla con repositorio real y datos sintéticos, en sesión normal, reprogramada y restaurada. Incluye un tramo de 45 y conserva 25 minutos históricos del otro tramo. Los fixtures de Firestore prueban consulta por identidad, estados y decisiones atómicas. Commit recuperable por el título «Reduce lecturas al abrir y comprobar asistencia». Siguiente módulo: verificación integrada de C8 y fusión en C9.
+
+### Validación en el TECNO para 1.0.2+3
+
+1. En Firebase Console selecciona **aula-presente-movil-juan-2026 → Firestore Database → (default) → Reglas**. Publica el archivo completo `firestore.rules` del nuevo commit C8. `firestore.indexes.json` no cambió. Comprueba que el índice anterior `attendance_records` siga habilitado y que en **Índices → Campo único** no haya una exención para `attendance_requests.status`. La bandeja usa ese índice automático y no requiere esperar a que se construya un compuesto nuevo.
+2. Instala la APK C8 de esta revisión. Para ejecutar desde VS Code, abre la rama `feature/conjunto-8-asistencia-manual-v2`, corre `flutter pub get` y selecciona el TECNO en el selector de dispositivos. En terminal puedes usar `flutter run -d ID_DEL_TECNO` con el identificador de `flutter devices`.
+3. Como docente dueño abre **Mis cursos → Lógica → Asistencia → Gestionar → Ver asistencia** en 10:00–12:00 y en la reprogramada 06:00–08:00 del 16/11. Con un estudiante de prueba y ambos tramos presentes, cambia el segundo a Ausente (60/120), el primero a Ausente (120/120), el segundo a Presente (60/120) y el primero a Presente (0/120). Después de cada cambio comprueba la fila docente al reabrir y el historial propio como estudiante. Cancelar o guardar la misma selección conserva lo anterior.
+4. Deja dos ausencias de prueba por horas. En **Mis materias → curso → Consultar asistencia**, envía un texto por tramo. El historial debe abrir y la falta pendiente sigue contando. Desde **Justificaciones pendientes** del curso, lee ambas, aprueba una y rechaza la otra. Como estudiante comprueba el resultado, el mensaje de contacto, el envío deshabilitado y que solo se descuente la aprobada. Repite con dos encuentros en un curso por clases y confirma que el total permanece igual en ambas modalidades.
+5. Anula una **asistencia finalizada**. Comprueba primero **Cancelar**. Después confirma y usa **Restaurar asistencia** sobre esa misma sesión. Si se interrumpe, vuelve a abrir y continúa la restauración. Deben volver las marcas y unidades anteriores. Confirma que todavía se puede corregir un tramo. La reprogramación del calendario cambia fecha y horario efectivo de un encuentro y es un recorrido aparte.
+6. Abre una sesión en curso con **Continuar asistencia** y otra finalizada con **Ver asistencia**. Comprueba respuesta visible al toque, lista disponible antes de las comprobaciones secundarias y reintento específico si alguna falla. Da por cerrado C8 cuando se cumplan estos recorridos con las reglas nuevas en el TECNO.
+
 ## Estado final de C8 — listo para TECNO — 17/11/2026
 
 **Código:** `feature/conjunto-8-asistencia-manual-v2`, commit de implementación `ee031927a7189dc024d12c23d5fc0d58dcb92645`; `origin` confirmó el mismo SHA. El commit incluye solo la corrección de C8, reglas, pruebas y documentación indicada en su diff. Un commit documental posterior registra la activación verificada. La rama original se conserva sin modificar.
