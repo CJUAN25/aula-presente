@@ -5,6 +5,7 @@ import 'package:aula_presente/app/attendance_repository_scope.dart';
 import 'dart:async';
 
 import 'package:aula_presente/app/theme/app_theme.dart';
+import 'package:aula_presente/features/attendance/domain/attendance_record.dart';
 import 'package:aula_presente/features/courses/domain/course.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment_failure.dart';
@@ -135,6 +136,9 @@ class _Repository implements EnrollmentRepository {
   int directoryCalls = 0;
   int pendingLinkCalls = 0;
   int myCoursesCalls = 0;
+  Duration ioDelay = Duration.zero;
+  int detailReads = 0;
+  Completer<void>? linkGate;
   final callOrder = <String>[];
   Completer<EnrollmentResult>? pendingDecision;
   Completer<EnrollmentHistoryPage>? pendingHistoryPage;
@@ -156,10 +160,15 @@ class _Repository implements EnrollmentRepository {
   @override
   String? get currentUid => uid;
 
+  Future<void> _roundTrips(int trips) async {
+    if (ioDelay != Duration.zero) await Future<void>.delayed(ioDelay * trips);
+  }
+
   @override
   Future<void> ensureStudentDirectoryEntry() async {
     directoryCalls++;
     callOrder.add('directory');
+    await _roundTrips(2);
   }
 
   @override
@@ -209,6 +218,7 @@ class _Repository implements EnrollmentRepository {
   }) async {
     myCoursesCalls++;
     callOrder.add('courses');
+    await _roundTrips(2);
     return EnrollmentPage(
       items: records.where((record) => record.status == 'active').toList(),
       nextCursor: null,
@@ -268,6 +278,8 @@ class _Repository implements EnrollmentRepository {
   Future<PendingEnrollmentLinkSummary> linkOwnPendingEnrollments() async {
     pendingLinkCalls++;
     callOrder.add('link');
+    await _roundTrips(3);
+    await linkGate?.future;
     if (failPendingLink case final error?) throw error;
     return pendingLinkSummary;
   }
@@ -352,9 +364,14 @@ class _Repository implements EnrollmentRepository {
   Future<Enrollment> getCourseEnrollment({
     required String courseId,
     required String studentUid,
-  }) async => records.firstWhere(
-    (record) => record.courseId == courseId && record.studentUid == studentUid,
-  );
+  }) async {
+    detailReads += 2;
+    await _roundTrips(2);
+    return records.firstWhere(
+      (record) =>
+          record.courseId == courseId && record.studentUid == studentUid,
+    );
+  }
 
   @override
   Future<EnrollmentHistoryPage> listEnrollmentHistory({
@@ -374,18 +391,44 @@ class _Repository implements EnrollmentRepository {
   }
 
   @override
-  Future<Course> getMyEnrolledCourse(String courseId) async => _course();
+  Future<Course> getMyEnrolledCourse(String courseId) async {
+    detailReads += 4;
+    await _roundTrips(3);
+    final enrollment = records.firstWhere(
+      (record) => record.courseId == courseId && record.studentUid == uid,
+    );
+    if (enrollment.status != 'active') {
+      throw const EnrollmentFailure(EnrollmentFailureKind.withdrawn);
+    }
+    return _course();
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-Widget _app(Widget screen, {double scale = 1}) => MaterialApp(
+class _AttendanceLatency extends CalendarAttendanceStub {
+  @override
+  Future<AttendanceRecordPage> listMyAttendanceRecords({
+    required String courseId,
+    AttendanceRecordCursor? cursor,
+    int pageSize = 25,
+  }) async {
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    return AttendanceRecordPage(items: const [], nextCursor: null);
+  }
+}
+
+Widget _app(
+  Widget screen, {
+  double scale = 1,
+  CalendarAttendanceStub? attendance,
+}) => MaterialApp(
   theme: AppTheme.dark,
   builder: (context, child) => MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
     child: AttendanceRepositoryScope(
-      repository: CalendarAttendanceStub(),
+      repository: attendance ?? CalendarAttendanceStub(),
       child: child!,
     ),
   ),
@@ -441,8 +484,60 @@ Future<void> _tapStatusAction(WidgetTester tester, String label) async {
 }
 
 void main() {
+  testWidgets('C8 local timings for student routes', (tester) async {
+    tester.view.physicalSize = const Size(560, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = _Repository()
+      ..uid = 'student-1'
+      ..ioDelay = const Duration(milliseconds: 20)
+      ..records.add(_enrollment());
+    await tester.pumpWidget(
+      _app(
+        StudentCoursesScreen(repository: repository),
+        attendance: _AttendanceLatency(),
+      ),
+    );
+    Future<int> until(Finder finder) async {
+      for (var ms = 0; ms <= 500; ms += 10) {
+        if (finder.evaluate().isNotEmpty) return ms;
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+      fail('No apareció el contenido del recorrido medido');
+    }
+
+    int? courses, secondary;
+    for (var ms = 0; ms <= 500; ms += 10) {
+      if (find.text('Curso de prueba').hitTestable().evaluate().isNotEmpty) {
+        courses ??= ms;
+      }
+      if (find.text('Comprobando tu inscripción').evaluate().isEmpty) {
+        secondary ??= ms;
+      }
+      if (courses != null && secondary != null) break;
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    expect(courses, isNotNull);
+    expect(secondary, isNotNull);
+    await tester.tap(find.text('Curso de prueba'));
+    await tester.pump();
+    final detail = await until(find.text('Horario semanal'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Consultar asistencia'));
+    await tester.pump();
+    final attendance = await until(
+      find.text('Aún no hay registros publicados'),
+    );
+    // ignore: avoid_print
+    print(
+      'C8_STUDENT courses=$courses secondary=$secondary detail=$detail detailReads=${repository.detailReads} attendance=$attendance courseQueries=${repository.myCoursesCalls}',
+    );
+    await tester.pumpAndSettle();
+  });
+
   testWidgets(
-    'Mis materias publica el directorio antes de enlazar y consulta después',
+    'Mis materias inicia su consulta antes y vuelve a consultar al vincular',
     (tester) async {
       final repository = _Repository()
         ..uid = 'student-1'
@@ -462,12 +557,62 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(repository.callOrder.take(3), ['directory', 'link', 'courses']);
+      expect(repository.callOrder, ['courses', 'directory', 'link', 'courses']);
       expect(repository.pendingLinkCalls, 1);
       expect(find.text('Curso de prueba'), findsOneWidget);
       expect(find.textContaining('Se vinculó 1 materia'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'Mis materias shows existing courses while linking and refreshes once',
+    (tester) async {
+      final repository = _Repository()
+        ..uid = 'student-1'
+        ..records.add(_enrollment())
+        ..linkGate = Completer<void>()
+        ..pendingLinkSummary = PendingEnrollmentLinkSummary(
+          rows: const [
+            PendingEnrollmentLinkRowResult(
+              courseId: 'new-course',
+              email: 'student@example.invalid',
+              outcome: PendingEnrollmentLinkOutcome.linked,
+            ),
+          ],
+        );
+      await tester.pumpWidget(
+        _app(StudentCoursesScreen(repository: repository)),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.text('Curso de prueba'), findsOneWidget);
+      expect(find.text('Comprobando tu inscripción'), findsOneWidget);
+      expect(repository.myCoursesCalls, 1);
+      repository.records.add(
+        _enrollment(courseId: 'new-course', subject: 'Curso recién vinculado'),
+      );
+      repository.linkGate!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Curso recién vinculado'), findsOneWidget);
+      expect(repository.myCoursesCalls, 2);
+    },
+  );
+
+  testWidgets('late linking results are hidden if the session changed', (
+    tester,
+  ) async {
+    final repository = _Repository()
+      ..uid = 'student-1'
+      ..records.add(_enrollment())
+      ..linkGate = Completer<void>();
+    await tester.pumpWidget(_app(StudentCoursesScreen(repository: repository)));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Curso de prueba'), findsOneWidget);
+    repository.uid = 'student-2';
+    repository.linkGate!.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Curso de prueba'), findsNothing);
+    expect(find.text('La sesión cambió. Vuelve a entrar.'), findsOneWidget);
+  });
 
   for (final width in [320.0, 390.0, 430.0]) {
     testWidgets(
@@ -930,7 +1075,7 @@ void main() {
   ) async {
     final repository = _Repository()
       ..uid = 'student-1'
-      ..records.add(_enrollment(status: 'withdrawn'));
+      ..records.add(_enrollment());
     await tester.pumpWidget(
       _app(
         StudentEnrolledCourseScreen(
@@ -939,6 +1084,11 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    expect(find.text('Horario semanal'), findsOneWidget);
+    repository.records[0] = _enrollment(status: 'withdrawn');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpAndSettle();
     expect(find.text('Tu inscripción fue retirada'), findsOneWidget);
     expect(find.text('Horario semanal'), findsNothing);

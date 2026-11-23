@@ -18,6 +18,23 @@ Cada tarjeta muestra, en orden, la hora y la marca de todos sus tramos con los d
 
 La adaptación usa el PDF vigente, páginas 49 (**Registro manual**) y 55–56 (tarjetas, marcas y acciones). Las filas por hora extienden esa tarjeta porque el PDF no muestra una sesión con varios tramos editables. Se revisó una captura de widget a 320 px y escala 1,6 con nombre largo y tres horas. El botón de guardado amplía su altura para mostrar su texto completo. Pasaron 58 pruebas dirigidas, incluidos los estados de las filas, edición de la segunda hora con la primera seleccionada, un tramo de 35 minutos, corrección de un tramo de 45 minutos con una ausencia parcial previa de 25, y relectura de resultados normales, reprogramados y restaurados. Siguiente módulo: Mis materias.
 
+### Mis materias y apertura del curso
+
+La lista de matrículas activas arranca en paralelo con la preparación del directorio. La vinculación espera el directorio y vuelve a consultar la primera página si pudo cambiar una matrícula. Un fallo secundario deja las materias visibles y ofrece reintentar. El detalle valida el perfil y la matrícula activa una vez y pide al servidor el curso y los bloques en paralelo. Al volver del calendario o reanudar la app, deja temporalmente visible el horario de la misma cuenta y materia con los accesos deshabilitados, y retira el contenido si termina la autorización. Una respuesta tardía de otra cuenta se descarta.
+
+Prueba de widgets en Windows con reloj simulado, una materia, sin vínculos nuevos, un bloque y el mismo modelo de 20 ms por operación de red antes y después. Los números son locales y reproducibles con la prueba `C8 local timings for student routes`. En el detalle se cuentan solicitudes (la consulta de bloques puede devolver varios documentos).
+
+| Etapa | Antes | Después |
+| --- | ---: | ---: |
+| Mis materias, primera lista utilizable | 140 ms | 40 ms |
+| Trabajo secundario completo, directorio y vinculación | 100 ms | 100 ms |
+| Consultas de página sin vínculos nuevos | 1 | 1 |
+| Detalle con horario disponible | 100 ms | 60 ms |
+| Lecturas puntuales o consultas del detalle | 5 | 4 |
+| Consultar asistencia, historial inicial | 80 ms | 80 ms |
+
+El historial inicial conserva su consulta. El repositorio de justificaciones comparte la verificación de perfil/matrícula cuando los botones se consultan a la vez. Cada botón sigue leyendo su solicitud al consultar o reintentar. Pasaron 102 pruebas dirigidas, con directorio/vinculación interrumpida, actualización al vincular, cambio de cuenta, retiro en un detalle abierto y conteo de cuatro solicitudes del detalle en el repositorio real con adaptador sintético. En el TECNO quedan pendientes los tiempos y el efecto de la red real. Siguiente módulo: ejecución integrada y compilación de 1.0.3+4.
+
 ## Revalidación del 22/11/2026
 
 El propietario comprobó en TECNO el cambio de Ausente a Presente en la segunda hora y la aprobación por encuentro. Reportó que el cambio inverso se anunciaba como guardado aunque no cambiaba la marca, que el historial por horas no podía consultar la solicitud y que las vistas docentes tardaban en abrir. Punto de partida de C8: `605ac9f3b8017f7c212c99ae53df65fdff34267e`.

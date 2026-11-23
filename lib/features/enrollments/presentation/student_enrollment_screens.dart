@@ -59,7 +59,6 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
   Future<void> _refresh() async {
     if (_refreshing) return;
     if (_sessionUid == null || widget.repository.currentUid != _sessionUid) {
-      await _load(reset: true);
       return;
     }
     setState(() {
@@ -69,12 +68,13 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
       _linkError = null;
       _linkSummary = null;
     });
+    final initial = _load(reset: true);
     Object? directoryError;
     Object? linkError;
     PendingEnrollmentLinkSummary? summary;
+    var attemptedLink = false;
     try {
       await widget.repository.ensureStudentDirectoryEntry();
-      if (!mounted || widget.repository.currentUid != _sessionUid) return;
     } catch (error) {
       linkError = error;
       directoryError = error;
@@ -83,27 +83,48 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
         mounted &&
         widget.repository.currentUid == _sessionUid) {
       try {
+        attemptedLink = true;
         summary = await widget.repository.linkOwnPendingEnrollments();
       } catch (error) {
         linkError = error;
       }
     }
-    if (mounted) {
-      setState(() {
-        _refreshing = false;
-        _publishing = false;
+    await initial;
+    if (!mounted) return;
+    final sameAccount = widget.repository.currentUid == _sessionUid;
+    final mayHaveChangedCourses =
+        attemptedLink &&
+        (linkError != null ||
+            (summary?.rows.any(
+                  (row) =>
+                      row.outcome != PendingEnrollmentLinkOutcome.needsReview,
+                ) ??
+                false));
+    if (sameAccount && mayHaveChangedCourses) {
+      await _load(reset: true);
+    }
+    if (!mounted) return;
+    setState(() {
+      _refreshing = false;
+      _publishing = false;
+      if (widget.repository.currentUid == _sessionUid) {
         _directoryError = directoryError;
         _linkError = linkError;
         _linkSummary = summary;
-      });
-    }
-    if (mounted && widget.repository.currentUid == _sessionUid) {
-      await _load(reset: true);
-    }
+      } else {
+        _items.clear();
+        _cursor = null;
+        _hasMore = false;
+      }
+    });
   }
 
   Future<void> _load({bool reset = false}) async {
-    if (_loading && !reset) return;
+    if (_sessionUid == null ||
+        widget.repository.currentUid != _sessionUid ||
+        (_loading && !reset)) {
+      return;
+    }
     final epoch = ++_epoch;
     final requestCursor = reset ? null : _cursor;
     setState(() {
@@ -131,7 +152,13 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
         setState(() {
           _error = error;
           if (error is EnrollmentFailure &&
-              error.kind == EnrollmentFailureKind.permissionDenied) {
+              const {
+                EnrollmentFailureKind.permissionDenied,
+                EnrollmentFailureKind.unauthenticated,
+                EnrollmentFailureKind.emailNotVerified,
+                EnrollmentFailureKind.profileInvalid,
+                EnrollmentFailureKind.studentRoleRequired,
+              }.contains(error.kind)) {
             _items.clear();
             _cursor = null;
             _hasMore = false;
@@ -210,14 +237,17 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
     );
   }
 
-  void _openCourse(Enrollment enrollment) => Navigator.of(context).push<void>(
-    MaterialPageRoute<void>(
-      builder: (_) => StudentEnrolledCourseScreen(
-        enrollment: enrollment,
-        repository: widget.repository,
+  Future<void> _openCourse(Enrollment enrollment) async {
+    if (widget.repository.currentUid != _sessionUid) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => StudentEnrolledCourseScreen(
+          enrollment: enrollment,
+          repository: widget.repository,
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -286,7 +316,7 @@ class _StudentCoursesScreenState extends State<StudentCoursesScreen> {
             EnrollmentFailureCard(error: _error, onRetry: _refresh),
             const SizedBox(height: 16),
           ],
-          if (!_loading && _error == null && _items.isEmpty)
+          if (!_loading && !_publishing && _error == null && _items.isEmpty)
             const CourseStateCard(
               title: 'Aún no tienes materias inscritas',
               message: 'El docente debe agregar tu cuenta existente al curso. No necesitas un código de unión para esta entrega.',
@@ -389,6 +419,21 @@ class _StudentEnrolledCourseScreenState
   }
 
   @override
+  void didUpdateWidget(covariant StudentEnrolledCourseScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.enrollment.courseId == widget.enrollment.courseId &&
+        identical(oldWidget.repository, widget.repository)) {
+      return;
+    }
+    _loadEpoch++;
+    _course = null;
+    _withdrawn = false;
+    _error = null;
+    _loading = false;
+    _load();
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final route = ModalRoute.of(context);
@@ -430,23 +475,9 @@ class _StudentEnrolledCourseScreenState
     setState(() {
       _loading = true;
       _error = null;
-      _course = null;
       _withdrawn = false;
     });
     try {
-      final enrollment = await widget.repository.getCourseEnrollment(
-        courseId: widget.enrollment.courseId,
-        studentUid: _sessionUid,
-      );
-      if (!mounted || epoch != _loadEpoch) return;
-      if (widget.repository.currentUid != _sessionUid) return;
-      if (enrollment.status != 'active') {
-        setState(() {
-          _course = null;
-          _withdrawn = true;
-        });
-        return;
-      }
       final course = await widget.repository.getMyEnrolledCourse(
         widget.enrollment.courseId,
       );
@@ -459,7 +490,10 @@ class _StudentEnrolledCourseScreenState
       if (mounted && epoch == _loadEpoch) {
         setState(() {
           _course = null;
-          _error = error;
+          _withdrawn =
+              error is EnrollmentFailure &&
+              error.kind == EnrollmentFailureKind.withdrawn;
+          _error = _withdrawn ? null : error;
         });
       }
     } finally {
@@ -494,6 +528,8 @@ class _StudentEnrolledCourseScreenState
           const SizedBox(height: 20),
           if (_loading && course == null)
             const CourseLoading(message: 'Cargando información del curso…'),
+          if (_loading && course != null)
+            const CourseLoading(message: 'Comprobando el acceso al curso…'),
           if (_withdrawn)
             CourseStateCard(
               title: 'Tu inscripción fue retirada',
@@ -551,27 +587,31 @@ class _StudentEnrolledCourseScreenState
             CoursePrimaryButton(
               label: 'Ver calendario previsto',
               icon: Icons.calendar_month_outlined,
-              onPressed: () => Navigator.of(context).push<void>(
-                MaterialPageRoute<void>(
-                  builder: (_) => CourseCalendarScreen(
-                    course: course,
-                    studentRepository: widget.repository,
-                  ),
-                ),
-              ),
+              onPressed: _loading
+                  ? null
+                  : () => Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => CourseCalendarScreen(
+                          course: course,
+                          studentRepository: widget.repository,
+                        ),
+                      ),
+                    ),
             ),
             const SizedBox(height: 10),
             CourseSecondaryButton(
               label: 'Consultar asistencia',
               icon: Icons.fact_check_outlined,
-              onPressed: () => Navigator.of(context).push<void>(
-                MaterialPageRoute<void>(
-                  builder: (_) => StudentAttendanceScreen(
-                    course: course,
-                    repository: AttendanceRepositoryScope.read(context),
-                  ),
-                ),
-              ),
+              onPressed: _loading
+                  ? null
+                  : () => Navigator.of(context).push<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => StudentAttendanceScreen(
+                          course: course,
+                          repository: AttendanceRepositoryScope.read(context),
+                        ),
+                      ),
+                    ),
             ),
           ],
         ],

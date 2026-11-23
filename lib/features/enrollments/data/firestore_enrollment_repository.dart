@@ -1540,14 +1540,33 @@ class FirestoreEnrollmentRepository implements EnrollmentRepository {
       final user = _requireVerifiedUser();
       final uid = user.uid;
       await _requireProfile(user, role: 'student');
+      final document = await _enrollments(courseId)
+          .doc(uid)
+          .get(const GetOptions(source: Source.server));
+      _requireSameUser(uid);
+      if (!document.exists) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.courseUnavailable);
+      }
+      final enrollment = _enrollmentFromDocument(document, courseId: courseId);
+      if (enrollment.studentUid != uid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.permissionDenied);
+      }
+      if (enrollment.status != 'active') {
+        throw const EnrollmentFailure(EnrollmentFailureKind.withdrawn);
+      }
       final course = await FirestoreCourseRepository(
         auth: _auth,
         firestore: _firestore,
       ).getEnrolledCourse(courseId);
       _requireSameUser(uid);
+      if (course.ownerUid != enrollment.ownerUid) {
+        throw const EnrollmentFailure(EnrollmentFailureKind.invalidData);
+      }
       return course;
     } on EnrollmentFailure {
       rethrow;
+    } on FormatException catch (error) {
+      throw EnrollmentFailure(EnrollmentFailureKind.invalidData, cause: error);
     } on CourseFailure catch (error) {
       throw switch (error.kind) {
         CourseFailureKind.unauthenticated => const EnrollmentFailure(

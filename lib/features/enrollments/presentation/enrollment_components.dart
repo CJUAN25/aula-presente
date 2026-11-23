@@ -24,6 +24,7 @@ String enrollmentErrorMessage(Object? error, {bool uncertainWrite = false}) {
       EnrollmentFailureKind.staleEnrollment => 'La inscripción cambió desde que abriste la ficha. Actualiza la lista antes de decidir.',
       EnrollmentFailureKind.courseUnavailable =>
         'Este curso ya no está disponible para tu cuenta.',
+      EnrollmentFailureKind.withdrawn => 'Tu inscripción fue retirada.',
       EnrollmentFailureKind.permissionDenied => 'Firestore rechazó la operación por permisos. Comprueba tu acceso y las reglas publicadas.',
       EnrollmentFailureKind.network =>
         uncertainWrite

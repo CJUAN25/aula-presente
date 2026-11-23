@@ -95,6 +95,67 @@ void main() {
     expect(store.serverReads, contains('users/student-one'));
   });
 
+  test(
+    'enrolled course reads one profile and stops after withdrawal',
+    () async {
+      const coursePath = 'courses/course-00';
+      const blockId = 'weekly-block-test-00001';
+      final store = _Store()
+        ..existingEnrollment = _activeEnrollment()
+        ..courseDocuments[coursePath] = {
+          'ownerUid': 'teacher-one',
+          'subject': 'Course 0',
+          'group': 'G1',
+          'period': '2026-2',
+          'program': 'Tests',
+          'timezone': CourseSchedule.academicTimezone,
+          'startDate': Timestamp.fromDate(DateTime.utc(2026, 11, 1)),
+          'endDate': Timestamp.fromDate(DateTime.utc(2026, 11, 30)),
+          'weeklyBlockIds': [blockId],
+          'status': 'planned',
+          'schemaVersion': 1,
+          'createdAt': _serverTimestamp,
+          'updatedAt': _serverTimestamp,
+        }
+        ..weeklyBlockDocuments['$coursePath/weekly_blocks/$blockId'] = {
+          'weekday': 1,
+          'startMinute': 600,
+          'endMinute': 660,
+          'room': null,
+          'order': 0,
+        };
+      final repository = FirestoreEnrollmentRepository(
+        auth: _Auth(),
+        firestore: store,
+      );
+      final course = await repository.getMyEnrolledCourse('course-00');
+      expect(course.schedule.weeklyBlocks.single.id, blockId);
+      expect(store.serverReads, [
+        'users/student-one',
+        '$coursePath/enrollments/student-one',
+        coursePath,
+        '$coursePath/weekly_blocks',
+      ]);
+
+      store.serverReads.clear();
+      store.existingEnrollment!['status'] = 'withdrawn';
+      await expectLater(
+        repository.getMyEnrolledCourse('course-00'),
+        throwsA(
+          isA<EnrollmentFailure>().having(
+            (failure) => failure.kind,
+            'kind',
+            EnrollmentFailureKind.withdrawn,
+          ),
+        ),
+      );
+      expect(store.serverReads, [
+        'users/student-one',
+        '$coursePath/enrollments/student-one',
+      ]);
+    },
+  );
+
   test('teacher can read an enrollment only when they own it', () async {
     final store = _Store()..existingEnrollment = _activeEnrollment();
     final repository = FirestoreEnrollmentRepository(
@@ -1604,6 +1665,8 @@ class _Store implements FirebaseFirestore {
   Map<String, dynamic>? transactionUpdate;
   Map<String, dynamic>? existingEnrollment;
   final enrollmentDocuments = <String, Map<String, dynamic>>{};
+  final courseDocuments = <String, Map<String, dynamic>>{};
+  final weeklyBlockDocuments = <String, Map<String, dynamic>>{};
   final profiles = <String, Map<String, dynamic>>{};
   Map<String, dynamic>? joinRequest;
   bool directoryAvailable = true;
@@ -1737,7 +1800,12 @@ class _Query implements Query<Map<String, dynamic>> {
 
   @override
   Query<Map<String, dynamic>> orderBy(Object field, {bool descending = false}) {
-    expect(descending, isTrue);
+    if (path.endsWith('/weekly_blocks')) {
+      expect(field, 'order');
+      expect(descending, isFalse);
+    } else {
+      expect(descending, isTrue);
+    }
     return this;
   }
 
@@ -1781,6 +1849,13 @@ class _Query implements Query<Map<String, dynamic>> {
     expect(options?.source, Source.server);
     store.serverReads.add(path);
     store.onQuery?.call();
+    if (path.endsWith('/weekly_blocks')) {
+      return _Snapshot([
+        for (final item in store.weeklyBlockDocuments.entries)
+          if (item.key.startsWith('$path/'))
+            _Document(store, item.key, item.value),
+      ]);
+    }
     if (path == 'pending_enrollments' ||
         path.endsWith('/pending_enrollments')) {
       final prefix = path == 'pending_enrollments' ? null : '$path/';
@@ -1943,6 +2018,8 @@ class _Reference implements DocumentReference<Map<String, dynamic>> {
           ? _MissingDocument(path)
           : _Document(store, path, enrollment);
     }
+    final course = store.courseDocuments[path];
+    if (course != null) return _Document(store, path, course);
     throw StateError('Unexpected document read: $path');
   }
 

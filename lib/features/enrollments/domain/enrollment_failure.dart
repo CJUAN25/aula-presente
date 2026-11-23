@@ -8,6 +8,7 @@ enum EnrollmentFailureKind {
   candidateChanged,
   staleEnrollment,
   courseUnavailable,
+  withdrawn,
   permissionDenied,
   network,
   invalidData,

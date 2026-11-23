@@ -175,18 +175,18 @@ class FirestoreCourseRepository implements CourseRepository {
         throw const CourseFailure(CourseFailureKind.emailNotVerified);
       }
       final reference = _courses.doc(courseId);
-      final document = await reference.get(
-        const GetOptions(source: Source.server),
-      );
+      const server = GetOptions(source: Source.server);
+      final snapshots = await Future.wait<Object>([
+        reference.get(server),
+        _weeklyBlocks(courseId).orderBy('order').get(server),
+      ]);
       _requireSameUser(uid);
+      final document = snapshots[0] as DocumentSnapshot<Map<String, dynamic>>;
+      final blocks = snapshots[1] as QuerySnapshot<Map<String, dynamic>>;
       final data = document.data();
       if (!document.exists || data == null || data['ownerUid'] is! String) {
         throw const CourseFailure(CourseFailureKind.invalidCourse);
       }
-      final blocks = await _weeklyBlocks(courseId)
-          .orderBy('order')
-          .get(const GetOptions(source: Source.server));
-      _requireSameUser(uid);
       return _courseFromDocument(
         document,
         blockDocuments: blocks.docs
