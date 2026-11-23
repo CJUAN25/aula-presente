@@ -30,6 +30,38 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('course opens pending justifications and updates its indicator', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized)
+      ..requests = const [
+        AttendanceJustificationRequest(
+          id: 'request',
+          sessionId: 'course|block|2026-11-05',
+          rosterEntryId: 'alfa@example.invalid',
+          studentUid: 'alfa',
+          segmentId: 'seg-2',
+          text: 'Solicitud de prueba',
+          status: AttendanceRequestStatus.pending,
+        ),
+      ];
+    await _pump(tester, repo, calendar: true);
+    expect(find.text('Hay solicitudes por revisar'), findsOneWidget);
+    await tester.tap(find.text('Justificaciones pendientes'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('07:00–08:00'), findsOneWidget);
+    await tester.tap(find.text('Estudiante Alfa'));
+    await tester.pumpAndSettle();
+    expect(find.text('Solicitud de prueba'), findsOneWidget);
+    await tester.tap(find.text('Aprobar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sin solicitudes pendientes'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Sin solicitudes pendientes'), findsOneWidget);
+    expect(repo.rosterReads, 0);
+  });
+
   testWidgets('present to absent saves the selected hour from the dialog', (
     tester,
   ) async {
@@ -808,6 +840,28 @@ class _HoursRepository implements AttendanceRepository {
     required String courseId,
     required String occurrenceId,
   }) async => requests;
+  @override
+  Future<bool> hasPendingJustifications({required String courseId}) async =>
+      requests.any((r) => r.status == AttendanceRequestStatus.pending);
+  @override
+  Future<PendingAttendanceRequestPage> listPendingJustifications({
+    required String courseId,
+    String? afterId,
+    int pageSize = 20,
+  }) async => PendingAttendanceRequestPage(
+    items: [
+      for (final request in requests.where(
+        (r) => r.status == AttendanceRequestStatus.pending,
+      ))
+        PendingAttendanceRequest(
+          request: request,
+          studentName: rows.first.displayName,
+          session: session,
+          segment: segments.last,
+          hasAbsence: true,
+        ),
+    ],
+  );
   @override
   Future<AttendanceJustificationRequest?> getMyJustification({
     required AttendanceRecord record,

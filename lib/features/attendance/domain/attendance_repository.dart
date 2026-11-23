@@ -30,6 +30,12 @@ abstract interface class AttendanceRepository {
     required String courseId,
     required String occurrenceId,
   });
+  Future<bool> hasPendingJustifications({required String courseId});
+  Future<PendingAttendanceRequestPage> listPendingJustifications({
+    required String courseId,
+    String? afterId,
+    int pageSize = 20,
+  });
   Future<void> decideJustificationRequest({
     required String courseId,
     required AttendanceJustificationRequest request,

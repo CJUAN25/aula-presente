@@ -4080,6 +4080,107 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     }
   }
 
+  Query<Map<String, dynamic>> _pendingRequests(String courseId) =>
+      _requests(courseId)
+          .where('status', isEqualTo: 'pending')
+          .orderBy(FieldPath.documentId);
+
+  @override
+  Future<bool> hasPendingJustifications({required String courseId}) async {
+    try {
+      final actor = await _requireTeacher();
+      await _requireOwnedCourse(courseId, actor.uid);
+      final result = await _pendingRequests(courseId)
+          .limit(1)
+          .get(const GetOptions(source: Source.server));
+      _requireSameUser(actor.uid);
+      return result.docs.isNotEmpty;
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    }
+  }
+
+  @override
+  Future<PendingAttendanceRequestPage> listPendingJustifications({
+    required String courseId,
+    String? afterId,
+    int pageSize = 20,
+  }) async {
+    try {
+      _validatePageSize(pageSize);
+      final actor = await _requireTeacher();
+      await _requireOwnedCourse(courseId, actor.uid);
+      var query = _pendingRequests(courseId);
+      if (afterId != null) query = query.startAfter([afterId]);
+      final result = await query
+          .limit(pageSize + 1)
+          .get(const GetOptions(source: Source.server));
+      _requireSameUser(actor.uid);
+      final requests = result.docs.take(pageSize).map(_parseRequest).toList();
+      final sessions = <String, AttendanceSession>{};
+      final rows = <(String, String), AttendanceRosterEntry>{};
+      final segments = <String, Map<String, AttendanceSegment>>{};
+      await _readInParallel(requests.map((r) => r.sessionId).toSet(), (
+        id,
+      ) async {
+        sessions[id] = await _getOwnedSession(courseId, id, actor.uid);
+      });
+      await Future.wait([
+        _readInParallel(
+          requests.map((r) => (r.sessionId, r.rosterEntryId)).toSet(),
+          (key) async {
+            final session = sessions[key.$1]!;
+            final row = await _roster(
+              courseId,
+              key.$1,
+            ).doc(key.$2).get(const GetOptions(source: Source.server));
+            _requireSameUser(actor.uid);
+            rows[key] = _parseRosterSnapshot(row, session, key.$2);
+          },
+        ),
+        _readInParallel(
+          requests
+              .where((r) => r.segmentId != null)
+              .map((r) => r.sessionId)
+              .toSet(),
+          (id) async {
+            final items = await _loadAllSegments(sessions[id]!, actor.uid);
+            segments[id] = {for (final segment in items) segment.id: segment};
+          },
+        ),
+      ]);
+      _requireSameUser(actor.uid);
+      return PendingAttendanceRequestPage(
+        items: requests
+            .map((request) {
+              final session = sessions[request.sessionId]!;
+              final row = rows[(request.sessionId, request.rosterEntryId)]!;
+              final segment = segments[request.sessionId]?[request.segmentId];
+              if (request.segmentId != null && segment == null) {
+                throw const AttendanceFailure(
+                  AttendanceFailureKind.invalidData,
+                );
+              }
+              final mark = _markForEntry(row, session.mode, request.segmentId);
+              return PendingAttendanceRequest(
+                request: request,
+                studentName: row.displayName,
+                session: session,
+                segment: segment,
+                hasAbsence:
+                    mark.mark == AttendanceMark.absent && mark.absentUnits > 0,
+              );
+            })
+            .toList(growable: false),
+        nextCursor: result.docs.length > pageSize ? requests.last.id : null,
+      );
+    } on FirebaseException catch (e) {
+      throw _translateFirebase(e);
+    } on FormatException {
+      throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    }
+  }
+
   @override
   Future<void> decideJustificationRequest({
     required String courseId,

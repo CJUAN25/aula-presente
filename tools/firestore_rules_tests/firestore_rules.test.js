@@ -5664,6 +5664,68 @@ test("C8 requests: two hourly keys retain legacy identity and paginate by course
   assert.notEqual(first.docs[0].id, second.docs[0].id);
 });
 
+test("C8 requests: a corrected absence rejects approval and can be closed without changing totals", async () => {
+  const f = await c8RequestFixture("minutes", true);
+  const {owner, student, course, id, rowId, row, parent, record} = f;
+  const [firstSegment, secondSegment] = f.segments.map(s => s.segmentId);
+  const ref = doc(student, "courses", course, "attendance_requests", `${id}|${rowId}|${secondSegment}`);
+  await assertSucceeds(setDoc(ref, {
+    sessionId: id, rosterEntryId: rowId, studentUid: "student", segmentId: secondSegment,
+    text: "Solicitud sintética", status: "pending", createdAt: serverTimestamp(),
+    decidedAt: null, decidedBy: null, eventId: null,
+  }));
+  const ownerRef = doc(owner, ref.path);
+  const correction = doc(parent, "events", "mark-present");
+  await assertSucceeds(runTransaction(owner, async tx => {
+    const s = await tx.get(parent);
+    const r = await tx.get(row);
+    tx.update(row, {
+      segments: {[firstSegment]: f.present, [secondSegment]: f.present},
+      version: r.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+    });
+    tx.update(record, {
+      absentUnits: 0, result: "present", updatedAt: serverTimestamp(),
+      segments: f.segments.map(part => ({...part, ...f.present})),
+    });
+    tx.set(correction, {
+      kind: "correction", rosterEntryId: rowId,
+      oldValue: {segmentId: secondSegment, mark: f.absent},
+      newValue: {segmentId: secondSegment, mark: f.present},
+      reason: "", changedAt: serverTimestamp(), changedBy: "owner",
+    });
+    tx.update(parent, {
+      version: s.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+      lastEventId: correction.id, lastMutationRosterEntryId: rowId, lastMutationKind: "correction",
+    });
+  }));
+  const decision = doc(parent, "events", "settle-request");
+  const decide = status => runTransaction(owner, async tx => {
+    const s = await tx.get(parent);
+    const r = await tx.get(row);
+    tx.update(row, {version: r.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+    tx.update(record, {updatedAt: serverTimestamp()});
+    tx.set(decision, {
+      kind: "justification", rosterEntryId: rowId, reason: "",
+      oldValue: {mark: f.present, requestStatus: "pending"},
+      newValue: {mark: f.present, requestStatus: status},
+      changedAt: serverTimestamp(), changedBy: "owner",
+    });
+    tx.update(parent, {
+      version: s.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+      lastEventId: decision.id, lastMutationRosterEntryId: rowId, lastMutationKind: "justification",
+    });
+    tx.update(ownerRef, {
+      status, decidedAt: serverTimestamp(), decidedBy: "owner", eventId: decision.id,
+    });
+  });
+  await assertPermissionDenied(decide("approved"));
+  await assertSucceeds(decide("rejected"));
+  const published = (await getDoc(doc(student, record.path))).data();
+  assert.equal(published.absentUnits, 0);
+  assert.equal(published.unitCount, 120);
+  assert.equal((await getDoc(ref)).data().status, "rejected");
+});
+
 test("C8 restore: interrupted finalized void restores marks units and publishedAt once",async()=>{
  const f=await c8RequestFixture();const {owner,other,student,parent,row,record,projection}=f;
  const marks=(await getDoc(row)).data(), originalDate=(await getDoc(record)).data().publishedAt;

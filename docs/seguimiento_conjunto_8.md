@@ -16,6 +16,12 @@ El emulador reprodujo `permission-denied` en la lectura previa de solicitudes pr
 
 Pasaron las cinco regresiones dirigidas de reglas con IDs de producción, legacy, lectura antes/después de crear y decisiones por clases y por horas. La suite Flutter de asistencia pasó 77/77. Commit recuperable por el título «Corrige permisos de justificación por horas». Siguiente módulo: bandeja por curso y medición de apertura.
 
+### Bandeja docente
+
+En **Asistencia → Gestionar → Justificaciones pendientes** una consulta de un documento indica si hay trabajo por revisar. La bandeja pagina de 20 en 20 por ID, filtra el estado pendiente dentro del curso y reutiliza en cada página la sesión, los tramos y la fila de nómina cuando hay varias solicitudes del mismo estudiante en el encuentro. El detalle muestra nombre, fecha efectiva, horario y texto. La decisión conserva la transacción auditada y, si otro dispositivo resolvió la solicitud o cambió la asistencia, la bandeja actualiza el estado. Una ausencia corregida a Presente se puede rechazar sin cambiar el cálculo. La aprobación de esa ausencia se bloquea.
+
+Referencia: páginas 51 y 54 del PDF vigente. Se conservaron las tarjetas de lista y las acciones de decisión. La bandeja solo muestra pendientes y usa el texto breve de C8. La consulta `status == pending` y `__name__ ASC` usa el índice automático de un campo. Pasaron la navegación desde el curso, la actualización del indicador, la paginación, los controles de propietario y la decisión sobre solicitudes de horas. Commit recuperable por el título «Agrega bandeja de justificaciones pendientes por curso». Siguiente módulo: cierre de rendimiento y regresiones integradas.
+
 ## Estado final de C8 — listo para TECNO — 17/11/2026
 
 **Código:** `feature/conjunto-8-asistencia-manual-v2`, commit de implementación `ee031927a7189dc024d12c23d5fc0d58dcb92645`; `origin` confirmó el mismo SHA. El commit incluye solo la corrección de C8, reglas, pruebas y documentación indicada en su diff. Un commit documental posterior registra la activación verificada. La rama original se conserva sin modificar.

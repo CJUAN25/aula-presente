@@ -1,3 +1,6 @@
+import 'attendance_segment.dart';
+import 'attendance_session.dart';
+
 enum AttendanceRequestStatus { pending, approved, rejected }
 
 /// One immutable submission per academic identity and encounter/time slice.
@@ -31,4 +34,27 @@ class AttendanceJustificationRequest {
     String identity,
     String? segmentId,
   ) => '$sessionId|$identity|${segmentId ?? "meeting"}';
+}
+
+class PendingAttendanceRequest {
+  const PendingAttendanceRequest({
+    required this.request,
+    required this.studentName,
+    required this.session,
+    required this.segment,
+    required this.hasAbsence,
+  });
+
+  final AttendanceJustificationRequest request;
+  final String studentName;
+  final AttendanceSession session;
+  final AttendanceSegment? segment;
+  final bool hasAbsence;
+}
+
+class PendingAttendanceRequestPage {
+  const PendingAttendanceRequestPage({required this.items, this.nextCursor});
+
+  final List<PendingAttendanceRequest> items;
+  final String? nextCursor;
 }
