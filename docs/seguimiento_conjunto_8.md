@@ -37,6 +37,12 @@ La lectura principal valida el perfil una vez, lee nómina/tramos en paralelo y 
 
 El conjunto de regresiones también reproduce la secuencia 60/120 → 120/120 → 60/120 → 0/120 desde la pantalla con repositorio real y datos sintéticos, en sesión normal, reprogramada y restaurada. Incluye un tramo de 45 y conserva 25 minutos históricos del otro tramo. Los fixtures de Firestore prueban consulta por identidad, estados y decisiones atómicas. Commit recuperable por el título «Reduce lecturas al abrir y comprobar asistencia». Siguiente módulo: verificación integrada de C8 y fusión en C9.
 
+### Verificación integrada de 1.0.2+3
+
+Código compilado en `3e8be8e85fe51f47dc7294366e65f0a73e8041f1`. Pruebas locales: **370/370** Flutter, **111/111** Firestore Emulator con JDK 21, `flutter analyze` limpio, `git diff --check` aprobado y `flutter build apk --debug` correcto. Se inspeccionaron capturas de widgets del diálogo de corrección y de la bandeja y su detalle. La ejecución de Android en el TECNO y las reglas de producción quedan para la revalidación del propietario.
+
+APK C8: `build/artifacts/aula-presente-c8-1.0.2+3-debug.apk`, paquete `com.juanceron.aulapresente`, versión `1.0.2+3`, **167.838.446 bytes**, SHA-256 `BFC165A42AEAD756EDF32A741C4DA29A02FFB5BEF27DF59E144B8EA2E9672C78`. La copia queda fuera de Git, separada de la compilación de C9.
+
 ### Validación en el TECNO para 1.0.2+3
 
 1. En Firebase Console selecciona **aula-presente-movil-juan-2026 → Firestore Database → (default) → Reglas**. Publica el archivo completo `firestore.rules` del nuevo commit C8. `firestore.indexes.json` no cambió. Comprueba que el índice anterior `attendance_records` siga habilitado y que en **Índices → Campo único** no haya una exención para `attendance_requests.status`. La bandeja usa ese índice automático y no requiere esperar a que se construya un compuesto nuevo.
