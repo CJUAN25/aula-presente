@@ -69,14 +69,7 @@ void main() {
   ) async {
     final repo = _HoursRepository(status: AttendanceSessionStatus.finalized);
     await _pump(tester, repo);
-    await tester.scrollUntilVisible(
-      find.widgetWithText(TextButton, 'Corregir registro').hitTestable(),
-      140,
-      maxScrolls: 30,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(find.text('Corregir registro').first);
-    await tester.pumpAndSettle();
+    await _tapHour(tester, 'seg-1');
     await tester.tap(
       find.descendant(
         of: find.byType(SegmentedButton<AttendanceMark>),
@@ -133,14 +126,7 @@ void main() {
   ) async {
     final repo = _HoursRepository(status: AttendanceSessionStatus.finalized);
     await _pump(tester, repo);
-    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('07:00–08:00 · 60 min').last);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Corregir registro').first);
-    await tester.tap(find.text('Corregir registro').first);
-    await tester.pumpAndSettle();
+    await _tapHour(tester, 'seg-2');
     await tester.tap(
       find.descendant(
         of: find.byType(SegmentedButton<AttendanceMark>),
@@ -309,7 +295,7 @@ void main() {
         scrollable: find.byType(Scrollable).first,
       );
       await tester.scrollUntilVisible(
-        find.text(approve ? 'Aprobar' : 'Rechazar'),
+        find.text(approve ? 'Aprobar' : 'Rechazar').hitTestable(),
         120,
         scrollable: find.byType(Scrollable).first,
       );
@@ -352,23 +338,81 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'three hours and a long name fit a narrow card with readable states',
+    (tester) async {
+      final repo = _HoursRepository(extended: true);
+      await _pump(tester, repo, width: 320, textScale: 1.6);
+      for (final (segment, state) in [
+        ('seg-1', 'Presente'),
+        ('seg-2', 'Ausente \u00b7 60 min'),
+        ('seg-3', 'Sin marcar'),
+      ]) {
+        final row = _hour(segment);
+        await tester.scrollUntilVisible(
+          row.hitTestable(),
+          90,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(
+          find.descendant(of: row, matching: find.text(state)),
+          findsOneWidget,
+        );
+      }
+      await _capture(tester, 'three-segments');
+      await _tapHour(tester, 'seg-3');
+      expect(find.textContaining('08:00\u201308:35'), findsWidgets);
+      expect(
+        find.textContaining('Nombre de prueba para una tarjeta estrecha'),
+        findsWidgets,
+      );
+      await tester.tap(
+        find.descendant(
+          of: find.byType(SegmentedButton<AttendanceMark>),
+          matching: find.text('Ausente'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Guardar cambios'));
+      await tester.pumpAndSettle();
+      expect(repo.rows.first.segmentMarks['seg-3']!.absentUnits, 35);
+      expect(
+        repo.rows.last.segmentMarks['seg-3']!.mark,
+        AttendanceMark.unmarked,
+      );
+      expect(repo.rosterReads, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('closed hours keep both segments available for review', (
     tester,
   ) async {
     final repo = _HoursRepository(status: AttendanceSessionStatus.finalized);
     await _pump(tester, repo);
-    expect(find.text('Tramo de la clase'), findsOneWidget);
-    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('07:00–08:00 · 60 min').last);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Estudiante Alfa'));
-    expect(find.text('Ausente · 60 min · 07:00–08:00'), findsOneWidget);
+    expect(find.text('Tramo del resumen'), findsOneWidget);
+    final first = _hour('seg-1');
+    await tester.scrollUntilVisible(
+      first.hitTestable(),
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.descendant(of: first, matching: find.text('Presente')),
+      findsOneWidget,
+    );
+    final second = _hour('seg-2');
+    await tester.scrollUntilVisible(
+      second.hitTestable(),
+      80,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.descendant(of: second, matching: find.text('Ausente \u00b7 60 min')),
+      findsOneWidget,
+    );
     await _capture(tester, 'closed-second-hour');
-    await tester.ensureVisible(find.text('Corregir registro').first);
-    await tester.tap(find.text('Corregir registro').first);
-    await tester.pumpAndSettle();
+    await _tapHour(tester, 'seg-2');
     expect(
       find.descendant(
         of: find.byType(AlertDialog),
@@ -385,31 +429,42 @@ void main() {
     expect(repo.rows.first.segmentMarks['seg-2']!.absentUnits, 60);
   });
 
-  testWidgets('search filters locally and mark targets the selected hour', (
-    tester,
-  ) async {
-    final repo = _HoursRepository();
-    await _pump(tester, repo);
-    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('07:00–08:00 · 60 min').last);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byType(TextField));
-    await tester.enterText(find.byType(TextField), 'alfa');
-    await tester.pumpAndSettle();
-    expect(find.text('Estudiante Beta'), findsNothing);
-    await tester.ensureVisible(find.text('Presente').last);
-    await tester.tap(find.text('Presente').last);
-    await tester.pumpAndSettle();
-    expect(repo.markCalls, ['alfa|seg-2|present']);
-    expect(repo.rows.first.segmentMarks['seg-1']!.mark, AttendanceMark.present);
-    expect(repo.rows.first.segmentMarks['seg-2']!.mark, AttendanceMark.present);
-    await tester.enterText(find.byType(TextField), 'no existe');
-    await tester.pumpAndSettle();
-    expect(find.text('Sin coincidencias'), findsOneWidget);
-    expect(repo.rosterReads, 1);
-  });
+  testWidgets(
+    'search filters locally and the touched hour overrides the bulk selector',
+    (tester) async {
+      final repo = _HoursRepository();
+      await _pump(tester, repo);
+      expect(find.text('Tramo para acciones masivas'), findsOneWidget);
+      await tester.ensureVisible(find.byType(TextField));
+      await tester.enterText(find.byType(TextField), 'alfa');
+      await tester.pumpAndSettle();
+      expect(find.text('Estudiante Beta'), findsNothing);
+      await _tapHour(tester, 'seg-2');
+      expect(find.text('Marcar asistencia'), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(SegmentedButton<AttendanceMark>),
+          matching: find.text('Presente'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Guardar cambios'));
+      await tester.pumpAndSettle();
+      expect(repo.markCalls, ['alfa|seg-2|present']);
+      expect(
+        repo.rows.first.segmentMarks['seg-1']!.mark,
+        AttendanceMark.present,
+      );
+      expect(
+        repo.rows.first.segmentMarks['seg-2']!.mark,
+        AttendanceMark.present,
+      );
+      await tester.enterText(find.byType(TextField), 'no existe');
+      await tester.pumpAndSettle();
+      expect(find.text('Sin coincidencias'), findsOneWidget);
+      expect(repo.rosterReads, 1);
+    },
+  );
 
   testWidgets('slow load and failure disable writes until retry succeeds', (
     tester,
@@ -486,8 +541,15 @@ void main() {
     await tester.ensureVisible(find.byType(TextField));
     await tester.enterText(find.byType(TextField), 'alfa');
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Ausente').last);
-    await tester.tap(find.text('Ausente').last);
+    await _tapHour(tester, 'seg-1');
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<AttendanceMark>),
+        matching: find.text('Ausente'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
     await tester.pump(const Duration(seconds: 5));
     expect(find.text('No pudimos cargar la asistencia'), findsOneWidget);
@@ -513,6 +575,21 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+}
+
+Finder _hour(String segmentId) => find.byKey(
+  ValueKey(('attendance-segment', 'alfa@example.invalid', segmentId)),
+);
+
+Future<void> _tapHour(WidgetTester tester, String segmentId) async {
+  final row = _hour(segmentId);
+  await tester.scrollUntilVisible(
+    row.hitTestable(),
+    100,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.tap(row);
+  await tester.pumpAndSettle();
 }
 
 Future<void> _pump(
@@ -600,7 +677,35 @@ Course _course() => Course(
 class _HoursRepository extends AttendanceRepository {
   _HoursRepository({
     AttendanceSessionStatus status = AttendanceSessionStatus.inProgress,
+    bool extended = false,
   }) {
+    if (extended) {
+      segments.add(
+        const AttendanceSegment(
+          id: 'seg-3',
+          order: 2,
+          startMinute: 480,
+          endMinute: 515,
+          durationMinutes: 35,
+        ),
+      );
+      for (var index = 0; index < rows.length; index++) {
+        final row = rows[index];
+        rows[index] = AttendanceRosterEntry(
+          rosterEntryId: row.rosterEntryId,
+          displayName: index == 0
+              ? 'Nombre de prueba para una tarjeta estrecha Estudiante Alfa'
+              : row.displayName,
+          studentUid: row.studentUid,
+          meetingMark: null,
+          segmentMarks: {
+            ...row.segmentMarks,
+            'seg-3': _mark(AttendanceMark.unmarked),
+          },
+          version: row.version,
+        );
+      }
+    }
     session = _session(status);
     if (status != AttendanceSessionStatus.inProgress) {
       final old = rows[1];
@@ -628,15 +733,15 @@ class _HoursRepository extends AttendanceRepository {
   List<AttendanceJustificationRequest> requests = [];
   bool failMark = false;
   String? correctionReason;
-  final segments = const [
-    AttendanceSegment(
+  final segments = [
+    const AttendanceSegment(
       id: 'seg-1',
       order: 0,
       startMinute: 360,
       endMinute: 420,
       durationMinutes: 60,
     ),
-    AttendanceSegment(
+    const AttendanceSegment(
       id: 'seg-2',
       order: 1,
       startMinute: 420,
@@ -680,11 +785,11 @@ class _HoursRepository extends AttendanceRepository {
               scheduledDate: _date(5),
               effectiveDate: _date(16),
               startMinute: 360,
-              endMinute: 480,
+              endMinute: segments.last.endMinute,
             ),
             mode: AttendanceMode.minutes,
             uid: 'owner',
-            segmentIds: ['seg-1', 'seg-2'],
+            segmentIds: segments.map((s) => s.id).toList(),
             rosterCount: 2,
           ),
           'status': status.value,
@@ -795,7 +900,7 @@ class _HoursRepository extends AttendanceRepository {
       displayName: old.displayName,
       studentUid: old.studentUid,
       meetingMark: null,
-      segmentMarks: {...old.segmentMarks, segmentId: _mark(mark)},
+      segmentMarks: {...old.segmentMarks, segmentId: _mark(mark, absentUnits)},
       version: old.version + 1,
     );
     return AttendanceRosterMutationResult(
@@ -960,9 +1065,10 @@ class _HoursRepository extends AttendanceRepository {
   }
 }
 
-AttendanceRosterMark _mark(AttendanceMark mark) => AttendanceRosterMark(
-  mark: mark,
-  absentUnits: mark == AttendanceMark.absent ? 60 : 0,
-  justificationStatus: AttendanceJustificationStatus.none,
-  justifiedUnits: 0,
-);
+AttendanceRosterMark _mark(AttendanceMark mark, [int? absentUnits]) =>
+    AttendanceRosterMark(
+      mark: mark,
+      absentUnits: mark == AttendanceMark.absent ? (absentUnits ?? 60) : 0,
+      justificationStatus: AttendanceJustificationStatus.none,
+      justifiedUnits: 0,
+    );

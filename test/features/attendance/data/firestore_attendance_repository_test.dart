@@ -70,29 +70,15 @@ void main() {
         (0, 'Presente', 0),
       ]) {
         final segment = f.segments[index];
+        final row = find.byKey(
+          ValueKey(('attendance-segment', 'roster-1', segment.id)),
+        );
         await tester.scrollUntilVisible(
-          find.byType(DropdownButtonFormField<String>),
-          160,
+          row.hitTestable(),
+          100,
           scrollable: find.byType(Scrollable).first,
         );
-        await tester.tap(find.byType(DropdownButtonFormField<String>));
-        await tester.pumpAndSettle();
-        String time(int minutes) =>
-            '${(minutes ~/ 60).toString().padLeft(2, '0')}:00';
-        await tester.tap(
-          find
-              .text(
-                '${time(segment.startMinute)}–${time(segment.endMinute)} · 60 min',
-              )
-              .last,
-        );
-        await tester.pumpAndSettle();
-        await tester.scrollUntilVisible(
-          find.text('Corregir registro'),
-          180,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.tap(find.text('Corregir registro'));
+        await tester.tap(row);
         await tester.pumpAndSettle();
         await tester.tap(
           find.descendant(
@@ -266,13 +252,16 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    Future<void> openCorrection() async {
+    Future<void> openCorrection(int index) async {
+      final row = find.byKey(
+        ValueKey(('attendance-segment', 'roster-1', f.segments[index].id)),
+      );
       await tester.scrollUntilVisible(
-        find.text('Corregir registro'),
-        180,
+        row.hitTestable(),
+        100,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Corregir registro'));
+      await tester.tap(row);
       await tester.pumpAndSettle();
       expect(
         find.descendant(
@@ -283,18 +272,13 @@ void main() {
       );
     }
 
-    await openCorrection();
+    await openCorrection(0);
     await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
     expect(f.store.transactionWrites, isEmpty);
     expect(f.store.documents[f.recordPath]!['absentUnits'], 25);
 
-    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('11:00–11:45 · 45 min').last);
-    await tester.pumpAndSettle();
-    await openCorrection();
+    await openCorrection(1);
     await tester.tap(
       find.descendant(
         of: find.byType(SegmentedButton<AttendanceMark>),
@@ -305,7 +289,7 @@ void main() {
     await tester.tap(find.text('Cancelar'));
     await tester.pumpAndSettle();
     expect(f.store.transactionWrites, isEmpty);
-    await openCorrection();
+    await openCorrection(1);
     await tester.tap(
       find.descendant(
         of: find.byType(SegmentedButton<AttendanceMark>),

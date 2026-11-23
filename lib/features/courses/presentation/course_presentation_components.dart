@@ -157,12 +157,14 @@ class CoursePrimaryButton extends StatelessWidget {
     required this.onPressed,
     this.icon,
     this.busy = false,
+    this.expandForText = false,
   });
 
   final String label;
   final VoidCallback? onPressed;
   final IconData? icon;
   final bool busy;
+  final bool expandForText;
 
   @override
   Widget build(BuildContext context) {
@@ -172,9 +174,12 @@ class CoursePrimaryButton extends StatelessWidget {
             child: CircularProgressIndicator(strokeWidth: 2),
           )
         : Text(label, textAlign: TextAlign.center);
-    return SizedBox(
-      width: double.infinity,
-      height: 56,
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        minHeight: 56,
+        minWidth: double.infinity,
+        maxHeight: expandForText ? double.infinity : 56,
+      ),
       child: icon == null || busy
           ? FilledButton(onPressed: busy ? null : onPressed, child: child)
           : FilledButton.icon(

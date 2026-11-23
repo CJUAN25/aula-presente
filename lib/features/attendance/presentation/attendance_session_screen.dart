@@ -112,7 +112,8 @@ class _TeacherAttendanceSessionScreenState
       );
       if (!mounted || epoch != _epoch) return;
       final session = view.session;
-      final segments = view.segments;
+      final segments = [...view.segments]
+        ..sort((a, b) => a.startMinute.compareTo(b.startMinute));
       final publication = knownPublication?.session?.version == session.version
           ? knownPublication
           : null;
@@ -362,31 +363,38 @@ class _TeacherAttendanceSessionScreenState
     await _load();
   });
 
-  Future<void> _markEntry(AttendanceRosterEntry entry, AttendanceMark mark) =>
-      _run(() async {
-        final result = _current.mode == AttendanceMode.meeting
-            ? await widget.repository.setMeetingMark(
-                courseId: widget.course.id,
-                occurrenceId: _current.occurrenceId,
-                rosterEntryId: entry.rosterEntryId,
-                mark: mark,
-              )
-            : await widget.repository.setSegmentMark(
-                courseId: widget.course.id,
-                occurrenceId: _current.occurrenceId,
-                rosterEntryId: entry.rosterEntryId,
-                segmentId: _selectedSegmentId!,
-                mark: mark,
-                absentUnits: mark == AttendanceMark.absent
-                    ? _selectedSegment.durationMinutes
-                    : 0,
-              );
-        if (!mounted) return;
-        setState(() {
-          _session = result.session;
-          _replaceEntry(result.entry);
-        });
+  Future<void> _markEntry(
+    AttendanceRosterEntry entry,
+    AttendanceMark mark, {
+    AttendanceSegment? segment,
+  }) async {
+    final epoch = _epoch;
+    final session = _current;
+    await _run(() async {
+      final result = segment == null
+          ? await widget.repository.setMeetingMark(
+              courseId: session.courseId,
+              occurrenceId: session.occurrenceId,
+              rosterEntryId: entry.rosterEntryId,
+              mark: mark,
+            )
+          : await widget.repository.setSegmentMark(
+              courseId: session.courseId,
+              occurrenceId: session.occurrenceId,
+              rosterEntryId: entry.rosterEntryId,
+              segmentId: segment.id,
+              mark: mark,
+              absentUnits: mark == AttendanceMark.absent
+                  ? segment.durationMinutes
+                  : 0,
+            );
+      if (!mounted || epoch != _epoch) return;
+      setState(() {
+        _session = result.session;
+        _replaceEntry(result.entry);
       });
+    });
+  }
 
   AttendanceSegment get _selectedSegment =>
       _segments.firstWhere((segment) => segment.id == _selectedSegmentId);
@@ -407,12 +415,14 @@ class _TeacherAttendanceSessionScreenState
   }
 
   Future<void> _applyToAll(AttendanceMark mark) async {
-    final count = _current.mode == AttendanceMode.meeting
-        ? _roster.length
-        : _roster.length;
-    final unitDescription = _current.mode == AttendanceMode.meeting
+    final count = _roster.length;
+    final epoch = _epoch;
+    final segment = _current.mode == AttendanceMode.minutes
+        ? _selectedSegment
+        : null;
+    final unitDescription = segment == null
         ? '$count estudiantes'
-        : '$count estudiantes en el tramo ${attendanceTimeLabel(_selectedSegment.startMinute)}–${attendanceTimeLabel(_selectedSegment.endMinute)}';
+        : '$count estudiantes en el tramo ${_segmentTime(segment)}';
     final confirm = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -432,34 +442,34 @@ class _TeacherAttendanceSessionScreenState
         ],
       ),
     );
-    if (confirm != true || !mounted) return;
+    if (confirm != true || !mounted || epoch != _epoch) return;
+    final repository = widget.repository;
+    final courseId = widget.course.id;
+    final occurrenceId = _current.occurrenceId;
     await _run(() async {
       for (final entry in List<AttendanceRosterEntry>.of(_roster)) {
-        if (_current.mode == AttendanceMode.meeting) {
-          final result = await widget.repository.setMeetingMark(
-            courseId: widget.course.id,
-            occurrenceId: _current.occurrenceId,
-            rosterEntryId: entry.rosterEntryId,
-            mark: mark,
-          );
+        final result = segment == null
+            ? await repository.setMeetingMark(
+                courseId: courseId,
+                occurrenceId: occurrenceId,
+                rosterEntryId: entry.rosterEntryId,
+                mark: mark,
+              )
+            : await repository.setSegmentMark(
+                courseId: courseId,
+                occurrenceId: occurrenceId,
+                rosterEntryId: entry.rosterEntryId,
+                segmentId: segment.id,
+                mark: mark,
+                absentUnits: mark == AttendanceMark.absent
+                    ? segment.durationMinutes
+                    : 0,
+              );
+        if (!mounted || epoch != _epoch) return;
+        setState(() {
           _session = result.session;
           _replaceEntry(result.entry);
-        } else {
-          final result = await widget.repository.setSegmentMark(
-            courseId: widget.course.id,
-            occurrenceId: _current.occurrenceId,
-            rosterEntryId: entry.rosterEntryId,
-            segmentId: _selectedSegmentId!,
-            mark: mark,
-            absentUnits: mark == AttendanceMark.absent
-                ? _selectedSegment.durationMinutes
-                : 0,
-          );
-          _session = result.session;
-          _replaceEntry(result.entry);
-        }
-        if (!mounted) return;
-        setState(() {});
+        });
       }
       _showMessage('Acción aplicada a $unitDescription.');
     });
@@ -572,13 +582,14 @@ class _TeacherAttendanceSessionScreenState
     });
   }
 
-  Future<void> _correct(AttendanceRosterEntry entry) async {
+  Future<void> _editMark(
+    AttendanceRosterEntry entry, {
+    AttendanceSegment? segment,
+  }) async {
     if (_correctionOpen || _processing || _publicationPending) return;
     final epoch = _epoch;
     final session = _current;
-    final segment = session.mode == AttendanceMode.minutes
-        ? _selectedSegment
-        : null;
+    final finalized = session.status == AttendanceSessionStatus.finalized;
     final current = segment == null
         ? entry.meetingMark!
         : entry.segmentMarks[segment.id]!;
@@ -593,6 +604,7 @@ class _TeacherAttendanceSessionScreenState
           startMinute: segment?.startMinute ?? session.startMinute,
           endMinute: segment?.endMinute ?? session.endMinute,
           dateLabel: attendanceDateLabel(session.effectiveDate),
+          finalized: finalized,
         ),
       );
     } finally {
@@ -601,6 +613,10 @@ class _TeacherAttendanceSessionScreenState
     if (selected == null || !mounted || epoch != _epoch) return;
     if (selected == current.mark) {
       _showMessage('No hay cambios que guardar.');
+      return;
+    }
+    if (!finalized) {
+      await _markEntry(entry, selected, segment: segment);
       return;
     }
     final replacement = _replacementForCorrection(entry, selected, segment);
@@ -653,8 +669,15 @@ class _TeacherAttendanceSessionScreenState
     );
   }
 
-  Future<void> _reviewJustification(AttendanceRosterEntry entry) async {
-    final current = _markFor(entry);
+  Future<void> _reviewJustification(
+    AttendanceRosterEntry entry, {
+    AttendanceSegment? segment,
+  }) async {
+    final epoch = _epoch;
+    final session = _current;
+    final current = segment == null
+        ? entry.meetingMark!
+        : entry.segmentMarks[segment.id]!;
     if (current.mark != AttendanceMark.absent || current.absentUnits == 0) {
       _showMessage('Solo se puede revisar una ausencia registrada.');
       return;
@@ -665,29 +688,25 @@ class _TeacherAttendanceSessionScreenState
         >(
           context: context,
           builder: (dialogContext) => _JustificationDialog(
-            mode: _current.mode,
+            mode: session.mode,
             entry: entry,
             current: current,
-            segment: _current.mode == AttendanceMode.minutes
-                ? _selectedSegment
-                : null,
+            segment: segment,
           ),
         );
-    if (result == null || !mounted) return;
+    if (result == null || !mounted || epoch != _epoch) return;
     await _run(() async {
       final mutation = await widget.repository.decideJustification(
-        courseId: widget.course.id,
-        occurrenceId: _current.occurrenceId,
+        courseId: session.courseId,
+        occurrenceId: session.occurrenceId,
         rosterEntryId: entry.rosterEntryId,
-        segmentId: _current.mode == AttendanceMode.minutes
-            ? _selectedSegmentId
-            : null,
+        segmentId: segment?.id,
         operationId: newAttendanceOperationId(),
         status: result.status,
         justifiedUnits: result.units,
         reason: result.reason,
       );
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       setState(() {
         _session = mutation.session;
         _replaceEntry(mutation.entry);
@@ -952,9 +971,11 @@ class _TeacherAttendanceSessionScreenState
                     DropdownButtonFormField<String>(
                       isExpanded: true,
                       initialValue: _selectedSegmentId,
-                      decoration: const InputDecoration(
-                        labelText: 'Tramo de la clase',
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: active
+                            ? 'Tramo para acciones masivas'
+                            : 'Tramo del resumen',
+                        border: const OutlineInputBorder(),
                       ),
                       items: [
                         for (final segment in _segments)
@@ -972,10 +993,6 @@ class _TeacherAttendanceSessionScreenState
                                 setState(() => _selectedSegmentId = value),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      'La marca afecta únicamente el tramo seleccionado. Puedes revisar los demás por separado.',
-                      style: const TextStyle(color: AppColors.muted),
-                    ),
                   ],
                   const SizedBox(height: 12),
                   if (active)
@@ -1044,14 +1061,7 @@ class _TeacherAttendanceSessionScreenState
                 padding: const EdgeInsets.only(bottom: 9),
                 child: _RosterTile(
                   entry: entry,
-                  mark: _markFor(entry),
-                  mode: session.mode,
-                  segment:
-                      session.mode == AttendanceMode.minutes &&
-                          _segments.isNotEmpty
-                      ? _selectedSegment
-                      : null,
-                  processing: _processing,
+                  segments: _segments,
                   canMark: canMark && !_processing,
                   canReview:
                       finalized &&
@@ -1061,8 +1071,9 @@ class _TeacherAttendanceSessionScreenState
                       !_publicationPending,
                   onPresent: () => _markEntry(entry, AttendanceMark.present),
                   onAbsent: () => _markEntry(entry, AttendanceMark.absent),
-                  onCorrect: () => _correct(entry),
-                  onJustification: () => _reviewJustification(entry),
+                  onEdit: (segment) => _editMark(entry, segment: segment),
+                  onJustification: (segment) =>
+                      _reviewJustification(entry, segment: segment),
                 ),
               ),
           ],
@@ -1072,6 +1083,7 @@ class _TeacherAttendanceSessionScreenState
               label: _processing ? 'Guardando…' : 'Guardar y continuar después',
               icon: Icons.save_outlined,
               busy: _processing,
+              expandForText: true,
               onPressed: _processing
                   ? null
                   : () {
@@ -1197,149 +1209,229 @@ String _statusLabel(AttendanceSessionStatus status) => switch (status) {
   AttendanceSessionStatus.restoring => 'Restaurando',
 };
 
+String _segmentTime(AttendanceSegment segment) =>
+    '${attendanceTimeLabel(segment.startMinute)}–${attendanceTimeLabel(segment.endMinute)}';
+
 class _RosterTile extends StatelessWidget {
   const _RosterTile({
     required this.entry,
-    required this.mark,
-    required this.mode,
-    required this.segment,
-    required this.processing,
+    required this.segments,
     required this.canMark,
     required this.canReview,
     required this.onPresent,
     required this.onAbsent,
-    required this.onCorrect,
+    required this.onEdit,
     required this.onJustification,
   });
 
   final AttendanceRosterEntry entry;
-  final AttendanceRosterMark mark;
-  final AttendanceMode mode;
-  final AttendanceSegment? segment;
-  final bool processing;
+  final List<AttendanceSegment> segments;
   final bool canMark;
   final bool canReview;
   final VoidCallback onPresent;
   final VoidCallback onAbsent;
-  final VoidCallback onCorrect;
-  final VoidCallback onJustification;
+  final ValueChanged<AttendanceSegment?> onEdit;
+  final ValueChanged<AttendanceSegment?> onJustification;
 
-  String get _markLabel => switch (mark.mark) {
-    AttendanceMark.unmarked => 'Sin marcar',
-    AttendanceMark.present => 'Presente',
-    AttendanceMark.absent =>
-      mode == AttendanceMode.minutes
-          ? 'Ausente · ${mark.absentUnits} min'
-          : 'Ausente',
-  };
+  String _markLabel(AttendanceRosterMark mark, [AttendanceSegment? segment]) =>
+      switch (mark.mark) {
+        AttendanceMark.unmarked => 'Sin marcar',
+        AttendanceMark.present => 'Presente',
+        AttendanceMark.absent when segment == null => 'Ausente',
+        AttendanceMark.absent
+            when segment != null &&
+                mark.absentUnits < segment.durationMinutes =>
+          'Ausencia parcial · ${mark.absentUnits} min',
+        AttendanceMark.absent => 'Ausente · ${mark.absentUnits} min',
+      };
 
-  String? get _justificationLabel => switch (mark.justificationStatus) {
+  String? _justificationLabel(
+    AttendanceRosterMark mark,
+  ) => switch (mark.justificationStatus) {
     AttendanceJustificationStatus.none => null,
     AttendanceJustificationStatus.inReview => 'En revisión',
     AttendanceJustificationStatus.justified =>
-      'Justificada · ${mark.justifiedUnits} ${mode == AttendanceMode.minutes ? 'min' : 'encuentro'}',
+      'Justificada · ${mark.justifiedUnits} ${entry.meetingMark == null ? 'min' : 'encuentro'}',
     AttendanceJustificationStatus.notAccepted => 'No aceptada',
   };
 
+  String _summary() {
+    final marks = segments.map((segment) => entry.segmentMarks[segment.id]!);
+    if (marks.every((mark) => mark.mark == AttendanceMark.present)) {
+      return 'Presente';
+    }
+    if (marks.every((mark) => mark.mark == AttendanceMark.unmarked)) {
+      return 'Sin marcar';
+    }
+    if (marks.any((mark) => mark.mark == AttendanceMark.unmarked)) {
+      return 'Hay tramos sin marcar';
+    }
+    final allAbsent = segments.every(
+      (segment) =>
+          entry.segmentMarks[segment.id]!.absentUnits ==
+          segment.durationMinutes,
+    );
+    return allAbsent ? 'Ausente' : 'Ausencia parcial';
+  }
+
   @override
-  Widget build(BuildContext context) => CoursePanel(
-    color: AppColors.surface,
-    padding: const EdgeInsets.all(14),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const CircleAvatar(
-              radius: 18,
-              backgroundColor: AppColors.glass,
-              child: Icon(
-                Icons.person_outline,
-                color: AppColors.primary,
-                size: 19,
+  Widget build(BuildContext context) {
+    final meeting = entry.meetingMark;
+    return CoursePanel(
+      color: AppColors.surface,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const CircleAvatar(
+                radius: 18,
+                backgroundColor: AppColors.glass,
+                child: Icon(
+                  Icons.person_outline,
+                  color: AppColors.primary,
+                  size: 19,
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.displayName,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    '$_markLabel${segment == null ? '' : ' · ${attendanceTimeLabel(segment!.startMinute)}–${attendanceTimeLabel(segment!.endMinute)}'}',
-                    style: const TextStyle(
-                      color: AppColors.muted,
-                      fontSize: 13,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      entry.displayName,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
-                  ),
-                ],
+                    Text(
+                      meeting == null ? _summary() : _markLabel(meeting),
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (meeting == null)
+            for (final segment in segments) ...[
+              const Divider(height: 14),
+              _segmentRow(segment),
+            ]
+          else ...[
+            if (_justificationLabel(meeting) case final label?)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  label,
+                  style: const TextStyle(color: AppColors.information),
+                ),
+              ),
+            if (canMark || canReview)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    if (canMark) ...[
+                      OutlinedButton.icon(
+                        onPressed: onPresent,
+                        icon: const Icon(Icons.check_circle_outline),
+                        label: const Text('Presente'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: onAbsent,
+                        icon: const Icon(Icons.cancel_outlined),
+                        label: const Text('Ausente'),
+                      ),
+                    ],
+                    if (canReview) ...[
+                      TextButton.icon(
+                        onPressed: () => onEdit(null),
+                        icon: const Icon(Icons.edit_outlined),
+                        label: const Text('Corregir registro'),
+                      ),
+                      if (meeting.mark == AttendanceMark.absent)
+                        TextButton.icon(
+                          onPressed: () => onJustification(null),
+                          icon: const Icon(Icons.fact_check_outlined),
+                          label: const Text('Revisar justificación'),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _segmentRow(AttendanceSegment segment) {
+    final mark = entry.segmentMarks[segment.id]!;
+    final editable = canMark || canReview;
+    return Material(
+      type: MaterialType.transparency,
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              key: ValueKey((
+                'attendance-segment',
+                entry.rosterEntryId,
+                segment.id,
+              )),
+              onTap: editable ? () => onEdit(segment) : null,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _segmentTime(segment),
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          Text(
+                            _markLabel(mark, segment),
+                            style: const TextStyle(color: AppColors.muted),
+                          ),
+                          if (_justificationLabel(mark) case final label?)
+                            Text(
+                              label,
+                              style: const TextStyle(
+                                color: AppColors.information,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (editable)
+                      const Icon(
+                        Icons.edit_outlined,
+                        size: 18,
+                        color: AppColors.primary,
+                      ),
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
-        if (_justificationLabel != null) ...[
-          const SizedBox(height: 8),
-          Text(
-            _justificationLabel!,
-            style: const TextStyle(color: AppColors.information),
           ),
+          if (canReview && mark.mark == AttendanceMark.absent)
+            IconButton(
+              tooltip: 'Revisar justificación de ${_segmentTime(segment)}',
+              onPressed: () => onJustification(segment),
+              icon: const Icon(Icons.fact_check_outlined),
+            ),
         ],
-        if (canMark) ...[
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                onPressed: processing ? null : onPresent,
-                style: OutlinedButton.styleFrom(
-                  backgroundColor: mark.mark == AttendanceMark.present
-                      ? AppColors.primary.withValues(alpha: 0.15)
-                      : null,
-                ),
-                icon: const Icon(Icons.check_circle_outline),
-                label: const Text('Presente'),
-              ),
-              OutlinedButton.icon(
-                onPressed: processing ? null : onAbsent,
-                style: OutlinedButton.styleFrom(
-                  backgroundColor: mark.mark == AttendanceMark.absent
-                      ? AppColors.danger.withValues(alpha: 0.15)
-                      : null,
-                ),
-                icon: const Icon(Icons.cancel_outlined),
-                label: const Text('Ausente'),
-              ),
-            ],
-          ),
-        ],
-        if (canReview) ...[
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              TextButton.icon(
-                onPressed: processing ? null : onCorrect,
-                icon: const Icon(Icons.edit_outlined),
-                label: const Text('Corregir registro'),
-              ),
-              if (mark.mark == AttendanceMark.absent)
-                TextButton.icon(
-                  onPressed: processing ? null : onJustification,
-                  icon: const Icon(Icons.fact_check_outlined),
-                  label: const Text('Revisar justificación'),
-                ),
-            ],
-          ),
-        ],
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }
 
 class _CorrectionDialog extends StatefulWidget {
@@ -1349,6 +1441,7 @@ class _CorrectionDialog extends StatefulWidget {
     required this.startMinute,
     required this.endMinute,
     required this.dateLabel,
+    required this.finalized,
   });
 
   final String studentName;
@@ -1356,6 +1449,7 @@ class _CorrectionDialog extends StatefulWidget {
   final int startMinute;
   final int endMinute;
   final String dateLabel;
+  final bool finalized;
 
   @override
   State<_CorrectionDialog> createState() => _CorrectionDialogState();
@@ -1366,7 +1460,7 @@ class _CorrectionDialogState extends State<_CorrectionDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Corregir registro'),
+    title: Text(widget.finalized ? 'Corregir registro' : 'Marcar asistencia'),
     content: SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,

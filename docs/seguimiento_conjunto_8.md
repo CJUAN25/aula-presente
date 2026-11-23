@@ -12,6 +12,12 @@ Con la fuente del checkout pasó la cuenta solo estudiante. La cuenta de doble r
 
 El repositorio registra operación, etapa y tipo/código sin datos personales, comparte solo verificaciones de acceso simultáneas del mismo alumno y curso, valida el contenido de la solicitud y evita releer asistencia al recuperar una solicitud ya existente. Las 49 pruebas dirigidas Flutter pasaron con el repositorio de producción y su adaptador sintético. Android/FlutterFire en dispositivo queda por verificar. Siguiente módulo: tarjeta docente con todos los tramos.
 
+### Tarjeta docente por horas
+
+Cada tarjeta muestra, en orden, la hora y la marca de todos sus tramos con los datos que ya trajo la nómina. Muestra minutos parciales o justificados en la fila correspondiente. Tocar una hora abre el diálogo con el nombre y la franja para marcar o corregir esa fila. El selector superior controla el resumen y las acciones masivas, cuyo diálogo indica la hora afectada. Por encuentro se conserva una sola marca.
+
+La adaptación usa el PDF vigente, páginas 49 (**Registro manual**) y 55–56 (tarjetas, marcas y acciones). Las filas por hora extienden esa tarjeta porque el PDF no muestra una sesión con varios tramos editables. Se revisó una captura de widget a 320 px y escala 1,6 con nombre largo y tres horas. El botón de guardado amplía su altura para mostrar su texto completo. Pasaron 58 pruebas dirigidas, incluidos los estados de las filas, edición de la segunda hora con la primera seleccionada, un tramo de 35 minutos, corrección de un tramo de 45 minutos con una ausencia parcial previa de 25, y relectura de resultados normales, reprogramados y restaurados. Siguiente módulo: Mis materias.
+
 ## Revalidación del 22/11/2026
 
 El propietario comprobó en TECNO el cambio de Ausente a Presente en la segunda hora y la aprobación por encuentro. Reportó que el cambio inverso se anunciaba como guardado aunque no cambiaba la marca, que el historial por horas no podía consultar la solicitud y que las vistas docentes tardaban en abrir. Punto de partida de C8: `605ac9f3b8017f7c212c99ae53df65fdff34267e`.
