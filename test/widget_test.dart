@@ -230,7 +230,7 @@ Widget _testApp(_FakeAuthRepository repository) => AulaPresenteApp(
   attendanceRepository: _FakeAttendanceRepository(),
 );
 
-class _FakeAttendanceRepository implements AttendanceRepository {
+class _FakeAttendanceRepository extends AttendanceRepository {
   @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #listJustificationRequests) return Future<List<AttendanceJustificationRequest>>.value([]);
@@ -708,6 +708,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Intentémoslo otra vez.'), findsOneWidget);
     expect(find.text('No pudimos entrar'), findsOneWidget);
+    expect(repository.signInCalled, isFalse);
+  });
+
+  testWidgets('C09 abre el catálogo desde el logotipo de bienvenida', (
+    tester,
+  ) async {
+    final repository = _FakeAuthRepository();
+    await tester.pumpWidget(_testApp(repository));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Aula\nPresente'));
+    await tester.pumpAndSettle();
+
+    final gallery = find.text('C09 · Recorridos de diseño');
+    await tester.scrollUntilVisible(
+      gallery.hitTestable(),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(gallery);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('158 de 158 marcos'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('role-student')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('mockup-007')), findsOneWidget);
     expect(repository.signInCalled, isFalse);
   });
 }

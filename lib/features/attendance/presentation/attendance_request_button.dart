@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../domain/attendance_justification_request.dart';
 import '../domain/attendance_record.dart';
 import '../domain/attendance_repository.dart';
-import 'attendance_presentation_components.dart';
 
 class AttendanceRequestButton extends StatefulWidget {
   const AttendanceRequestButton({
@@ -23,8 +22,9 @@ class AttendanceRequestButton extends StatefulWidget {
 
 class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
   AttendanceJustificationRequest? _request;
-  Object? _error;
+  String? _error;
   bool _busy = true;
+  int _epoch = 0;
 
   @override
   void initState() {
@@ -32,7 +32,19 @@ class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
     _load();
   }
 
+  @override
+  void didUpdateWidget(covariant AttendanceRequestButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.record != widget.record ||
+        oldWidget.segmentId != widget.segmentId ||
+        oldWidget.repository != widget.repository) {
+      _request = null;
+      _load();
+    }
+  }
+
   Future<void> _load() async {
+    final epoch = ++_epoch;
     setState(() {
       _busy = true;
       _error = null;
@@ -42,36 +54,43 @@ class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
         record: widget.record,
         segmentId: widget.segmentId,
       );
-      if (mounted) setState(() => _request = result);
-    } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted && epoch == _epoch) setState(() => _request = result);
+    } catch (_) {
+      if (mounted && epoch == _epoch) {
+        setState(() => _error = 'No pudimos consultar tu solicitud.');
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && epoch == _epoch) setState(() => _busy = false);
     }
   }
 
   Future<void> _submit() async {
     if (_busy || _request != null) return;
-    final text = await showDialog<String>(
-      context: context,
-      builder: (context) => const _RequestTextDialog(),
-    );
-    if (!mounted || text == null || _busy) return;
+    final epoch = _epoch;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
+      final text = await showDialog<String>(
+        context: context,
+        builder: (context) => const _RequestTextDialog(),
+      );
+      if (!mounted || epoch != _epoch || text == null) return;
       final result = await widget.repository.submitJustification(
         record: widget.record,
         segmentId: widget.segmentId,
         text: text,
       );
-      if (mounted) setState(() => _request = result);
-    } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted && epoch == _epoch) setState(() => _request = result);
+    } catch (_) {
+      if (mounted && epoch == _epoch) {
+        setState(
+          () => _error = 'No pudimos confirmar el envío. Consulta tu solicitud antes de volver a enviarla.',
+        );
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && epoch == _epoch) setState(() => _busy = false);
     }
   }
 
@@ -80,10 +99,10 @@ class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       if (_error != null) ...[
-        Text(attendanceErrorMessage(_error!)),
+        Text(_error!),
         TextButton(
           onPressed: _busy ? null : _load,
-          child: const Text('Revisar solicitud'),
+          child: const Text('Volver a consultar'),
         ),
       ],
       if (_request != null)
@@ -93,7 +112,9 @@ class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
           AttendanceRequestStatus.rejected => 'Justificación rechazada. La falta sigue contando. Si tienes dudas, comunícate con tu docente.',
         }),
       OutlinedButton.icon(
-        onPressed: _busy || _request != null || _error != null ? null : _submit,
+        onPressed: _busy || _request != null || _error != null || !_canSubmit
+            ? null
+            : _submit,
         icon: const Icon(Icons.message_outlined),
         label: Text(
           _busy
@@ -105,6 +126,15 @@ class _AttendanceRequestButtonState extends State<AttendanceRequestButton> {
       ),
     ],
   );
+
+  bool get _canSubmit => widget.segmentId == null
+      ? widget.record.absentUnits > 0 && widget.record.justifiedUnits == 0
+      : widget.record.segments.any(
+          (segment) =>
+              segment.segmentId == widget.segmentId &&
+              segment.absentMinutes > 0 &&
+              segment.justifiedMinutes == 0,
+        );
 }
 
 class _RequestTextDialog extends StatefulWidget {

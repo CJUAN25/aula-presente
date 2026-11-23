@@ -3284,12 +3284,31 @@ service cloud.firestore {
       allow delete: if ownsUser(resource.data.uid);
     }
 
-    function ownAttendanceRequestId(courseId, requestId) {
+    function activeAttendanceStudent(courseId) {
+      return verifiedStudent()
+        && get(enrollmentPath(courseId, request.auth.uid)).data.status == 'active'
+        && get(enrollmentPath(courseId, request.auth.uid)).data.studentUid == request.auth.uid;
+    }
+
+    function ownMissingAttendanceRequestId(requestId, rosterId) {
       let pieces = requestId.split('[|]');
-      return verifiedStudent() && get(enrollmentPath(courseId, request.auth.uid)).data.status == 'active'
-        && get(enrollmentPath(courseId, request.auth.uid)).data.studentUid == request.auth.uid
-        && pieces.size() >= 3
-        && pieces[pieces.size() - 2] == studentAttendanceRosterId(courseId);
+      let count = pieces.size();
+      // Generated hourly keys repeat the occurrence ID before |segment|order.
+      // Scheduled and rescheduled IDs have three parts; additional IDs have one.
+      return count >= 3
+        && (pieces[count - 2] == 'segment' && pieces[count - 1].matches('[0-9]+')
+          ? ((count == 9 && pieces[3] == rosterId
+                && pieces[0] == pieces[4] && pieces[1] == pieces[5] && pieces[2] == pieces[6])
+            || (count == 5 && pieces[1] == rosterId && pieces[0] == pieces[2]))
+          : pieces[count - 2] == rosterId);
+    }
+
+    function canGetOwnAttendanceRequest(courseId, requestId) {
+      return activeAttendanceStudent(courseId)
+        && (resource == null
+          ? ownMissingAttendanceRequestId(requestId, studentAttendanceRosterId(courseId))
+          : resource.data.studentUid == request.auth.uid
+            && resource.data.rosterEntryId == studentAttendanceRosterId(courseId));
     }
     function validAttendanceRequest(courseId, requestId, data) {
       let source = get(attendanceRecordPath(courseId, data.sessionId + '|' + data.rosterEntryId)).data;
@@ -3354,9 +3373,9 @@ service cloud.firestore {
       }
 
       match /attendance_requests/{requestId} {
-        allow get: if ownAttendanceRequestId(courseId, requestId) || ownsExistingCourse(courseId);
+        allow get: if ownsExistingCourse(courseId) || canGetOwnAttendanceRequest(courseId, requestId);
         allow list: if ownsExistingCourse(courseId);
-        allow create: if ownAttendanceRequestId(courseId, requestId) && validAttendanceRequest(courseId, requestId, request.resource.data);
+        allow create: if activeAttendanceStudent(courseId) && validAttendanceRequest(courseId, requestId, request.resource.data);
         allow update: if canDecideAttendanceRequest(courseId, resource.data, request.resource.data);
         allow delete: if false;
       }

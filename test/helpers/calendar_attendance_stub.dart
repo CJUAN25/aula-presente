@@ -2,7 +2,7 @@ import 'package:aula_presente/features/attendance/domain/attendance_justificatio
 import 'package:aula_presente/features/attendance/domain/attendance_repository.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_calendar_change.dart';
 
-class CalendarAttendanceStub implements AttendanceRepository {
+class CalendarAttendanceStub extends AttendanceRepository {
   CalendarAttendanceStub([this.changes = const []]);
   final List<AttendanceCalendarChange> changes;
   @override

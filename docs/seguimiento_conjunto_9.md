@@ -1,5 +1,11 @@
 # Seguimiento del conjunto 9 — maquetación y navegación
 
+## Integración de la revisión C8 — 22/11/2026
+
+C9 integra el commit C8 `3014c4b28c7bd0749414c8cccce8ea4f3977c61e` mediante una fusión que conserva ambos historiales. La corrección, la bandeja y la recuperación de publicación se abren en la ruta real **Mis cursos → curso → Asistencia → Gestionar**. El estudiante entra por **Mis materias → curso → Consultar asistencia**. Las rutas de curso, acceso y matrícula comparten sus repositorios existentes. El menú debug conserva **C09 · Recorridos de diseño** con sus perfiles y datos ficticios.
+
+Para la prueba física, usa las reglas publicadas para C8 1.0.2+3 y abre una sesión por horas desde el curso real en la APK C9. Guarda una corrección, reabre la fila y consulta el resultado desde estudiante. Abre luego la galería desde el logotipo de bienvenida y verifica los filtros de estudiante y docente. Los pasos anteriores de justificación y restauración están en el [seguimiento C8](seguimiento_conjunto_8.md).
+
 ## Punto de partida y recuperación de la rama — 17/11/2026
 
 Rama feature/conjunto-9-maquetacion-completa, creada desde el commit C8 exacto 605ac9f3b8017f7c212c99ae53df65fdff34267e. No existía rama local ni remota C9. Este commit agrega el primer módulo visual y conserva C8 como padre.

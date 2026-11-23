@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-La rama C8 [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2) contiene la versión **1.0.1+2**, que corrige la segunda hora finalizada, permite motivos opcionales, restaura asistencias anuladas y tramita solicitudes de justificación con decisión docente. Sus reglas están publicadas y comparadas con la rama. La rama de maquetación [`feature/conjunto-9-maquetacion-completa`](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-9-maquetacion-completa) agrega un catálogo de vista previa para recorrer los mockups de estudiante, docente, compartidos y administración; sigue en desarrollo. La validación de C8 en el TECNO corresponde al propietario.
+Las ramas [C8](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-8-asistencia-manual-v2) y [C9](https://github.com/CJUAN25/aula-presente/tree/feature/conjunto-9-maquetacion-completa) contienen la revisión **1.0.2+3**, con corrección por tramo, justificaciones por horas y bandeja del curso. C9 mantiene también la galería de demostración. Para probar asistencia en el TECNO, publica primero las reglas de esta revisión.
 
 ## Qué se puede hacer
 
@@ -13,7 +13,8 @@ La rama C8 [`feature/conjunto-8-asistencia-manual-v2`](https://github.com/CJUAN2
 - Crear y organizar cursos con horario y modalidad de asistencia por encuentro o por horas.
 - Inscribir estudiantes manualmente, mediante solicitud de ingreso o con una lista de Excel.
 - Preparar la lista de una clase, marcar **Presente** o **Ausente** y finalizar el registro.
-- Continuar una asistencia incompleta, corregir una marca con historial y anular una sesión conservando el historial.
+- Continuar una asistencia incompleta, corregir una marca con historial y anular o restaurar una sesión.
+- Encontrar **Justificaciones pendientes** en la asistencia del curso y aprobar o rechazar cada solicitud.
 - Reprogramar o cancelar clases antes de iniciar su asistencia.
 
 ### Estudiante
@@ -49,7 +50,7 @@ La [guía de activación C8](docs/activacion_conjunto_8.md) conserva recorridos 
 
 En una ejecución **debug**, mantén pulsado el logotipo de la pantalla de bienvenida y elige **C09 · Recorridos de diseño**. El catálogo permite filtrar los 158 marcos del PDF por perfil y avanzar por las pantallas de cada recorrido. Es una previsualización con datos ficticios: sus acciones no llaman a Firebase, no solicitan permisos de cámara/Bluetooth y no cargan archivos. Para usar los flujos conectados, inicia sesión con un perfil autorizado y entra por las rutas normales. La [documentación de la vista previa](lib/features/design_preview/README.md), el [inventario de mockups](docs/inventario_mockups_conjunto_9.md) y el [seguimiento C9](docs/seguimiento_conjunto_9.md) explican la cobertura y las diferencias.
 
-Para ejecutar esa galería, clona la rama C9 (la rama C8 contiene la versión funcional previa):
+Para ejecutar la galería, clona la rama C9:
 
 ```bash
 git clone --branch feature/conjunto-9-maquetacion-completa https://github.com/CJUAN25/aula-presente.git
@@ -89,7 +90,7 @@ La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Co
 
 La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-La rama mantiene un solo `firestore.rules`. La versión completa **1.0.1+2** está activa en `aula-presente-movil-juan-2026`, base `(default)`, ruleset `projects/aula-presente-movil-juan-2026/rulesets/7f545ef7-bcf8-4fb8-ab62-63f1134a7042`; se comprobó que su contenido coincide con el archivo local. Se activó el 17/11/2026 a las **01:55:52 (Colombia)**. No hacen falta índices nuevos; el proyecto conserva el índice `attendance_records`. El despliegue solo cambió reglas: no se modificaron datos reales. La [guía de activación](docs/activacion_conjunto_8.md) explica la prueba manual.
+Antes de instalar **1.0.2+3**, el propietario debe publicar el archivo completo `firestore.rules` en `aula-presente-movil-juan-2026`, base `(default)`. Esta revisión usa el índice automático por `status` para la bandeja y conserva el compuesto anterior de `attendance_records`. El ruleset `7f545ef7-bcf8-4fb8-ab62-63f1134a7042`, comprobado el 17/11, corresponde a **1.0.1+2**. El recorrido de validación de esta revisión está en el [seguimiento C8](docs/seguimiento_conjunto_8.md).
 
 ## Documentación
 
@@ -100,4 +101,4 @@ La rama mantiene un solo `firestore.rules`. La versión completa **1.0.1+2** est
 - [Guías de acceso docente](docs/activacion_acceso_docente.md), [cursos](docs/activacion_conjunto_2.md), [matrícula por código](docs/activacion_conjunto_4.md), [retiro y reincorporación](docs/activacion_conjunto_5.md) e [importación de Excel](docs/activacion_conjunto_6.md)
 - [Pruebas de reglas con el emulador](tools/firestore_rules_tests/README.md)
 
-En la ampliación del 17/11 pasaron `flutter analyze`, **359/359** pruebas Flutter completas y **109/109** pruebas de reglas en emulador; compiló la APK debug **1.0.1+2**. El [seguimiento](docs/seguimiento_conjunto_8.md) registra SHA, ruleset, mediciones y pasos por flujo. Solo falta que el propietario valide la APK y los recorridos en el TECNO.
+El [seguimiento](docs/seguimiento_conjunto_8.md) registra las verificaciones locales, mediciones y pasos de validación en el TECNO.

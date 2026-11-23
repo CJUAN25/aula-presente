@@ -293,6 +293,8 @@ La asistencia se organiza en `lib/features/attendance/`: `domain/` define el mod
 
 ### Esquema C8
 
+La revisión del 22/11 conserva los IDs deterministas de solicitudes. Firestore distingue los IDs de tramo que contienen el ID de ocurrencia y comprueba la identidad actual de matrícula al leer solicitudes propias. La bandeja docente filtra `attendance_requests` por estado pendiente dentro del curso y pagina por ID. El detalle combina las solicitudes con datos de sesión y nómina ya autorizados. La carga principal valida la versión de la sesión y sus listas. La publicación secundaria revisa todas las proyecciones y escribe solo las privadas. Véase el [seguimiento C8](seguimiento_conjunto_8.md).
+
 La revisión del 17/11 añade `attendance_requests/{sessionId}|{rosterEntryId}|{tramo o meeting}` con texto, identidad derivada de Auth/matrícula y estados pending/approved/rejected; su decisión actualiza solicitud, fila, proyección, evento y sesión juntos. El estudiante solo obtiene sus IDs y nunca escribe resultados. También añade eventos inmutables de excepción en `attendance_calendar/{occurrenceId}/events/{version}` y el estado `restoring`/evento `restore` para recuperar una anulación previamente finalizada desde marcas conservadas. No se crean identidades, matrículas ni sesiones alternativas; `publishedAt` y auditoría se conservan. El [contrato actualizado](contrato_integracion_conjunto_8.md) detalla permisos, estados y recuperación por lotes. Los motivos docentes son opcionales. Esta ampliación necesita el único `firestore.rules` nuevo; no añade índices ni servicios.
 
 | Ruta | Campos y propósito |

@@ -19,6 +19,7 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
+  deleteField,
   documentId,
   doc,
   getDoc,
@@ -5545,22 +5546,31 @@ for (const rescheduled of [false, true]) {
 }
 
 
-async function c8RequestFixture(mode = "minutes") {
-  const course = "course", id = "course|block|2026-11-16", rowId = "student@example.test";
-  await seedProfile("owner", "owner@example.test", ["teacher"]);
-  await seedProfile("student", rowId, ["student"]);
+async function c8RequestFixture(mode = "minutes", rescheduled = false, legacy = false) {
+  const course = "course", id = rescheduled ? "course|block|2026-11-05" : "course|block|2026-11-16";
+  const email = "student@example.test", rowId = legacy ? "legacy:student" : email;
+  await seedProfile("owner", "owner@example.test", ["teacher", "student"]);
+  await seedProfile("student", email, ["student"]);
   await seedProfile("other", "other@example.test", ["student", "teacher"]);
   await seedCourse("owner", course);
   await seedAttendanceEnrollment(course, "student", "owner", rowId);
+  await seedAttendanceEnrollment(course, "other", "owner", "other@example.test");
+  const start = rescheduled ? 360 : 600, end = start + 120;
+  const scheduledDate = attendanceDate(rescheduled ? 5 : 16);
   const present = {mark:"present",absentUnits:0,justificationStatus:"none",justifiedUnits:0};
   const absent = {...present,mark:"absent",absentUnits:mode === "meeting" ? 1 : 60};
-  const segments = mode === "meeting" ? [] : [present,absent].map((m,i)=>({segmentId:`seg-${i+1}`,startMinute:600+60*i,endMinute:660+60*i,durationMinutes:60,...m}));
-  await seedAttendanceSession(course,"owner",id,{status:"finalized",rosterState:"ready",mode,scheduledDate:attendanceDate(16),effectiveDate:attendanceDate(16),segmentIds:segments.map(s=>s.segmentId),rosterCount:1,markedCount:1,unmarkedCount:0,finalizedAt:attendanceDate(16),startMinute:600,endMinute:720});
-  const owner=userContext("owner","owner@example.test",true), student=userContext("student",rowId,true), other=userContext("other","other@example.test",true);
+  const segments = mode === "meeting" ? [] : [present,absent].map((m,i)=>({segmentId:`${id}|segment|${i}`,startMinute:start+60*i,endMinute:start+60*(i+1),durationMinutes:60,...m}));
+  await seedAttendanceSession(course,"owner",id,{status:"finalized",rosterState:"ready",mode,occurrenceKind:rescheduled?"rescheduled":"planned",scheduledDate,effectiveDate:attendanceDate(16),segmentIds:segments.map(s=>s.segmentId),rosterCount:1,markedCount:1,unmarkedCount:0,finalizedAt:attendanceDate(16),startMinute:start,endMinute:end});
+  const owner=userContext("owner","owner@example.test",true), student=userContext("student",email,true), other=userContext("other","other@example.test",true);
   const parent=doc(owner,"courses",course,"attendance_sessions",id), row=doc(parent,"roster",rowId), record=doc(owner,"courses",course,"attendance_records",`${id}|${rowId}`);
-  const entry={rosterEntryId:rowId,displayName:"Synthetic",studentUid:"student",version:1,updatedAt:attendanceDate(16),updatedBy:"owner",...(mode==="meeting"?{meetingMark:"absent",justificationStatus:"none",justifiedUnits:0}:{segments:{"seg-1":present,"seg-2":absent}})};
-  const projection=attendanceRecordData(course,id,rowId,{mode,scheduledDate:attendanceDate(16),effectiveDate:attendanceDate(16),startMinute:600,endMinute:720,unitCount:mode==="meeting"?1:120,absentUnits:absent.absentUnits,result:mode==="meeting"?"absent":"partial",...(mode==="minutes"?{segments}:{})});
+  const entry={rosterEntryId:rowId,displayName:"Synthetic",studentUid:"student",version:1,updatedAt:attendanceDate(16),updatedBy:"owner",...(mode==="meeting"?{meetingMark:"absent",justificationStatus:"none",justifiedUnits:0}:{segments:{[segments[0].segmentId]:present,[segments[1].segmentId]:absent}})};
+  const projection=attendanceRecordData(course,id,rowId,{mode,scheduledDate,effectiveDate:attendanceDate(16),startMinute:start,endMinute:end,unitCount:mode==="meeting"?1:120,absentUnits:absent.absentUnits,result:mode==="meeting"?"absent":"partial",...(mode==="minutes"?{segments}:{})});
   await testEnvironment.withSecurityRulesDisabled(async c=>{
+    if (legacy) {
+      await updateDoc(doc(c.firestore(), "courses", course, "enrollments", "student"), {
+        rosterEntryId: deleteField(),
+      });
+    }
     await setDoc(doc(c.firestore(),row.path),entry);await setDoc(doc(c.firestore(),record.path),projection);
     for(const [i,s] of segments.entries())await setDoc(doc(c.firestore(),parent.path,"segments",s.segmentId),{segmentId:s.segmentId,order:i,startMinute:s.startMinute,endMinute:s.endMinute,durationMinutes:60,createdAt:attendanceDate(16)});
   });
@@ -5569,9 +5579,9 @@ async function c8RequestFixture(mode = "minutes") {
 
 for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
  test(`C8 requests: ${mode} ${approve ? "approve" : "reject"} once and own access`,async()=>{
-  const f=await c8RequestFixture(mode);
+  const f=await c8RequestFixture(mode, mode === "minutes" && !approve);
   const {course,id,rowId,owner,student,other,parent,row,record}=f;
-  const segmentId=mode==="meeting"?null:"seg-2";
+  const segmentId=mode==="meeting"?null:f.segments[1].segmentId;
   const requestId=`${id}|${rowId}|${segmentId??"meeting"}`;
   const ref=doc(student,"courses",course,"attendance_requests",requestId);
   const data={sessionId:id,rosterEntryId:rowId,studentUid:"student",segmentId,text:"Solicitud sint?tica",status:"pending",createdAt:serverTimestamp(),decidedAt:null,decidedBy:null,eventId:null};
@@ -5580,14 +5590,16 @@ for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
   await testEnvironment.withSecurityRulesDisabled(async c=>updateDoc(doc(c.firestore(),'courses',course,'enrollments','student'),{status:'withdrawn'}));
   await assertPermissionDenied(getDoc(ref));
   await testEnvironment.withSecurityRulesDisabled(async c=>updateDoc(doc(c.firestore(),'courses',course,'enrollments','student'),{status:'active'}));
-  await assertSucceeds(getDoc(ref)); // Missing own request must be readable to enable the form.
+  assert.equal((await assertSucceeds(getDoc(ref))).exists(), false);
   await assertPermissionDenied(getDoc(doc(other,ref.path)));
   await assertPermissionDenied(setDoc(doc(other,ref.path),data));
   await assertPermissionDenied(setDoc(ref,{...data,studentUid:"other"}));
   await assertPermissionDenied(setDoc(ref,{...data,status:"approved"}));
-  if(mode==="minutes")await assertPermissionDenied(setDoc(doc(student,"courses",course,"attendance_requests",`${id}|${rowId}|seg-1`),{...data,segmentId:"seg-1"}));
+  if(mode==="minutes")await assertPermissionDenied(setDoc(doc(student,"courses",course,"attendance_requests",`${id}|${rowId}|${f.segments[0].segmentId}`),{...data,segmentId:f.segments[0].segmentId}));
   const submit=()=>runTransaction(student,async tx=>{if(!(await tx.get(ref)).exists())tx.set(ref,data);});
   await assertSucceeds(Promise.all([submit(),submit()]));
+  assert.equal((await assertSucceeds(getDoc(ref))).data().status, "pending");
+  await assertPermissionDenied(getDoc(doc(other, ref.path)));
   await assertPermissionDenied(setDoc(ref,{...data,text:"Reenv?o"}));
   assert.equal((await getDoc(record)).data().justifiedUnits,0);
   await assertPermissionDenied(updateDoc(ref,{status:"approved",decidedAt:serverTimestamp(),decidedBy:"student",eventId:"decision"}));
@@ -5598,7 +5610,7 @@ for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
     const request=await tx.get(decisionRef);if(request.data().status!=="pending")return;
     const session=await tx.get(parent);const entry=await tx.get(row);await tx.get(record);await tx.get(event);
     const status=approve?"approved":"rejected", nextMark={...f.absent,justificationStatus:approve?"justified":"notAccepted",justifiedUnits:approve?f.absent.absentUnits:0};
-    tx.update(row,{...(mode==="meeting"?{meetingMark:"absent",justificationStatus:nextMark.justificationStatus,justifiedUnits:nextMark.justifiedUnits}:{segments:{"seg-1":f.present,"seg-2":nextMark}}),version:entry.data().version+1,updatedAt:serverTimestamp(),updatedBy:"owner"});
+    tx.update(row,{...(mode==="meeting"?{meetingMark:"absent",justificationStatus:nextMark.justificationStatus,justifiedUnits:nextMark.justifiedUnits}:{segments:{[f.segments[0].segmentId]:f.present,[segmentId]:nextMark}}),version:entry.data().version+1,updatedAt:serverTimestamp(),updatedBy:"owner"});
     tx.update(record,{justifiedUnits:nextMark.justifiedUnits,inReviewUnits:0,result:approve?"justified":mode==="meeting"?"absent":"partial",...(mode==="minutes"?{segments:f.segments.map((s,i)=>i===1?{...s,...nextMark}:s)}:{}),updatedAt:serverTimestamp()});
     tx.set(event,{kind:"justification",rosterEntryId:rowId,oldValue:{mark:f.absent,requestStatus:"pending"},newValue:{mark:nextMark,requestStatus:status},reason:"",changedAt:serverTimestamp(),changedBy:"owner"});
     tx.update(parent,{version:session.data().version+1,lastMutationKind:"justification",lastMutationRosterEntryId:rowId,lastEventId:"decision",updatedAt:serverTimestamp(),updatedBy:"owner"});
@@ -5607,6 +5619,7 @@ for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
   await assertPermissionDenied(updateDoc(doc(other,ref.path),{status:"approved",decidedAt:serverTimestamp(),decidedBy:"other",eventId:"decision"}));
   await assertSucceeds(decide());await assertSucceeds(decide());
   const actual=(await getDoc(doc(student,record.path))).data();
+  assert.equal((await getDoc(ref)).data().status, approve ? "approved" : "rejected");
   assert.equal(actual.unitCount,mode==="meeting"?1:120);
   assert.equal(actual.absentUnits-actual.justifiedUnits,approve?0:f.absent.absentUnits);
   if(mode==="minutes")assert.deepEqual(actual.segments[0],f.segments[0]);
@@ -5614,6 +5627,104 @@ for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
   await assertPermissionDenied(updateDoc(decisionRef,{status:approve?"rejected":"approved",decidedAt:serverTimestamp()}));
  });
 }
+
+test("C8 requests: two hourly keys retain legacy identity and paginate by course", async () => {
+  const f = await c8RequestFixture("minutes", true, true);
+  const {course, id, rowId, record, owner, student, other, row} = f;
+  await testEnvironment.withSecurityRulesDisabled(async c => {
+    await updateDoc(doc(c.firestore(), row.path), {
+      segments: Object.fromEntries(f.segments.map(s => [s.segmentId, f.absent])),
+    });
+    await updateDoc(doc(c.firestore(), record.path), {
+      absentUnits: 120, result: "absent",
+      segments: f.segments.map(s => ({...s, ...f.absent})),
+    });
+  });
+  const requests = db => collection(db, "courses", course, "attendance_requests");
+  const own = requests(student);
+  for (const {segmentId} of f.segments) {
+    const requestId = `${id}|${rowId}|${segmentId}`;
+    const ref = doc(own, requestId);
+    assert.equal((await assertSucceeds(getDoc(ref))).exists(), false);
+    await assertPermissionDenied(getDoc(doc(requests(other), requestId)));
+    await assertSucceeds(setDoc(ref, {
+      sessionId: id, rosterEntryId: rowId, studentUid: "student", segmentId,
+      text: "Solicitud sintética", status: "pending", createdAt: serverTimestamp(),
+      decidedAt: null, decidedBy: null, eventId: null,
+    }));
+    assert.equal((await assertSucceeds(getDoc(ref))).data().segmentId, segmentId);
+  }
+  const pending = db => query(requests(db), where("status", "==", "pending"), orderBy(documentId()));
+  await assertPermissionDenied(getDocs(query(pending(student), limit(1))));
+  await assertPermissionDenied(getDocs(query(pending(other), limit(1))));
+  const first = await assertSucceeds(getDocs(query(pending(owner), limit(1))));
+  const second = await assertSucceeds(getDocs(query(pending(owner), startAfter(first.docs[0]), limit(1))));
+  assert.equal(first.size, 1);
+  assert.equal(second.size, 1);
+  assert.notEqual(first.docs[0].id, second.docs[0].id);
+});
+
+test("C8 requests: a corrected absence rejects approval and can be closed without changing totals", async () => {
+  const f = await c8RequestFixture("minutes", true);
+  const {owner, student, course, id, rowId, row, parent, record} = f;
+  const [firstSegment, secondSegment] = f.segments.map(s => s.segmentId);
+  const ref = doc(student, "courses", course, "attendance_requests", `${id}|${rowId}|${secondSegment}`);
+  await assertSucceeds(setDoc(ref, {
+    sessionId: id, rosterEntryId: rowId, studentUid: "student", segmentId: secondSegment,
+    text: "Solicitud sintética", status: "pending", createdAt: serverTimestamp(),
+    decidedAt: null, decidedBy: null, eventId: null,
+  }));
+  const ownerRef = doc(owner, ref.path);
+  const correction = doc(parent, "events", "mark-present");
+  await assertSucceeds(runTransaction(owner, async tx => {
+    const s = await tx.get(parent);
+    const r = await tx.get(row);
+    tx.update(row, {
+      segments: {[firstSegment]: f.present, [secondSegment]: f.present},
+      version: r.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+    });
+    tx.update(record, {
+      absentUnits: 0, result: "present", updatedAt: serverTimestamp(),
+      segments: f.segments.map(part => ({...part, ...f.present})),
+    });
+    tx.set(correction, {
+      kind: "correction", rosterEntryId: rowId,
+      oldValue: {segmentId: secondSegment, mark: f.absent},
+      newValue: {segmentId: secondSegment, mark: f.present},
+      reason: "", changedAt: serverTimestamp(), changedBy: "owner",
+    });
+    tx.update(parent, {
+      version: s.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+      lastEventId: correction.id, lastMutationRosterEntryId: rowId, lastMutationKind: "correction",
+    });
+  }));
+  const decision = doc(parent, "events", "settle-request");
+  const decide = status => runTransaction(owner, async tx => {
+    const s = await tx.get(parent);
+    const r = await tx.get(row);
+    tx.update(row, {version: r.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner"});
+    tx.update(record, {updatedAt: serverTimestamp()});
+    tx.set(decision, {
+      kind: "justification", rosterEntryId: rowId, reason: "",
+      oldValue: {mark: f.present, requestStatus: "pending"},
+      newValue: {mark: f.present, requestStatus: status},
+      changedAt: serverTimestamp(), changedBy: "owner",
+    });
+    tx.update(parent, {
+      version: s.data().version + 1, updatedAt: serverTimestamp(), updatedBy: "owner",
+      lastEventId: decision.id, lastMutationRosterEntryId: rowId, lastMutationKind: "justification",
+    });
+    tx.update(ownerRef, {
+      status, decidedAt: serverTimestamp(), decidedBy: "owner", eventId: decision.id,
+    });
+  });
+  await assertPermissionDenied(decide("approved"));
+  await assertSucceeds(decide("rejected"));
+  const published = (await getDoc(doc(student, record.path))).data();
+  assert.equal(published.absentUnits, 0);
+  assert.equal(published.unitCount, 120);
+  assert.equal((await getDoc(ref)).data().status, "rejected");
+});
 
 test("C8 restore: interrupted finalized void restores marks units and publishedAt once",async()=>{
  const f=await c8RequestFixture();const {owner,other,student,parent,row,record,projection}=f;

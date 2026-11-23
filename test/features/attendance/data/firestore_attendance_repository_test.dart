@@ -18,6 +18,7 @@ import 'package:aula_presente/features/enrollments/domain/pending_enrollment.dar
 import 'package:aula_presente/features/enrollments/domain/enrollment_status_change.dart';
 
 import 'package:aula_presente/features/attendance/data/firestore_attendance_repository.dart';
+import 'package:aula_presente/features/attendance/data/attendance_operation_trace.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_failure.dart';
 import 'package:aula_presente/features/attendance/domain/attendance_session.dart';
 import 'package:aula_presente/features/enrollments/domain/enrollment.dart';
@@ -28,36 +29,297 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('real repository corrects the second hour and student screen sees zero absences', (tester) async {
-    const parent='courses/course-1/attendance_sessions/occurrence-1';
-    final store=_Store()..documents['users/teacher-1']=_teacherProfile()..documents['users/student-1']=_studentProfile()..documents['courses/course-1']={'ownerUid':'teacher-1'};
-    final data={..._session(status:'finalized',rosterCount:1,markedCount:1,unmarkedCount:0,version:8),'mode':'minutes','segmentIds':['seg-1','seg-2'],'startMinute':600,'endMinute':720};
-    store.documents[parent]=data;
-    final session=AttendanceFirestoreCodec.sessionFromMap(data,expectedCourseId:'course-1',expectedOccurrenceId:'occurrence-1');
-    final segments=const [AttendanceSegment(id:'seg-1',order:0,startMinute:600,endMinute:660,durationMinutes:60),AttendanceSegment(id:'seg-2',order:1,startMinute:660,endMinute:720,durationMinutes:60)];
-    final first=const AttendanceRosterMark(mark:AttendanceMark.present,absentUnits:0,justificationStatus:AttendanceJustificationStatus.none,justifiedUnits:0);
-    final entry=AttendanceRosterEntry(rosterEntryId:'roster-1',displayName:'Synthetic student',studentUid:'student-1',meetingMark:null,segmentMarks:{'seg-1':first,'seg-2':const AttendanceRosterMark(mark:AttendanceMark.absent,absentUnits:60,justificationStatus:AttendanceJustificationStatus.none,justifiedUnits:0)},version:1);
-    store.documents['$parent/roster/roster-1']={...AttendanceFirestoreCodec.rosterDocument(entry:entry,mode:AttendanceMode.minutes,uid:'teacher-1'),'updatedAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
-    for(final segment in segments) {
-      store.documents['$parent/segments/${segment.id}']={...AttendanceFirestoreCodec.segmentForCreate(segment:segment),'createdAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
+  for (final kind in ['normal', 'reprogramada', 'restaurada']) {
+    testWidgets('real screen and repository persist both corrections: $kind', (
+      tester,
+    ) async {
+      final f = _hourFixture(rescheduled: kind == 'reprogramada');
+      final teacher = _repository(f.store);
+      if (kind == 'restaurada') {
+        await teacher.voidSession(
+          courseId: f.course.id,
+          occurrenceId: f.session.occurrenceId,
+          operationId: 'void-then-correct',
+          reason: '',
+        );
+        await teacher.restoreSession(
+          courseId: f.course.id,
+          occurrenceId: f.session.occurrenceId,
+        );
+      }
+      Future<void> openTeacher() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            key: UniqueKey(),
+            theme: AppTheme.dark,
+            home: TeacherAttendanceSessionScreen(
+              course: f.course,
+              session: f.session,
+              repository: teacher,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await openTeacher();
+      for (final (index, mark, expected) in [
+        (1, 'Ausente', 60),
+        (0, 'Ausente', 120),
+        (1, 'Presente', 60),
+        (0, 'Presente', 0),
+      ]) {
+        final segment = f.segments[index];
+        await tester.scrollUntilVisible(
+          find.byType(DropdownButtonFormField<String>),
+          160,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pumpAndSettle();
+        String time(int minutes) =>
+            '${(minutes ~/ 60).toString().padLeft(2, '0')}:00';
+        await tester.tap(
+          find
+              .text(
+                '${time(segment.startMinute)}–${time(segment.endMinute)} · 60 min',
+              )
+              .last,
+        );
+        await tester.pumpAndSettle();
+        await tester.scrollUntilVisible(
+          find.text('Corregir registro'),
+          180,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.text('Corregir registro'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.descendant(
+            of: find.byType(SegmentedButton<AttendanceMark>),
+            matching: find.text(mark),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Guardar cambios'));
+        await tester.pumpAndSettle();
+        final record = f.store.documents[f.recordPath]!;
+        final persistedMark = mark == 'Ausente' ? 'absent' : 'present';
+        expect(record['absentUnits'], expected);
+        expect(record['unitCount'], 120);
+        expect((record['segments'] as List)[index]['mark'], persistedMark);
+        final ownerRow = (await teacher.getRosterEntry(
+          session: f.session,
+          rosterEntryId: 'roster-1',
+        ))!;
+        expect(ownerRow.segmentMarks[segment.id]!.mark.value, persistedMark);
+        final studentResult = (await f.student.listMyAttendanceRecords(
+          courseId: f.course.id,
+        )).items.single;
+        expect(studentResult.absentUnits, expected);
+        expect(studentResult.unitCount, 120);
+        await openTeacher();
+      }
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark,
+          home: StudentAttendanceScreen(
+            course: f.course,
+            repository: f.student,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('0% de faltas computables'), findsOneWidget);
+      expect(
+        f.store.transactionWrites.where((w) => w.data['kind'] == 'correction'),
+        hasLength(4),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  test('queue paginates real hours and a stale absence cannot be approved', () async {
+    final f = _hourFixture(initialAbsence: [60, 45], duration: 105);
+    final teacher = _repository(f.store);
+    final courseId = f.course.id;
+    final original = (await f.student.listMyAttendanceRecords(
+      courseId: courseId,
+    )).items.single;
+    final first = await f.student.submitJustification(
+      record: original,
+      segmentId: f.segments.first.id,
+      text: 'Primera ausencia',
+    );
+    final second = await f.student.submitJustification(
+      record: original,
+      segmentId: f.segments.last.id,
+      text: 'Segunda ausencia',
+    );
+    expect(await teacher.hasPendingJustifications(courseId: courseId), isTrue);
+    final page = await teacher.listPendingJustifications(
+      courseId: courseId,
+      pageSize: 1,
+    );
+    expect(page.items.single.request.id, first.id);
+    expect(page.items.single.studentName, 'Synthetic student');
+    final next = await teacher.listPendingJustifications(
+      courseId: courseId,
+      pageSize: 1,
+      afterId: page.nextCursor,
+    );
+    expect(next.items.single.request.id, second.id);
+    expect(next.items.single.segment!.durationMinutes, 45);
+    expect(next.nextCursor, isNull);
+    // Both requests reuse the session, roster row and segment query in a page.
+    f.store.directReads.clear();
+    f.store.queryLogs.clear();
+    await teacher.listPendingJustifications(courseId: courseId);
+    expect(
+      f.store.directReads.where((p) => p.contains('/roster/')),
+      hasLength(1),
+    );
+    expect(
+      f.store.queryLogs.where((q) => q.path.endsWith('/segments')),
+      hasLength(1),
+    );
+
+    final before = (await teacher.getRosterEntry(
+      session: f.session,
+      rosterEntryId: 'roster-1',
+    ))!;
+    await teacher.correctRosterEntry(
+      courseId: courseId,
+      occurrenceId: f.session.occurrenceId,
+      operationId: 'first-present',
+      replacement: AttendanceRosterEntry(
+        rosterEntryId: before.rosterEntryId,
+        studentUid: before.studentUid,
+        displayName: before.displayName,
+        meetingMark: null,
+        version: before.version,
+        segmentMarks: {
+          ...before.segmentMarks,
+          f.segments.first.id: const AttendanceRosterMark(
+            mark: AttendanceMark.present,
+            absentUnits: 0,
+            justificationStatus: AttendanceJustificationStatus.none,
+            justifiedUnits: 0,
+          ),
+        },
+      ),
+      reason: '',
+    );
+    await expectLater(
+      teacher.decideJustificationRequest(
+        courseId: courseId,
+        request: first,
+        approve: true,
+      ),
+      throwsA(isA<AttendanceFailure>()),
+    );
+    await teacher.decideJustificationRequest(
+      courseId: courseId,
+      request: first,
+      approve: false,
+    );
+    await teacher.decideJustificationRequest(
+      courseId: courseId,
+      request: second,
+      approve: true,
+    );
+    final writes = f.store.transactionWrites.length;
+    await teacher.decideJustificationRequest(
+      courseId: courseId,
+      request: second,
+      approve: true,
+    );
+    expect(f.store.transactionWrites.length, writes);
+    expect(await teacher.hasPendingJustifications(courseId: courseId), isFalse);
+    final result = (await f.student.listMyAttendanceRecords(courseId: courseId))
+        .items
+        .single;
+    expect(result.absentUnits, 45);
+    expect(result.justifiedUnits, 45);
+    expect(result.unitCount, 105);
+    expect(
+      (await f.student.getMyJustification(
+        record: result,
+        segmentId: first.segmentId,
+      ))!.status,
+      AttendanceRequestStatus.rejected,
+    );
+  });
+
+  testWidgets('45 minute correction preserves a historical partial absence', (
+    tester,
+  ) async {
+    final f = _hourFixture(duration: 105, initialAbsence: [25, 0]);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        home: TeacherAttendanceSessionScreen(
+          course: f.course,
+          session: f.session,
+          repository: _repository(f.store),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Future<void> openCorrection() async {
+      await tester.scrollUntilVisible(
+        find.text('Corregir registro'),
+        180,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Corregir registro'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        findsNothing,
+      );
     }
-    store.documents['courses/course-1/attendance_records/occurrence-1|roster-1']={...AttendanceFirestoreCodec.stagedRecord(AttendanceRecordCalculator.fromRosterEntry(session:session,entry:entry,segments:segments)),'visibility':'published','publishedAt':Timestamp.fromDate(DateTime.utc(2026,11,16)),'updatedAt':Timestamp.fromDate(DateTime.utc(2026,11,16))};
-    final course=Course(id:'course-1',ownerUid:'teacher-1',subject:'Synthetic course',group:'01',period:'2026',program:'Program',schedule:CourseSchedule(startDate:AcademicDate(year:2026,month:11,day:1),endDate:AcademicDate(year:2026,month:11,day:30),weeklyBlocks:const [WeeklyBlock(id:'block',weekday:1,startTime:'10:00',endTime:'12:00')]));
-    await tester.pumpWidget(MaterialApp(theme:AppTheme.dark,home:TeacherAttendanceSessionScreen(course:course,session:session,repository:_repository(store))));await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.byType(DropdownButtonFormField<String>),200,scrollable:find.byType(Scrollable).first);
-    await tester.tap(find.byType(DropdownButtonFormField<String>));await tester.pumpAndSettle();
-    await tester.tap(find.text('11:00\u201312:00 \u00b7 60 min').last);await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Corregir registro'),200,scrollable:find.byType(Scrollable).first);await tester.tap(find.text('Corregir registro'));await tester.pumpAndSettle();
-    await tester.tap(find.descendant(of:find.byType(SegmentedButton<AttendanceMark>),matching:find.text('Presente')));await tester.pumpAndSettle();
-    await tester.tap(find.text('Guardar correcci\u00f3n'));await tester.pumpAndSettle();
-    final record=store.documents['courses/course-1/attendance_records/occurrence-1|roster-1']!;
-    expect(record['absentUnits'],0);expect(record['unitCount'],120);
-    expect((record['segments'] as List).first['mark'],'present');
-    expect((record['segments'] as List).last['mark'],'present');
-    final student=FirestoreAttendanceRepository(auth:_Auth(_User('student-1','student@example.invalid')),firestore:store,enrollments:_StudentEnrollmentRepository());
-    await tester.pumpWidget(MaterialApp(theme:AppTheme.dark,home:StudentAttendanceScreen(course:course,repository:student)));await tester.pumpAndSettle();
-    expect(find.text('0% de faltas computables'),findsOneWidget);
-    expect(tester.takeException(),isNull);
+
+    await openCorrection();
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(f.store.transactionWrites, isEmpty);
+    expect(f.store.documents[f.recordPath]!['absentUnits'], 25);
+
+    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>));
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('11:00–11:45 · 45 min').last);
+    await tester.pumpAndSettle();
+    await openCorrection();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<AttendanceMark>),
+        matching: find.text('Ausente'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(f.store.transactionWrites, isEmpty);
+    await openCorrection();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<AttendanceMark>),
+        matching: find.text('Ausente'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    final record = (await f.student.listMyAttendanceRecords(
+      courseId: f.course.id,
+    )).items.single;
+    expect(record.unitCount, 105);
+    expect(record.segments.map((s) => s.absentMinutes), [25, 45]);
   });
 
   test('restoration reuses marks and resumes after a failed write', () async {
@@ -410,6 +672,111 @@ void main() {
       1,
     );
   });
+
+  for (final size in [12, 102]) {
+    for (final finalized in [false, true]) {
+      testWidgets('C8 opening benchmark $size finalized=$finalized', (
+        tester,
+      ) async {
+        tester.view.physicalSize = const Size(800, 1400);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        const parent = 'courses/course-1/attendance_sessions/occurrence-1';
+        final data = _session(
+          status: finalized ? 'finalized' : 'inProgress',
+          rosterCount: size,
+          markedCount: size,
+          unmarkedCount: 0,
+        );
+        final store = _Store()
+          ..ioDelay = const Duration(milliseconds: 20)
+          ..documents['users/teacher-1'] = _teacherProfile()
+          ..documents['courses/course-1'] = {'ownerUid': 'teacher-1'}
+          ..documents[parent] = data;
+        for (var index = 0; index < size; index++) {
+          final id = 'student-$index';
+          store.documents['$parent/roster/$id'] = _entry(
+            rosterEntryId: id,
+            mark: 'present',
+            version: 1,
+          );
+          store.documents['courses/course-1/attendance_records/occurrence-1|$id'] =
+              _record(rosterEntryId: id, mark: 'present');
+        }
+        final course = Course(
+          id: 'course-1',
+          ownerUid: 'teacher-1',
+          subject: 'Curso sintético',
+          group: '01',
+          period: '2026',
+          program: 'Programa',
+          schedule: CourseSchedule(
+            startDate: AcademicDate(year: 2026, month: 11, day: 1),
+            endDate: AcademicDate(year: 2026, month: 11, day: 30),
+            weeklyBlocks: const [],
+          ),
+        );
+        final repo = _repository(store);
+        var extrasDone = false;
+        final openingTrace = AttendanceOperationTrace(
+          'fixture de apertura',
+          onTiming: (_, phase, _) {
+            if (phase == 'consultas secundarias terminadas') extrasDone = true;
+          },
+        );
+        final button = finalized ? 'Ver asistencia' : 'Continuar asistencia';
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.dark,
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    PageRouteBuilder(
+                      transitionDuration: Duration.zero,
+                      pageBuilder: (_, _, _) => TeacherAttendanceSessionScreen(
+                        course: course,
+                        repository: repo,
+                        openingTrace: openingTrace,
+                        session: AttendanceFirestoreCodec.sessionFromMap(
+                          data,
+                          expectedCourseId: course.id,
+                          expectedOccurrenceId: 'occurrence-1',
+                        ),
+                      ),
+                    ),
+                  ),
+                  child: Text(button),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text(button));
+        await tester.pump();
+        expect(find.byType(TeacherAttendanceSessionScreen), findsOneWidget);
+        int? rosterAt;
+        for (var ms = 0; ms <= 2000; ms += 10) {
+          if (find.text('Buscar estudiante').evaluate().isNotEmpty) {
+            rosterAt ??= ms;
+          }
+          if (rosterAt != null && extrasDone) {
+            // ignore: avoid_print
+            print(
+              'C8_OPENING size=$size finalized=$finalized response=0 list=$rosterAt extras=$ms reads=${store.directReads.length} queries=${store.queryLogs.length} txReads=${store.transactionReadGroups.expand((g) => g).length}',
+            );
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(rosterAt, isNotNull);
+        expect(extrasDone, isTrue);
+        expect(find.text('Comprobando publicación'), findsNothing);
+        expect(store.transactionWrites, isEmpty);
+      });
+    }
+  }
 
   test('C8 latency profile finalized view publication check', () async {
     const parent = 'courses/course-1/attendance_sessions/occurrence-1';
@@ -1382,6 +1749,143 @@ Map<String, dynamic> _studentProfile() => {
   'roles': ['student'],
 };
 
+({
+  _Store store,
+  Course course,
+  AttendanceSession session,
+  List<AttendanceSegment> segments,
+  String recordPath,
+  FirestoreAttendanceRepository student,
+})
+_hourFixture({
+  bool rescheduled = false,
+  int duration = 120,
+  List<int> initialAbsence = const [0, 0],
+}) {
+  const courseId = 'course-1';
+  final originalDay = rescheduled ? 5 : 16;
+  final occurrenceId =
+      'course-1|block|${rescheduled ? '2026-11-05' : '2026-11-16'}';
+  final date = AcademicDate(year: 2026, month: 11, day: 16);
+  final original = AcademicDate(year: 2026, month: 11, day: originalDay);
+  final start = rescheduled ? 360 : 600;
+  final occurrence = AttendanceOccurrence(
+    id: occurrenceId,
+    courseId: courseId,
+    kind: rescheduled
+        ? AttendanceOccurrenceKind.rescheduled
+        : AttendanceOccurrenceKind.planned,
+    scheduledDate: original,
+    effectiveDate: date,
+    startMinute: start,
+    endMinute: start + duration,
+  );
+  final segments = AttendanceSegmentFactory.forOccurrence(occurrence);
+  final parent = 'courses/$courseId/attendance_sessions/$occurrenceId';
+  final recordPath =
+      'courses/$courseId/attendance_records/$occurrenceId|roster-1';
+  final timestamp = Timestamp.fromDate(DateTime.utc(2026, 11, 16));
+  final data = {
+    ..._session(
+      status: 'finalized',
+      rosterCount: 1,
+      markedCount: 1,
+      unmarkedCount: 0,
+      version: 8,
+    ),
+    'occurrenceId': occurrenceId,
+    'occurrenceKind': occurrence.kind.value,
+    'mode': 'minutes',
+    'segmentIds': segments.map((s) => s.id).toList(),
+    'scheduledDate': Timestamp.fromDate(original.toUtcTimestamp()),
+    'effectiveDate': timestamp,
+    'startMinute': start,
+    'endMinute': start + duration,
+  };
+  final session = AttendanceFirestoreCodec.sessionFromMap(
+    data,
+    expectedCourseId: courseId,
+    expectedOccurrenceId: occurrenceId,
+  );
+  final entry = AttendanceRosterEntry(
+    rosterEntryId: 'roster-1',
+    displayName: 'Synthetic student',
+    studentUid: 'student-1',
+    meetingMark: null,
+    version: 1,
+    segmentMarks: {
+      for (final segment in segments)
+        segment.id: AttendanceRosterMark(
+          mark: initialAbsence[segment.order] == 0
+              ? AttendanceMark.present
+              : AttendanceMark.absent,
+          absentUnits: initialAbsence[segment.order],
+          justificationStatus: AttendanceJustificationStatus.none,
+          justifiedUnits: 0,
+        ),
+    },
+  );
+  final store = _Store()
+    ..documents['users/teacher-1'] = {
+      ..._teacherProfile(),
+      'roles': ['teacher', 'student'],
+    }
+    ..documents['users/student-1'] = _studentProfile()
+    ..documents['courses/$courseId'] = {'ownerUid': 'teacher-1'}
+    ..documents[parent] = data
+    ..documents['$parent/roster/roster-1'] = {
+      ...AttendanceFirestoreCodec.rosterDocument(
+        entry: entry,
+        mode: AttendanceMode.minutes,
+        uid: 'teacher-1',
+      ),
+      'updatedAt': timestamp,
+    }
+    ..documents[recordPath] = {
+      ...AttendanceFirestoreCodec.stagedRecord(
+        AttendanceRecordCalculator.fromRosterEntry(
+          session: session,
+          entry: entry,
+          segments: segments,
+        ),
+      ),
+      'visibility': 'published',
+      'publishedAt': timestamp,
+      'updatedAt': timestamp,
+    };
+  for (final segment in segments) {
+    store.documents['$parent/segments/${segment.id}'] = {
+      ...AttendanceFirestoreCodec.segmentForCreate(segment: segment),
+      'createdAt': timestamp,
+    };
+  }
+  final course = Course(
+    id: courseId,
+    ownerUid: 'teacher-1',
+    subject: 'Synthetic course',
+    group: '01',
+    period: '2026',
+    program: 'Program',
+    schedule: CourseSchedule(
+      startDate: original,
+      endDate: date,
+      weeklyBlocks: const [],
+    ),
+  );
+  return (
+    store: store,
+    course: course,
+    session: session,
+    segments: segments,
+    recordPath: recordPath,
+    student: FirestoreAttendanceRepository(
+      auth: _Auth(_User('student-1', 'student@example.invalid')),
+      firestore: store,
+      enrollments: _StudentEnrollmentRepository(),
+    ),
+  );
+}
+
 Map<String, dynamic> _teacherProfile() => {
   'name': 'Synthetic teacher',
   'email': 'teacher@example.invalid',
@@ -1618,6 +2122,7 @@ class _Store implements FirebaseFirestore {
     required List<_Filter> filters,
     required List<_Order> orders,
     required int? limit,
+    required List<Object?> after,
   }) {
     queryLogs.add(_QuerySpec(path, filters, orders, limit));
     final prefix = '$path/';
@@ -1649,7 +2154,20 @@ class _Store implements FirebaseFirestore {
         return 0;
       });
     }
-    return _QuerySnapshot(limit == null ? docs : docs.take(limit).toList());
+    final page = docs.where((document) {
+      for (var index = 0; index < after.length; index++) {
+        final order = orders[index];
+        final comparison = _compare(
+          _fieldValue(document, order.field),
+          after[index],
+        );
+        if (comparison != 0) {
+          return order.descending ? comparison < 0 : comparison > 0;
+        }
+      }
+      return after.isEmpty;
+    });
+    return _QuerySnapshot((limit == null ? page : page.take(limit)).toList());
   }
 
   Object? _fieldValue(_Document document, Object field) =>
@@ -1857,6 +2375,7 @@ class _Query implements Query<Map<String, dynamic>> {
     this.filters = const [],
     this.orders = const [],
     this.pageLimit,
+    this.after = const [],
   });
 
   final _Store store;
@@ -1864,6 +2383,7 @@ class _Query implements Query<Map<String, dynamic>> {
   final List<_Filter> filters;
   final List<_Order> orders;
   final int? pageLimit;
+  final List<Object?> after;
 
   @override
   Query<Map<String, dynamic>> where(
@@ -1885,6 +2405,7 @@ class _Query implements Query<Map<String, dynamic>> {
     filters: [...filters, _Filter(field, isEqualTo)],
     orders: orders,
     pageLimit: pageLimit,
+    after: after,
   );
 
   @override
@@ -1897,14 +2418,28 @@ class _Query implements Query<Map<String, dynamic>> {
     filters: filters,
     orders: [...orders, _Order(field, descending)],
     pageLimit: pageLimit,
+    after: after,
   );
 
   @override
-  Query<Map<String, dynamic>> limit(int limit) =>
-      _Query(store, path, filters: filters, orders: orders, pageLimit: limit);
+  Query<Map<String, dynamic>> limit(int limit) => _Query(
+    store,
+    path,
+    filters: filters,
+    orders: orders,
+    pageLimit: limit,
+    after: after,
+  );
 
   @override
-  Query<Map<String, dynamic>> startAfter(Iterable<Object?> values) => this;
+  Query<Map<String, dynamic>> startAfter(Iterable<Object?> values) => _Query(
+    store,
+    path,
+    filters: filters,
+    orders: orders,
+    pageLimit: pageLimit,
+    after: values.toList(),
+  );
 
   @override
   Future<QuerySnapshot<Map<String, dynamic>>> get([GetOptions? options]) async {
@@ -1916,6 +2451,7 @@ class _Query implements Query<Map<String, dynamic>> {
       filters: filters,
       orders: orders,
       limit: pageLimit,
+      after: after,
     );
   }
 

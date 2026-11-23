@@ -1,4 +1,8 @@
-# Estado actual — 17 de noviembre de 2026
+# Estado actual — 22 de noviembre de 2026
+
+## C8 — revisión tras la prueba del propietario, versión 1.0.2+3
+
+La edición de una sesión finalizada cambia solo el encuentro o tramo elegido, con duración real y auditoría. La lectura y el envío de justificaciones por hora conservan los IDs previos. El docente propietario puede decidir desde **Justificaciones pendientes** en el curso. La apertura de sesiones da prioridad a la nómina y separa el reintento del historial, las solicitudes y la publicación. El propietario debe publicar `firestore.rules` de esta revisión y probar la APK en el TECNO. El índice compuesto anterior se conserva. Véase el [seguimiento C8](seguimiento_conjunto_8.md).
 
 ## C8 ampliado y publicado — versión 1.0.1+2
 

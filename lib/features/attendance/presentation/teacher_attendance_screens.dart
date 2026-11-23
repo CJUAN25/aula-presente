@@ -7,6 +7,7 @@ import '../../schedule/domain/academic_date.dart';
 import '../../schedule/domain/planned_meeting_generator.dart';
 import '../application/attendance_occurrence_resolver.dart';
 import '../application/attendance_validator.dart';
+import '../data/attendance_operation_trace.dart';
 import '../domain/attendance_calendar_change.dart';
 import '../domain/attendance_config.dart';
 import '../domain/attendance_mode.dart';
@@ -15,6 +16,7 @@ import '../domain/attendance_repository.dart';
 import '../domain/attendance_session.dart';
 import 'attendance_presentation_components.dart';
 import 'attendance_session_screen.dart';
+import 'pending_justifications_screen.dart';
 
 class TeacherAttendanceScreen extends StatefulWidget {
   const TeacherAttendanceScreen({
@@ -41,11 +43,46 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
   bool _saving = false;
   String? _openingMessage;
   int _epoch = 0;
+  int _pendingEpoch = 0;
+  bool? _hasPending;
+  bool _checkingPending = true;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _refreshPending();
+  }
+
+  Future<void> _refreshPending() async {
+    final epoch = ++_pendingEpoch;
+    setState(() => _checkingPending = true);
+    try {
+      final pending = await widget.repository.hasPendingJustifications(
+        courseId: widget.course.id,
+      );
+      if (mounted && epoch == _pendingEpoch) {
+        setState(() => _hasPending = pending);
+      }
+    } catch (_) {
+      if (mounted && epoch == _pendingEpoch) setState(() => _hasPending = null);
+    } finally {
+      if (mounted && epoch == _pendingEpoch) {
+        setState(() => _checkingPending = false);
+      }
+    }
+  }
+
+  Future<void> _openPending() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PendingJustificationsScreen(
+          course: widget.course,
+          repository: widget.repository,
+        ),
+      ),
+    );
+    if (mounted) await _refreshPending();
   }
 
   Future<void> _load() async {
@@ -137,6 +174,13 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
       return;
     }
     Object? openingError;
+    var opened = false;
+    var attemptedWrite = false;
+    final trace = AttendanceOperationTrace(
+      existing?.status == AttendanceSessionStatus.finalized
+          ? 'Ver asistencia'
+          : 'Continuar asistencia',
+    );
     try {
       AttendanceSession session;
       setState(() {
@@ -147,6 +191,9 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
                 existing.rosterState == AttendanceRosterState.building
             ? 'Preparando la lista y comprobando la matrícula…'
             : 'Abriendo la asistencia guardada…';
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _saving) trace.milestone('primera respuesta visible');
       });
       if (existing != null) {
         session = existing;
@@ -167,6 +214,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
             if (reason == null || !mounted) return;
           }
           setState(() => _saving = true);
+          attemptedWrite = true;
           session = await widget.repository.prepareSession(
             course: widget.course,
             occurrence: occurrence,
@@ -185,6 +233,7 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
             : null;
         if (pastStart && reason == null) return;
         setState(() => _saving = true);
+        attemptedWrite = true;
         session = await widget.repository.prepareSession(
           course: widget.course,
           occurrence: occurrence,
@@ -202,12 +251,14 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
         );
         if (!mounted) return;
       }
+      opened = true;
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           builder: (_) => TeacherAttendanceSessionScreen(
             course: widget.course,
             session: session,
             repository: widget.repository,
+            openingTrace: trace,
           ),
         ),
       );
@@ -244,11 +295,34 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
           _saving = false;
           _openingMessage = null;
         });
-        await _load();
+        if (opened || attemptedWrite) {
+          await _refreshOpenedSession(occurrence.id);
+          if (mounted && opened) _refreshPending();
+        }
         if (mounted && openingError != null) {
           setState(() => _error = openingError);
         }
       }
+    }
+  }
+
+  Future<void> _refreshOpenedSession(String occurrenceId) async {
+    final epoch = _epoch;
+    try {
+      final session = await widget.repository.getSession(
+        courseId: widget.course.id,
+        occurrenceId: occurrenceId,
+      );
+      if (!mounted || epoch != _epoch) return;
+      setState(() {
+        _sessions = [
+          for (final item in _sessions)
+            if (item.occurrenceId != occurrenceId) item,
+          ?session,
+        ];
+      });
+    } catch (error) {
+      if (mounted && epoch == _epoch) setState(() => _error = error);
     }
   }
 
@@ -479,7 +553,12 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
       actions: [
         IconButton(
           tooltip: 'Actualizar asistencia',
-          onPressed: _loading || _saving ? null : _load,
+          onPressed: _loading || _saving
+              ? null
+              : () {
+                  _load();
+                  _refreshPending();
+                },
           icon: const Icon(Icons.refresh),
         ),
         IconButton(
@@ -509,6 +588,32 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
             description: 'Elige una clase, registra Presente o Ausente y finaliza la asistencia.',
           ),
           const SizedBox(height: 18),
+          CoursePanel(
+            padding: EdgeInsets.zero,
+            child: Material(
+              type: MaterialType.transparency,
+              child: ListTile(
+                leading: Icon(
+                  _hasPending == true
+                      ? Icons.mark_email_unread_outlined
+                      : Icons.inbox_outlined,
+                ),
+                title: const Text('Justificaciones pendientes'),
+                subtitle: Text(
+                  _checkingPending
+                      ? 'Consultando solicitudes…'
+                      : switch (_hasPending) {
+                          true => 'Hay solicitudes por revisar',
+                          false => 'Sin solicitudes pendientes',
+                          null => 'Abre la bandeja para consultar',
+                        },
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _saving ? null : _openPending,
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
           if (_openingMessage != null)
             AttendanceWaitStatus(message: _openingMessage!),
           if (_loading && config == null)

@@ -30,6 +30,65 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('course opens pending justifications and updates its indicator', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized)
+      ..requests = const [
+        AttendanceJustificationRequest(
+          id: 'request',
+          sessionId: 'course|block|2026-11-05',
+          rosterEntryId: 'alfa@example.invalid',
+          studentUid: 'alfa',
+          segmentId: 'seg-2',
+          text: 'Solicitud de prueba',
+          status: AttendanceRequestStatus.pending,
+        ),
+      ];
+    await _pump(tester, repo, calendar: true);
+    expect(find.text('Hay solicitudes por revisar'), findsOneWidget);
+    await tester.tap(find.text('Justificaciones pendientes'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('07:00–08:00'), findsOneWidget);
+    await _capture(tester, 'pending-requests');
+    await tester.tap(find.text('Estudiante Alfa'));
+    await tester.pumpAndSettle();
+    expect(find.text('Solicitud de prueba'), findsOneWidget);
+    await _capture(tester, 'pending-detail');
+    await tester.tap(find.text('Aprobar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sin solicitudes pendientes'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Sin solicitudes pendientes'), findsOneWidget);
+    expect(repo.rosterReads, 0);
+  });
+
+  testWidgets('present to absent saves the selected hour from the dialog', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized);
+    await _pump(tester, repo);
+    await tester.scrollUntilVisible(
+      find.widgetWithText(TextButton, 'Corregir registro').hitTestable(),
+      140,
+      maxScrolls: 30,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Corregir registro').first);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<AttendanceMark>),
+        matching: find.text('Ausente'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(repo.rows.first.segmentMarks['seg-1']!.absentUnits, 60);
+  });
+
   testWidgets(
     'list is available while publication and history are still delayed',
     (tester) async {
@@ -48,6 +107,26 @@ void main() {
       expect(find.text('Registro finalizado'), findsOneWidget);
     },
   );
+
+  testWidgets('secondary history retry leaves the loaded roster in place', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized)
+      ..historyFailures = 1;
+    await _pump(tester, repo);
+    final retry = find.text('Reintentar historial');
+    await tester.scrollUntilVisible(
+      retry.hitTestable(),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    final reads = repo.rosterReads;
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+    expect(retry, findsNothing);
+    expect(repo.rosterReads, reads);
+    expect(repo.finalizeCalls, 1);
+  });
 
   testWidgets('second hour changes absent to present with an empty reason', (
     tester,
@@ -69,7 +148,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Guardar correcci\u00f3n'));
+    await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
     expect(repo.correctionReason, '');
     expect(repo.rows.first.segmentMarks['seg-1']!.mark, AttendanceMark.present);
@@ -101,7 +180,7 @@ void main() {
   testWidgets(
     'student submits once and pending text explains the counted absence',
     (tester) async {
-      final repo = _HoursRepository();
+      final repo = _HoursRepository()..requestLookupFailures = 1;
       final record = AttendanceRecord(
         courseId: 'course',
         sessionId: 'session',
@@ -132,6 +211,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.text('No pudimos consultar tu solicitud.'), findsOneWidget);
+      expect(find.textContaining('perfil docente'), findsNothing);
+      await tester.tap(find.text('Volver a consultar'));
+      await tester.pumpAndSettle();
+      expect(find.text('No pudimos consultar tu solicitud.'), findsNothing);
       await tester.tap(find.text('Solicitar justificaci\u00f3n'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Ausencia sint\u00e9tica');
@@ -285,22 +369,20 @@ void main() {
     await tester.ensureVisible(find.text('Corregir registro').first);
     await tester.tap(find.text('Corregir registro').first);
     await tester.pumpAndSettle();
-    expect(find.text('Minutos ausentes (máx. 60)'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      findsNothing,
+    );
+    expect(find.textContaining('07:00–08:00').last, findsOneWidget);
     await _capture(tester, 'correction');
-    expect(repo.markCalls, isEmpty);
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Minutos ausentes (máx. 60)'),
-      '30',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Motivo (opcional)'),
-      'Revisión docente sintética',
-    );
-    await tester.tap(find.text('Guardar corrección'));
+    await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
-    expect(repo.correctionReason, 'Revisión docente sintética');
-    expect(repo.rows.first.segmentMarks['seg-1']!.mark, AttendanceMark.present);
-    expect(repo.rows.first.segmentMarks['seg-2']!.absentUnits, 30);
+    expect(repo.correctionReason, isNull);
+    expect(find.text('No hay cambios que guardar.'), findsOneWidget);
+    expect(repo.rows.first.segmentMarks['seg-2']!.absentUnits, 60);
   });
 
   testWidgets('search filters locally and mark targets the selected hour', (
@@ -515,7 +597,7 @@ Course _course() => Course(
   ),
 );
 
-class _HoursRepository implements AttendanceRepository {
+class _HoursRepository extends AttendanceRepository {
   _HoursRepository({
     AttendanceSessionStatus status = AttendanceSessionStatus.inProgress,
   }) {
@@ -542,6 +624,7 @@ class _HoursRepository implements AttendanceRepository {
   int finalizeCalls = 0;
   int voidCalls = 0, restoreCalls = 0, submissions = 0;
   Completer<void>? publicationGate, historyGate;
+  int historyFailures = 0, requestLookupFailures = 0;
   List<AttendanceJustificationRequest> requests = [];
   bool failMark = false;
   String? correctionReason;
@@ -685,6 +768,10 @@ class _HoursRepository implements AttendanceRepository {
     int pageSize = 25,
   }) async {
     await historyGate?.future;
+    if (historyFailures > 0) {
+      historyFailures--;
+      throw const AttendanceFailure(AttendanceFailureKind.unavailable);
+    }
     return AttendanceSessionEventPage(items: [], nextCursor: null);
   }
 
@@ -786,10 +873,39 @@ class _HoursRepository implements AttendanceRepository {
     required String occurrenceId,
   }) async => requests;
   @override
+  Future<bool> hasPendingJustifications({required String courseId}) async =>
+      requests.any((r) => r.status == AttendanceRequestStatus.pending);
+  @override
+  Future<PendingAttendanceRequestPage> listPendingJustifications({
+    required String courseId,
+    String? afterId,
+    int pageSize = 20,
+  }) async => PendingAttendanceRequestPage(
+    items: [
+      for (final request in requests.where(
+        (r) => r.status == AttendanceRequestStatus.pending,
+      ))
+        PendingAttendanceRequest(
+          request: request,
+          studentName: rows.first.displayName,
+          session: session,
+          segment: segments.last,
+          hasAbsence: true,
+        ),
+    ],
+  );
+  @override
   Future<AttendanceJustificationRequest?> getMyJustification({
     required AttendanceRecord record,
     required String? segmentId,
-  }) async => requests.firstOrNull;
+  }) async {
+    if (requestLookupFailures > 0) {
+      requestLookupFailures--;
+      throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
+    }
+    return requests.firstOrNull;
+  }
+
   @override
   Future<AttendanceJustificationRequest> submitJustification({
     required AttendanceRecord record,
