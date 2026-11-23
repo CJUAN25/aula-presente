@@ -1,5 +1,9 @@
 # Estado actual — 22 de noviembre de 2026
 
+## C8 — justificaciones y apertura del curso, versión 1.0.3+4
+
+La consulta autenticada de solo lectura encontró activa una versión anterior de las reglas con la que se reproduce el rechazo de solicitudes por horas antes del envío. El repositorio y las reglas de esta revisión corrigen el flujo normal y reprogramado, incluida la lectura del estudiante con doble rol. La nómina docente permite marcar o corregir cada tramo desde su tarjeta y **Mis materias** muestra las matrículas activas mientras termina la vinculación. El propietario debe publicar `firestore.rules` de esta revisión en `(default)` antes de probar la APK. Los índices existentes siguen siendo suficientes. El [seguimiento C8](seguimiento_conjunto_8.md) registra la causa, las pruebas locales, los artefactos y los pasos para el TECNO.
+
 ## C8 — revisión tras la prueba del propietario, versión 1.0.2+3
 
 La edición de una sesión finalizada cambia solo el encuentro o tramo elegido, con duración real y auditoría. La lectura y el envío de justificaciones por hora conservan los IDs previos. El docente propietario puede decidir desde **Justificaciones pendientes** en el curso. La apertura de sesiones da prioridad a la nómina y separa el reintento del historial, las solicitudes y la publicación. El propietario debe publicar `firestore.rules` de esta revisión y probar la APK en el TECNO. El índice compuesto anterior se conserva. Véase el [seguimiento C8](seguimiento_conjunto_8.md).
