@@ -10,6 +10,12 @@ Una prueba del diálogo con la marca previa Presente reprodujo el fallo exacto: 
 
 Referencia: PDF vigente, página 49, **Registro manual**. Se reutilizó el diálogo del tema, con Presente y Ausente según el contrato C8 y sin los campos de motivo y minutos. Las pruebas dirigidas de interfaz y repositorio pasaron 39/39 tras el cambio. Commit recuperable por el título «Corrige la edición binaria de asistencia finalizada». Siguiente módulo: permisos y estado de las justificaciones por horas.
 
+### Solicitudes del estudiante
+
+El emulador reprodujo `permission-denied` en la lectura previa de solicitudes propias por horas, normal y reprogramada. El separador de la clave también se usa dentro del ID de tramo. Las reglas distinguen la forma compuesta de las claves por horas y comprueban la identidad canónica del documento existente. La creación conserva el ID determinista, la matrícula activa y todas las validaciones de sesión y ausencia. No hay migración de documentos. Un error secundario muestra «No pudimos consultar tu solicitud» y permite volver a consultar sin ocultar el historial. Cambiar de registro/tramo invalida las respuestas anteriores y el envío bloquea otro diálogo mientras se procesa.
+
+Pasaron las cinco regresiones dirigidas de reglas con IDs de producción, legacy, lectura antes/después de crear y decisiones por clases y por horas. La suite Flutter de asistencia pasó 77/77. Commit recuperable por el título «Corrige permisos de justificación por horas». Siguiente módulo: bandeja por curso y medición de apertura.
+
 ## Estado final de C8 — listo para TECNO — 17/11/2026
 
 **Código:** `feature/conjunto-8-asistencia-manual-v2`, commit de implementación `ee031927a7189dc024d12c23d5fc0d58dcb92645`; `origin` confirmó el mismo SHA. El commit incluye solo la corrección de C8, reglas, pruebas y documentación indicada en su diff. Un commit documental posterior registra la activación verificada. La rama original se conserva sin modificar.

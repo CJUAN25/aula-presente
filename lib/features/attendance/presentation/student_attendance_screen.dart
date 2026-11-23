@@ -38,6 +38,15 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
     _load();
   }
 
+  @override
+  void didUpdateWidget(covariant StudentAttendanceScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.course.id != widget.course.id ||
+        oldWidget.repository != widget.repository) {
+      _load();
+    }
+  }
+
   Future<void> _load() async {
     final epoch = ++_epoch;
     setState(() {
@@ -305,6 +314,7 @@ class _StudentRecordTile extends StatelessWidget {
                     _SegmentRecordLine(segment: segment),
                     if (segment.absentMinutes > 0)
                       AttendanceRequestButton(
+                        key: ValueKey(segment.segmentId),
                         record: record,
                         segmentId: segment.segmentId,
                         repository: repository,

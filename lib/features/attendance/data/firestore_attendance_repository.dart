@@ -3587,8 +3587,14 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         final requestSnapshot = requestRef == null
             ? null
             : await transaction.get(requestRef);
+        _requireSameUser(actor.uid);
         if (submission != null && requestSnapshot != null) {
           final currentRequest = _parseRequest(requestSnapshot);
+          if (currentRequest.sessionId != occurrenceId ||
+              currentRequest.rosterEntryId != rosterEntryId ||
+              currentRequest.segmentId != segmentId) {
+            throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
+          }
           if (currentRequest.status != AttendanceRequestStatus.pending) {
             if ((currentRequest.status == AttendanceRequestStatus.approved) !=
                 (status == AttendanceJustificationStatus.justified)) {
@@ -3612,13 +3618,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
               alreadyApplied: true,
             );
           }
-          if (currentRequest.sessionId != occurrenceId ||
-              currentRequest.rosterEntryId != rosterEntryId ||
-              currentRequest.segmentId != segmentId) {
-            throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
-          }
         }
-        _requireSameUser(actor.uid);
         final session = _parseSessionSnapshot(
           sessionSnapshot,
           courseId: courseId,
@@ -3960,7 +3960,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
     required String? segmentId,
   }) async {
     try {
-      await _ownRequestIdentity(record);
+      final uid = await _ownRequestIdentity(record);
       final ref = _requests(record.courseId).doc(
         AttendanceJustificationRequest.documentId(
           record.sessionId,
@@ -3969,6 +3969,7 @@ class FirestoreAttendanceRepository implements AttendanceRepository {
         ),
       );
       final result = await ref.get(const GetOptions(source: Source.server));
+      _requireSameUser(uid);
       return result.exists ? _parseRequest(result) : null;
     } on FirebaseException catch (e) {
       throw _translateFirebase(e);
