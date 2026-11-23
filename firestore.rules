@@ -3290,6 +3290,15 @@ service cloud.firestore {
         && get(enrollmentPath(courseId, request.auth.uid)).data.studentUid == request.auth.uid;
     }
 
+    function ownsCourseAttendanceRead(courseId) {
+      let coursePath = /databases/$(database)/documents/courses/$(courseId);
+      // Check ownership before evaluating the teacher profile. A student with
+      // both roles must not pay for two complete profile validations here.
+      return signedIn() && exists(coursePath)
+        && get(coursePath).data.ownerUid == request.auth.uid
+        && verifiedTeacher();
+    }
+
     function ownMissingAttendanceRequestId(requestId, rosterId) {
       let pieces = requestId.split('[|]');
       let count = pieces.size();
@@ -3373,7 +3382,7 @@ service cloud.firestore {
       }
 
       match /attendance_requests/{requestId} {
-        allow get: if ownsExistingCourse(courseId) || canGetOwnAttendanceRequest(courseId, requestId);
+        allow get: if ownsCourseAttendanceRead(courseId) || canGetOwnAttendanceRequest(courseId, requestId);
         allow list: if ownsExistingCourse(courseId);
         allow create: if activeAttendanceStudent(courseId) && validAttendanceRequest(courseId, requestId, request.resource.data);
         allow update: if canDecideAttendanceRequest(courseId, resource.data, request.resource.data);
@@ -3464,9 +3473,9 @@ service cloud.firestore {
       }
 
       match /attendance_records/{recordId} {
-        allow get: if ownsExistingCourse(courseId)
+        allow get: if ownsCourseAttendanceRead(courseId)
           || studentCanReadAttendanceRecord(courseId, recordId);
-        allow list: if ownsExistingCourse(courseId)
+        allow list: if ownsCourseAttendanceRead(courseId)
           || studentCanListAttendanceRecords(courseId);
         allow create: if canCreateAttendanceRecord(courseId, recordId);
         allow update: if canUpdateAttendanceRecord(courseId, recordId);

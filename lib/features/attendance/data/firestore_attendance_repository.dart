@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show debugPrint, kDebugMode, listEquals;
 
 import '../../courses/domain/course.dart';
 import '../../enrollments/domain/enrollment.dart';
@@ -51,6 +52,7 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
   final FirebaseFirestore _firestore;
   final EnrollmentRepository _enrollments;
   final AttendanceTiming? onTiming;
+  final _requestIdentityReads = <(String, String), Future<String>>{};
 
   // Only independent reads share a window. Pages and validation barriers
   // remain ordered, and a failed read prevents the roster from becoming ready.
@@ -3910,11 +3912,7 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
           enrollment.studentUid != actor.uid) {
         throw const AttendanceFailure(AttendanceFailureKind.notFound);
       }
-      final rosterEntryId =
-          enrollment.rosterEntryId == null ||
-              enrollment.rosterEntryId!.trim().isEmpty
-          ? 'legacy:${actor.uid}'
-          : enrollment.rosterEntryId!;
+      final rosterEntryId = _rosterIdentity(enrollment, actor.uid);
       Query<Map<String, dynamic>> query = _records(courseId)
           .where('rosterEntryId', isEqualTo: rosterEntryId)
           .where(
@@ -3997,7 +3995,10 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
         data['studentUid'] is! String ||
         data['text'] is! String ||
         !['pending', 'approved', 'rejected'].contains(data['status']) ||
-        (data['segmentId'] != null && data['segmentId'] is! String)) {
+        (data['segmentId'] != null && data['segmentId'] is! String) ||
+        (data['createdAt'] != null && data['createdAt'] is! Timestamp) ||
+        (data['decidedAt'] != null && data['decidedAt'] is! Timestamp) ||
+        (data['decidedBy'] != null && data['decidedBy'] is! String)) {
       throw const AttendanceFailure(AttendanceFailureKind.invalidData);
     }
     return AttendanceJustificationRequest(
@@ -4014,20 +4015,80 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
     );
   }
 
-  Future<String> _ownRequestIdentity(AttendanceRecord record) async {
+  String _rosterIdentity(Enrollment enrollment, String uid) {
+    final identity = enrollment.rosterEntryId;
+    return identity == null || identity.trim().isEmpty
+        ? 'legacy:$uid'
+        : identity;
+  }
+
+  Future<String> _requestIdentity(String courseId, _RequestTrace trace) async {
+    trace.stage = 'perfil y rol';
     final actor = await _requireStudent();
+    trace.stage = 'matrícula activa';
     final enrollment = await _enrollments.getCourseEnrollment(
-      courseId: record.courseId,
+      courseId: courseId,
       studentUid: actor.uid,
     );
     _requireSameUser(actor.uid);
-    final identity = enrollment.rosterEntryId ?? 'legacy:${actor.uid}';
     if (enrollment.status != 'active' ||
         enrollment.studentUid != actor.uid ||
-        identity != record.rosterEntryId) {
+        enrollment.ownerUid.isEmpty) {
       throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
     }
-    return actor.uid;
+    return _rosterIdentity(enrollment, actor.uid);
+  }
+
+  Future<String> _ownRequestIdentity(
+    AttendanceRecord record,
+    _RequestTrace trace, {
+    required bool shareRead,
+  }) async {
+    trace.stage = 'perfil y rol';
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      throw const AttendanceFailure(AttendanceFailureKind.unauthenticated);
+    }
+    final key = (uid, record.courseId);
+    // Only share the concurrent access check for buttons of the same course.
+    // Every request still reads its document from the server under Rules.
+    final sharedTrace = _RequestTrace(trace.operation);
+    final read = shareRead
+        ? _requestIdentityReads.putIfAbsent(key, () async {
+            try {
+              return await _requestIdentity(record.courseId, sharedTrace);
+            } catch (error) {
+              sharedTrace.report(error);
+              rethrow;
+            } finally {
+              _requestIdentityReads.remove(key);
+            }
+          })
+        : _requestIdentity(record.courseId, trace);
+    if (shareRead) trace.stage = 'comprobación de acceso compartida';
+    final identity = await read;
+    trace.stage = 'identidad de la proyección';
+    _requireSameUser(uid);
+    if (identity != record.rosterEntryId) {
+      throw const AttendanceFailure(AttendanceFailureKind.permissionDenied);
+    }
+    return uid;
+  }
+
+  AttendanceJustificationRequest _parseOwnRequest(
+    DocumentSnapshot<Map<String, dynamic>> snapshot,
+    AttendanceRecord record,
+    String? segmentId,
+    String uid,
+  ) {
+    final request = _parseRequest(snapshot);
+    if (request.studentUid != uid ||
+        request.rosterEntryId != record.rosterEntryId ||
+        request.sessionId != record.sessionId ||
+        request.segmentId != segmentId) {
+      throw const AttendanceFailure(AttendanceFailureKind.invalidData);
+    }
+    return request;
   }
 
   @override
@@ -4035,8 +4096,10 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
     required AttendanceRecord record,
     required String? segmentId,
   }) async {
+    final trace = _RequestTrace('consultar justificación');
     try {
-      final uid = await _ownRequestIdentity(record);
+      final uid = await _ownRequestIdentity(record, trace, shareRead: true);
+      trace.stage = 'construir ID';
       final ref = _requests(record.courseId).doc(
         AttendanceJustificationRequest.documentId(
           record.sessionId,
@@ -4044,11 +4107,18 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
           segmentId,
         ),
       );
+      trace.stage = 'leer solicitud';
       final result = await ref.get(const GetOptions(source: Source.server));
       _requireSameUser(uid);
-      return result.exists ? _parseRequest(result) : null;
-    } on FirebaseException catch (e) {
-      throw _translateFirebase(e);
+      trace.stage = 'decodificar solicitud';
+      return result.exists
+          ? _parseOwnRequest(result, record, segmentId, uid)
+          : null;
+    } catch (error) {
+      trace.report(error);
+      if (error is FirebaseException) throw _translateFirebase(error);
+      if (error is EnrollmentFailure) throw _translateEnrollmentFailure(error);
+      rethrow;
     }
   }
 
@@ -4058,8 +4128,10 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
     required String? segmentId,
     required String text,
   }) async {
+    final trace = _RequestTrace('enviar justificación');
     try {
-      final uid = await _ownRequestIdentity(record);
+      final uid = await _ownRequestIdentity(record, trace, shareRead: false);
+      trace.stage = 'validar texto y construir ID';
       final message = text.trim();
       if (message.isEmpty || message.length > 500) {
         throw const AttendanceFailure(AttendanceFailureKind.invalidInput);
@@ -4072,12 +4144,19 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
         ),
       );
       return await _firestore.runTransaction((tx) async {
+        trace.stage = 'leer solicitud en transacción';
         final existing = await tx.get(ref);
+        _requireSameUser(uid);
+        if (existing.exists) {
+          trace.stage = 'decodificar solicitud existente';
+          return _parseOwnRequest(existing, record, segmentId, uid);
+        }
+        trace.stage = 'leer asistencia publicada en transacción';
         final source = await tx.get(
           _records(record.courseId).doc(record.recordId),
         );
         _requireSameUser(uid);
-        if (existing.exists) return _parseRequest(existing);
+        trace.stage = 'validar asistencia publicada';
         final actual = _parseRecordSnapshot(
           source,
           courseId: record.courseId,
@@ -4101,6 +4180,7 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
             AttendanceFailureKind.invalidTransition,
           );
         }
+        trace.stage = 'escribir y confirmar solicitud';
         tx.set(ref, {
           'sessionId': actual.sessionId,
           'rosterEntryId': actual.rosterEntryId,
@@ -4123,8 +4203,11 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
           status: AttendanceRequestStatus.pending,
         );
       });
-    } on FirebaseException catch (e) {
-      throw _translateFirebase(e);
+    } catch (error) {
+      trace.report(error);
+      if (error is FirebaseException) throw _translateFirebase(error);
+      if (error is EnrollmentFailure) throw _translateEnrollmentFailure(error);
+      rethrow;
     }
   }
 
@@ -4712,6 +4795,25 @@ class FirestoreAttendanceRepository extends AttendanceRepository {
       result[entry.key] = entry.value is FieldValue ? null : entry.value;
     }
     return result;
+  }
+}
+
+class _RequestTrace {
+  _RequestTrace(this.operation);
+
+  final String operation;
+  String stage = 'inicio';
+
+  void report(Object error) {
+    if (!kDebugMode) return;
+    final original = error is EnrollmentFailure ? error.cause ?? error : error;
+    final code = switch (original) {
+      FirebaseException(:final code) => code,
+      EnrollmentFailure(:final kind) => kind.name,
+      AttendanceFailure(:final kind) => kind.name,
+      _ => original.runtimeType.toString(),
+    };
+    debugPrint('[C8] $operation / $stage / $code');
   }
 }
 

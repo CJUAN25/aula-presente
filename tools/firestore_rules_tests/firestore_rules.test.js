@@ -39,7 +39,9 @@ import {
 
 const projectId = "demo-aula-presente-firestore-rules-tests";
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
-const rulesPath = resolve(currentDirectory, "../../firestore.rules");
+const rulesPath = process.env.AULA_RULES_SOURCE
+  ? resolve(process.env.AULA_RULES_SOURCE)
+  : resolve(currentDirectory, "../../firestore.rules");
 const [emulatorHost, emulatorPort] = (
   process.env.FIRESTORE_EMULATOR_HOST ?? "127.0.0.1:8080"
 ).split(":");
@@ -5626,6 +5628,46 @@ for (const mode of ["meeting","minutes"]) for (const approve of [true,false]) {
   assert.equal((await getDocs(collection(parent,"events"))).size,1);
   await assertPermissionDenied(updateDoc(decisionRef,{status:approve?"rejected":"approved",decidedAt:serverTimestamp()}));
  });
+}
+
+for (const rescheduled of [false, true]) {
+  test(`C8 hourly history before submit: ${rescheduled ? "rescheduled dual role" : "normal student"}`, async () => {
+    const f = await c8RequestFixture("minutes", rescheduled);
+    const {course, id, rowId, student, owner, record} = f;
+    if (rescheduled) {
+      await testEnvironment.withSecurityRulesDisabled(c => updateDoc(
+        doc(c.firestore(), "users", "student"), {roles: ["student", "teacher"]},
+      ));
+    }
+    await assertSucceeds(getDoc(doc(student, "users", "student")));
+    await assertSucceeds(getDoc(doc(student, "courses", course, "enrollments", "student")));
+    const history = await assertSucceeds(getDocs(query(
+      collection(student, "courses", course, "attendance_records"),
+      where("rosterEntryId", "==", rowId), where("visibility", "==", "published"),
+    )));
+    assert.equal(history.size, 1);
+    const source = doc(student, record.path);
+    const segmentId = f.segments[1].segmentId;
+    const request = doc(student, "courses", course, "attendance_requests",
+      `${id}|${rowId}|${segmentId}`);
+    const before = await assertSucceeds(getDoc(request));
+    assert.equal(before.exists(), false);
+    const submit = () => runTransaction(student, async tx => {
+      const existing = await tx.get(request);
+      if (existing.exists()) return;
+      assert.equal((await tx.get(source)).data().unitCount, 120);
+      tx.set(request, {
+        sessionId: id, rosterEntryId: rowId, studentUid: "student", segmentId,
+        text: "Solicitud sintética", status: "pending", createdAt: serverTimestamp(),
+        decidedAt: null, decidedBy: null, eventId: null,
+      });
+    });
+    await assertSucceeds(submit());
+    await assertSucceeds(submit());
+    assert.equal((await assertSucceeds(getDoc(request))).data().status, "pending");
+    const queue = collection(owner, "courses", course, "attendance_requests");
+    assert.equal((await assertSucceeds(getDocs(query(queue, where("status", "==", "pending"))))).size, 1);
+  });
 }
 
 test("C8 requests: two hourly keys retain legacy identity and paginate by course", async () => {

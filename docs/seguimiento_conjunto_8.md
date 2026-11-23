@@ -1,5 +1,17 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
+## Incidencia de justificaciones y revisión de carga
+
+Base `3014c4b28c7bd0749414c8cccce8ea4f3977c61e`. El propietario confirmó Presente → Ausente en TECNO con 1.0.2+3. El historial cargaba y fallaba «No pudimos consultar tu solicitud» antes del envío.
+
+### Consulta y envío de justificaciones
+
+La consulta autenticada de solo lectura a Firebase encontró activo el ruleset `7f545ef7-bcf8-4fb8-ab62-63f1134a7042` desde el 17/11/2026 a las 01:55:52 Colombia. Su fuente completa difiere de la base C8. SHA-256 normalizado a LF de la fuente activa `9cd6d7fcf4e1eab3b6a71f0822b97f3bbcfef22e3ff34f060ead38fbbe0b2b68`, y de C8 antes de esta revisión `ee41f9974c335e26b7be3eb05fc954bfc1b954b896c6dd62ff27666cf1836649`. El ruleset activo analizó el penúltimo componente completo como matrícula, pero los IDs de tramo terminan en `|segment|orden`. En el emulador pasaron perfil, matrícula e historial y falló el GET de solicitud inexistente con esa fuente, tanto en la normal como en la reprogramada.
+
+Con la fuente del checkout pasó la cuenta solo estudiante. La cuenta de doble rol leyó la solicitud inexistente y se denegó la lectura de asistencia publicada dentro de la transacción, por el límite de 1.000 expresiones. Se comprueba pertenencia al curso antes de evaluar el perfil docente para la lectura de proyecciones y solicitudes. Los requisitos de propiedad, perfil, matrícula, sesión, proyección y deduplicación se conservan. Los dos recorridos nuevos pasaron en el emulador con la fuente final del módulo. Se mantienen las regresiones existentes de identidad legacy, dos horas, decisión, denominador y modalidad por clases.
+
+El repositorio registra operación, etapa y tipo/código sin datos personales, comparte solo verificaciones de acceso simultáneas del mismo alumno y curso, valida el contenido de la solicitud y evita releer asistencia al recuperar una solicitud ya existente. Las 49 pruebas dirigidas Flutter pasaron con el repositorio de producción y su adaptador sintético. Android/FlutterFire en dispositivo queda por verificar. Siguiente módulo: tarjeta docente con todos los tramos.
+
 ## Revalidación del 22/11/2026
 
 El propietario comprobó en TECNO el cambio de Ausente a Presente en la segunda hora y la aprobación por encuentro. Reportó que el cambio inverso se anunciaba como guardado aunque no cambiaba la marca, que el historial por horas no podía consultar la solicitud y que las vistas docentes tardaban en abrir. Punto de partida de C8: `605ac9f3b8017f7c212c99ae53df65fdff34267e`.
