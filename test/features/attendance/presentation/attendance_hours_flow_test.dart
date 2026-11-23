@@ -30,6 +30,31 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('present to absent saves the selected hour from the dialog', (
+    tester,
+  ) async {
+    final repo = _HoursRepository(status: AttendanceSessionStatus.finalized);
+    await _pump(tester, repo);
+    await tester.scrollUntilVisible(
+      find.widgetWithText(TextButton, 'Corregir registro').hitTestable(),
+      140,
+      maxScrolls: 30,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Corregir registro').first);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(SegmentedButton<AttendanceMark>),
+        matching: find.text('Ausente'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar cambios'));
+    await tester.pumpAndSettle();
+    expect(repo.rows.first.segmentMarks['seg-1']!.absentUnits, 60);
+  });
+
   testWidgets(
     'list is available while publication and history are still delayed',
     (tester) async {
@@ -69,7 +94,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Guardar correcci\u00f3n'));
+    await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
     expect(repo.correctionReason, '');
     expect(repo.rows.first.segmentMarks['seg-1']!.mark, AttendanceMark.present);
@@ -285,22 +310,20 @@ void main() {
     await tester.ensureVisible(find.text('Corregir registro').first);
     await tester.tap(find.text('Corregir registro').first);
     await tester.pumpAndSettle();
-    expect(find.text('Minutos ausentes (máx. 60)'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      findsNothing,
+    );
+    expect(find.textContaining('07:00–08:00').last, findsOneWidget);
     await _capture(tester, 'correction');
-    expect(repo.markCalls, isEmpty);
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Minutos ausentes (máx. 60)'),
-      '30',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Motivo (opcional)'),
-      'Revisión docente sintética',
-    );
-    await tester.tap(find.text('Guardar corrección'));
+    await tester.tap(find.text('Guardar cambios'));
     await tester.pumpAndSettle();
-    expect(repo.correctionReason, 'Revisión docente sintética');
-    expect(repo.rows.first.segmentMarks['seg-1']!.mark, AttendanceMark.present);
-    expect(repo.rows.first.segmentMarks['seg-2']!.absentUnits, 30);
+    expect(repo.correctionReason, isNull);
+    expect(find.text('No hay cambios que guardar.'), findsOneWidget);
+    expect(repo.rows.first.segmentMarks['seg-2']!.absentUnits, 60);
   });
 
   testWidgets('search filters locally and mark targets the selected hour', (

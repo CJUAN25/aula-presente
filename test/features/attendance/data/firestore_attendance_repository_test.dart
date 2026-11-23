@@ -49,7 +49,7 @@ void main() {
     await tester.tap(find.text('11:00\u201312:00 \u00b7 60 min').last);await tester.pumpAndSettle();
     await tester.scrollUntilVisible(find.text('Corregir registro'),200,scrollable:find.byType(Scrollable).first);await tester.tap(find.text('Corregir registro'));await tester.pumpAndSettle();
     await tester.tap(find.descendant(of:find.byType(SegmentedButton<AttendanceMark>),matching:find.text('Presente')));await tester.pumpAndSettle();
-    await tester.tap(find.text('Guardar correcci\u00f3n'));await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar cambios'));await tester.pumpAndSettle();
     final record=store.documents['courses/course-1/attendance_records/occurrence-1|roster-1']!;
     expect(record['absentUnits'],0);expect(record['unitCount'],120);
     expect((record['segments'] as List).first['mark'],'present');

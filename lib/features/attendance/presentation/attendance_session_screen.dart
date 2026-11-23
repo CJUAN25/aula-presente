@@ -47,6 +47,7 @@ class _TeacherAttendanceSessionScreenState
   AttendanceFailureKind? _publicationFailureKind;
   bool _loading = true;
   bool _processing = false;
+  bool _correctionOpen = false;
   bool _publicationPending = false;
   int _epoch = 0;
 
@@ -523,90 +524,78 @@ class _TeacherAttendanceSessionScreenState
   }
 
   Future<void> _correct(AttendanceRosterEntry entry) async {
-    final selected =
-        await showDialog<
-          ({AttendanceMark mark, int? absentUnits, String reason})
-        >(
-          context: context,
-          builder: (dialogContext) => _CorrectionDialog(
-            mode: _current.mode,
-            entry: entry,
-            segment: _current.mode == AttendanceMode.minutes
-                ? _selectedSegment
-                : null,
-          ),
-        );
-    if (selected == null || !mounted) return;
-    await _run(() async {
-      final replacement = _replacementForCorrection(
-        entry,
-        selected.mark,
-        selected.absentUnits,
+    if (_correctionOpen || _processing || _publicationPending) return;
+    final session = _current;
+    final segment = session.mode == AttendanceMode.minutes
+        ? _selectedSegment
+        : null;
+    final current = segment == null
+        ? entry.meetingMark!
+        : entry.segmentMarks[segment.id]!;
+    _correctionOpen = true;
+    AttendanceMark? selected;
+    try {
+      selected = await showDialog<AttendanceMark>(
+        context: context,
+        builder: (_) => _CorrectionDialog(
+          studentName: entry.displayName,
+          current: current,
+          startMinute: segment?.startMinute ?? session.startMinute,
+          endMinute: segment?.endMinute ?? session.endMinute,
+          dateLabel: attendanceDateLabel(session.effectiveDate),
+        ),
       );
+    } finally {
+      _correctionOpen = false;
+    }
+    if (selected == null || !mounted) return;
+    if (selected == current.mark) {
+      _showMessage('No hay cambios que guardar.');
+      return;
+    }
+    final replacement = _replacementForCorrection(entry, selected, segment);
+    await _run(() async {
       final result = await widget.repository.correctRosterEntry(
-        courseId: widget.course.id,
-        occurrenceId: _current.occurrenceId,
+        courseId: session.courseId,
+        occurrenceId: session.occurrenceId,
         operationId: newAttendanceOperationId(),
         replacement: replacement,
-        reason: selected.reason,
+        reason: '',
       );
       if (!mounted) return;
       setState(() {
         _session = result.session;
         _replaceEntry(result.entry);
       });
-      _showMessage('Corrección guardada con motivo e historial.');
-      await _load();
+      _showMessage(
+        result.alreadyApplied
+            ? 'La marca ya tenía ese valor.'
+            : 'Cambios guardados en el registro de asistencia.',
+      );
     });
   }
 
   AttendanceRosterEntry _replacementForCorrection(
     AttendanceRosterEntry entry,
     AttendanceMark mark,
-    int? absentUnits,
+    AttendanceSegment? segment,
   ) {
-    if (_current.mode == AttendanceMode.meeting) {
-      return AttendanceRosterEntry(
-        rosterEntryId: entry.rosterEntryId,
-        displayName: entry.displayName,
-        studentUid: entry.studentUid,
-        meetingMark: AttendanceRosterMark(
-          mark: mark,
-          absentUnits: mark == AttendanceMark.absent ? 1 : 0,
-          justificationStatus: AttendanceJustificationStatus.none,
-          justifiedUnits: 0,
-        ),
-        segmentMarks: entry.segmentMarks,
-        version: entry.version,
-        updatedAt: entry.updatedAt,
-        updatedBy: entry.updatedBy,
-      );
-    }
-    final existing = entry.segmentMarks[_selectedSegmentId]!;
-    final marks = Map<String, AttendanceRosterMark>.of(entry.segmentMarks);
-    marks[_selectedSegmentId!] = AttendanceRosterMark(
+    final replacement = AttendanceRosterMark(
       mark: mark,
       absentUnits: mark == AttendanceMark.absent
-          ? absentUnits ?? _selectedSegment.durationMinutes
+          ? segment?.durationMinutes ?? 1
           : 0,
       justificationStatus: AttendanceJustificationStatus.none,
       justifiedUnits: 0,
     );
-    if (existing.justifiedUnits > 0 && mark == AttendanceMark.present) {
-      // A corrected present mark cannot retain previous excuse coverage.
-      marks[_selectedSegmentId!] = AttendanceRosterMark(
-        mark: AttendanceMark.present,
-        absentUnits: 0,
-        justificationStatus: AttendanceJustificationStatus.none,
-        justifiedUnits: 0,
-      );
-    }
     return AttendanceRosterEntry(
       rosterEntryId: entry.rosterEntryId,
       displayName: entry.displayName,
       studentUid: entry.studentUid,
-      meetingMark: null,
-      segmentMarks: marks,
+      meetingMark: segment == null ? replacement : entry.meetingMark,
+      segmentMarks: segment == null
+          ? entry.segmentMarks
+          : {...entry.segmentMarks, segment.id: replacement},
       version: entry.version,
       updatedAt: entry.updatedAt,
       updatedBy: entry.updatedBy,
@@ -1287,58 +1276,25 @@ class _RosterTile extends StatelessWidget {
 
 class _CorrectionDialog extends StatefulWidget {
   const _CorrectionDialog({
-    required this.mode,
-    required this.entry,
-    required this.segment,
+    required this.studentName,
+    required this.current,
+    required this.startMinute,
+    required this.endMinute,
+    required this.dateLabel,
   });
 
-  final AttendanceMode mode;
-  final AttendanceRosterEntry entry;
-  final AttendanceSegment? segment;
+  final String studentName;
+  final AttendanceRosterMark current;
+  final int startMinute;
+  final int endMinute;
+  final String dateLabel;
 
   @override
   State<_CorrectionDialog> createState() => _CorrectionDialogState();
 }
 
 class _CorrectionDialogState extends State<_CorrectionDialog> {
-  final _reason = TextEditingController();
-  final _units = TextEditingController();
-  AttendanceMark _mark = AttendanceMark.present;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.mode == AttendanceMode.minutes && widget.segment != null) {
-      final old = widget.entry.segmentMarks[widget.segment!.id];
-      _units.text = (old?.absentUnits ?? widget.segment!.durationMinutes)
-          .toString();
-      _mark = old?.mark ?? AttendanceMark.absent;
-    } else {
-      _mark = widget.entry.meetingMark?.mark ?? AttendanceMark.absent;
-    }
-  }
-
-  @override
-  void dispose() {
-    _reason.dispose();
-    _units.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final reason = _reason.text.trim();
-
-    int? units;
-    if (widget.mode == AttendanceMode.minutes &&
-        _mark == AttendanceMark.absent) {
-      units = int.tryParse(_units.text.trim());
-      final max = widget.segment!.durationMinutes;
-      if (units == null || units < 0 || units > max) return;
-      if (units == 0) _mark = AttendanceMark.present;
-    }
-    Navigator.of(context)
-        .pop((mark: _mark, absentUnits: units, reason: reason));
-  }
+  late AttendanceMark _mark = widget.current.mark;
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -1349,30 +1305,14 @@ class _CorrectionDialogState extends State<_CorrectionDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'La marca anterior se conserva en el historial. Estudiante: ${widget.entry.displayName}.',
+            widget.studentName,
+            style: Theme.of(context).textTheme.titleMedium,
           ),
-          if (widget.mode == AttendanceMode.minutes &&
-              widget
-                      .entry
-                      .segmentMarks[widget.segment!.id]!
-                      .justificationStatus !=
-                  AttendanceJustificationStatus.none)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                'La corrección reinicia la revisión anterior de este tramo; vuelve a revisar el efecto de la justificación.',
-              ),
-            ),
-          if (widget.mode == AttendanceMode.meeting &&
-              widget.entry.meetingMark!.justificationStatus !=
-                  AttendanceJustificationStatus.none)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                'La corrección reinicia la revisión anterior; vuelve a revisar el efecto de la justificación.',
-              ),
-            ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
+          Text(
+            '${widget.dateLabel} · ${attendanceTimeLabel(widget.startMinute)}–${attendanceTimeLabel(widget.endMinute)}',
+          ),
+          const SizedBox(height: 16),
           SegmentedButton<AttendanceMark>(
             segments: const [
               ButtonSegment(
@@ -1384,39 +1324,33 @@ class _CorrectionDialogState extends State<_CorrectionDialog> {
                 label: Text('Ausente'),
               ),
             ],
-            selected: {_mark},
-            onSelectionChanged: (value) => setState(() => _mark = value.first),
+            emptySelectionAllowed: _mark == AttendanceMark.unmarked,
+            selected: _mark == AttendanceMark.unmarked ? {} : {_mark},
+            onSelectionChanged: (values) =>
+                setState(() => _mark = values.first),
           ),
-          if (widget.mode == AttendanceMode.minutes &&
-              _mark == AttendanceMark.absent) ...[
-            const SizedBox(height: 10),
-            TextField(
-              controller: _units,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText:
-                    'Minutos ausentes (máx. ${widget.segment!.durationMinutes})',
+          if (widget.current.justificationStatus !=
+              AttendanceJustificationStatus.none)
+            const Padding(
+              padding: EdgeInsets.only(top: 12),
+              child: Text(
+                'Si cambias la marca, se recalculará la ausencia. La decisión anterior quedará en el historial.',
               ),
             ),
-          ],
-          const SizedBox(height: 10),
-          TextField(
-            controller: _reason,
-            minLines: 2,
-            maxLines: 4,
-            maxLength: 500,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(labelText: 'Motivo (opcional)'),
-          ),
         ],
       ),
     ),
     actions: [
       TextButton(
-        onPressed: () => Navigator.of(context).pop(),
+        onPressed: () => Navigator.pop(context),
         child: const Text('Cancelar'),
       ),
-      FilledButton(onPressed: _submit, child: const Text('Guardar corrección')),
+      FilledButton(
+        onPressed: _mark == AttendanceMark.unmarked
+            ? null
+            : () => Navigator.pop(context, _mark),
+        child: const Text('Guardar cambios'),
+      ),
     ],
   );
 }

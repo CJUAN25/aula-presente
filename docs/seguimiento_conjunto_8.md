@@ -1,5 +1,15 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
+## Revalidación del 22/11/2026
+
+El propietario comprobó en TECNO el cambio de Ausente a Presente en la segunda hora y la aprobación por encuentro. Reportó que el cambio inverso se anunciaba como guardado aunque no cambiaba la marca, que el historial por horas no podía consultar la solicitud y que las vistas docentes tardaban en abrir. Punto de partida de C8: `605ac9f3b8017f7c212c99ae53df65fdff34267e`.
+
+### Edición docente
+
+Una prueba del diálogo con la marca previa Presente reprodujo el fallo exacto: **esperado 60, obtenido 0**. El formulario anterior reutilizaba los minutos ausentes previos y convertía 0 de vuelta en Presente. La pantalla ahora fija el tramo al abrir el diálogo, muestra identidad y horario, y calcula la ausencia con la duración del modelo o una unidad por encuentro. El guardado sin cambio conserva también las ausencias parciales. Una corrección real mantiene el evento con actor, hora, valores anterior/nuevo y motivo vacío. La fila se actualiza con la respuesta de la transacción y el estado sin cambio tiene mensaje propio.
+
+Referencia: PDF vigente, página 49, **Registro manual**. Se reutilizó el diálogo del tema, con Presente y Ausente según el contrato C8 y sin los campos de motivo y minutos. Las pruebas dirigidas de interfaz y repositorio pasaron 39/39 tras el cambio. Commit recuperable por el título «Corrige la edición binaria de asistencia finalizada». Siguiente módulo: permisos y estado de las justificaciones por horas.
+
 ## Estado final de C8 — listo para TECNO — 17/11/2026
 
 **Código:** `feature/conjunto-8-asistencia-manual-v2`, commit de implementación `ee031927a7189dc024d12c23d5fc0d58dcb92645`; `origin` confirmó el mismo SHA. El commit incluye solo la corrección de C8, reglas, pruebas y documentación indicada en su diff. Un commit documental posterior registra la activación verificada. La rama original se conserva sin modificar.
