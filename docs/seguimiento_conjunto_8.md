@@ -1,5 +1,21 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
+## 25/11/2026 — validación remota desde PowerShell
+
+**Listo para publicar.** La CLI 15.36.0 seleccionó `firestore.rules` desde `firebase.json` para `aula-presente-movil-juan-2026`, base `(default)`. La fuente de `04df0ad` (157.141 bytes en Windows) devolvió HTTP 503 en `:test`. La fuente activa descargada también devolvió 503. El release apuntaba a `7f545ef7-bcf8-4fb8-ab62-63f1134a7042`, activado el 17/11 a las 01:55:52 de Colombia. Su SHA-256 con saltos LF era `9cd6d7fcf4e1eab3b6a71f0822b97f3bbcfef22e3ff34f060ead38fbbe0b2b68`. La fuente histórica de `56c0491` pasó con las mismas opciones y el mismo proyecto.
+
+La distribución de las funciones por alcance permitió compilar la política completa. Mover solo las cinco funciones exclusivas de solicitudes o reorganizar solo C8 todavía devolvía 503. En la versión final, 31 funciones quedan en el alcance general y 138 pasan al `match` común a todas sus llamadas directas e indirectas. Se compararon los cuerpos de las 169 funciones y las 98 sentencias `allow` por ruta con la base. La respuesta 503 no identifica el límite interno del compilador. El resultado final pasó **dos dry-run con HTTP 200** y **113/113** pruebas de reglas, incluidas las solicitudes por horas normales y reprogramadas, doble rol, decisiones, correcciones y restauración. SHA-256 LF final **`e6fefa492bcc18e6da6415030d11adaae5eb522ab3349d5244de6f07c92de325`**.
+
+Desde la raíz del proyecto, el propietario puede validar, publicar y comprobar la fuente activa con estos comandos de PowerShell, en ese orden.
+
+```powershell
+npx.cmd --yes firebase-tools@15.36.0 deploy --only "firestore:rules" --project aula-presente-movil-juan-2026 --dry-run
+npx.cmd --yes firebase-tools@15.36.0 deploy --only "firestore:rules" --project aula-presente-movil-juan-2026
+npm.cmd exec --yes --package=firebase-tools@15.36.0 -- node tools/verificar_reglas_activas.cjs
+```
+
+El verificador lee el release de la base y la fuente completa del ruleset con la cuenta autenticada en la CLI. Imprime el identificador, la hora UTC y las huellas. Tras publicar debe indicar **Coinciden** con la huella final anterior. Sigue vigente la APK **1.0.3+4**. En el TECNO, desde **Mis materias → Lógica → Consultar asistencia**, envía una solicitud de un tramo ausente propio, reabre y comprueba **Pendiente**. Repite en la sesión reprogramada. La publicación y la prueba física quedan a cargo del propietario.
+
 ## Incidencia de justificaciones y revisión de carga
 
 Base `3014c4b28c7bd0749414c8cccce8ea4f3977c61e`. El propietario confirmó Presente → Ausente en TECNO con 1.0.2+3. El historial cargaba y fallaba «No pudimos consultar tu solicitud» antes del envío.
