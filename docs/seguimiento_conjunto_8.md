@@ -1,6 +1,22 @@
 # Seguimiento del conjunto 8 — asistencia manual
 
-## 25/11/2026 — validación remota desde PowerShell
+## Cierre de C8 — validado en el TECNO
+
+**C8 cerrado.** El propietario instaló la APK C8 **1.0.3+4** en el TECNO y confirmó que todos los recorridos de cierre funcionaron en producción. La siguiente etapa es la validación de C9 en el TECNO.
+
+- **APK.** El artefacto local `build/artifacts/aula-presente-c8-1.0.3+4-debug.apk`, compilado desde `cec831a`, tiene SHA-256 `4488D6128E2796DF78E74F191047D31305C0E80462438C9198AAF538018A30F4`, calculado para este cierre.
+- **Reglas de producción.** El propietario publicó desde PowerShell en `aula-presente-movil-juan-2026`, base `(default)`. Reportó `Deploy complete!` en la CLI y `Coinciden` en `tools/verificar_reglas_activas.cjs`. El ruleset verificado fue `469e863d-09ba-46ab-b165-be5203186f1c`. La huella SHA-256 de las reglas con saltos LF coincide en Firebase y en el archivo local de `c48e358`: `e6fefa492bcc18e6da6415030d11adaae5eb522ab3349d5244de6f07c92de325`.
+- **Evidencia automatizada previa.** Pasaron las 113 pruebas de Firestore Emulator y dos validaciones remotas del archivo definitivo devolvieron HTTP 200.
+
+El propietario confirmó estos resultados en el TECNO:
+
+- Primera justificación por horas en una clase normal y en una reprogramada. La solicitud pendiente apareció una sola vez.
+- Aprobación y rechazo con el cálculo correspondiente y con el reenvío bloqueado tras la decisión.
+- Corrección Presente ↔ Ausente por tramo.
+- Cancelación de la confirmación de anulación, seguida de anulación y restauración de una sesión finalizada.
+- Justificación aprobada con descuento de una falta en un curso por clases.
+
+## 25/11/2026 — validación remota desde PowerShell antes de publicar
 
 **Listo para publicar.** La CLI 15.36.0 seleccionó `firestore.rules` desde `firebase.json` para `aula-presente-movil-juan-2026`, base `(default)`. La fuente de `04df0ad` (157.141 bytes en Windows) devolvió HTTP 503 en `:test`. La fuente activa descargada también devolvió 503. El release apuntaba a `7f545ef7-bcf8-4fb8-ab62-63f1134a7042`, activado el 17/11 a las 01:55:52 de Colombia. Su SHA-256 con saltos LF era `9cd6d7fcf4e1eab3b6a71f0822b97f3bbcfef22e3ff34f060ead38fbbe0b2b68`. La fuente histórica de `56c0491` pasó con las mismas opciones y el mismo proyecto.
 

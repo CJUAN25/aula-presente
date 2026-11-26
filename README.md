@@ -4,7 +4,7 @@
 
 Hice Aula Presente para facilitar el registro de asistencia y la consulta de información académica. En muchos grupos la asistencia se lleva en listas separadas y luego cuesta saber qué ocurrió en cada clase. La app reúne los cursos, sus horarios, las matrículas y el registro de cada encuentro.
 
-La revisión **1.0.3+4** de C8 corrige la consulta de justificaciones por horas, muestra todos los tramos en cada tarjeta docente y adelanta la carga de **Mis materias**. Para repetir la prueba en el TECNO, publica primero las reglas de esta revisión y usa la APK indicada en el [seguimiento C8](docs/seguimiento_conjunto_8.md).
+La revisión **1.0.3+4** de C8 corrige la consulta de justificaciones por horas, muestra todos los tramos en cada tarjeta docente y adelanta la carga de **Mis materias**. **C8 está cerrado** tras la validación del propietario en el TECNO. La siguiente etapa es validar C9 en el TECNO. [Seguimiento C8](docs/seguimiento_conjunto_8.md)
 
 ## Qué se puede hacer
 
@@ -75,7 +75,7 @@ La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`. Co
 
 La configuración cliente incluida apunta al proyecto `aula-presente-movil-juan-2026`: `lib/firebase_options.dart` y `android/app/google-services.json`. Es configuración de cliente para Firebase; no son credenciales administrativas. Para iniciar sesión se necesita Internet, una cuenta propia y acceso al correo de verificación.
 
-Antes de instalar **1.0.3+4**, el propietario debe publicar el archivo completo `firestore.rules` en `aula-presente-movil-juan-2026`, base `(default)`. La revisión conserva el índice automático por `status` de la bandeja y el compuesto de `attendance_records`. La fuente activa consultada difiere de la nueva. El [seguimiento C8](docs/seguimiento_conjunto_8.md) registra la revisión exacta y los pasos de validación.
+Para el cierre de C8, el propietario publicó `firestore.rules` en `aula-presente-movil-juan-2026`, base `(default)`, y verificó que la fuente activa coincide con el archivo local. La revisión conserva el índice automático por `status` de la bandeja y el compuesto de `attendance_records`. [Seguimiento C8](docs/seguimiento_conjunto_8.md)
 
 ## Documentación
 

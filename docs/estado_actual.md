@@ -1,8 +1,8 @@
-# Estado actual — 22 de noviembre de 2026
+# Estado actual
 
-## C8 — justificaciones y apertura del curso, versión 1.0.3+4
+## C8 cerrado — versión 1.0.3+4
 
-La consulta autenticada de solo lectura encontró activa una versión anterior de las reglas con la que se reproduce el rechazo de solicitudes por horas antes del envío. El repositorio y las reglas de esta revisión corrigen el flujo normal y reprogramado, incluida la lectura del estudiante con doble rol. La nómina docente permite marcar o corregir cada tramo desde su tarjeta y **Mis materias** muestra las matrículas activas mientras termina la vinculación. El propietario debe publicar `firestore.rules` de esta revisión en `(default)` antes de probar la APK. Los índices existentes siguen siendo suficientes. El [seguimiento C8](seguimiento_conjunto_8.md) registra la causa, las pruebas locales, los artefactos y los pasos para el TECNO.
+El propietario publicó y verificó las reglas de producción y confirmó los flujos de cierre de C8 con la APK **1.0.3+4** en el TECNO. La validación de C9 en el TECNO es la siguiente etapa. [Seguimiento C8](seguimiento_conjunto_8.md)
 
 ## C8 — revisión tras la prueba del propietario, versión 1.0.2+3
 
